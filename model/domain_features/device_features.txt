@@ -1,7 +1,0 @@
-usb_connect_count
-usb_disconnect_count
-after_hours_usb_usage
-daily_device_connect_count
-daily_device_usage_flag
-first_usb_usage_time
-device_risk

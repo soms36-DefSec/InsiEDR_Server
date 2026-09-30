@@ -1,5 +1,0 @@
-Domain,Mean_Abs_SHAP,Normalized_Importance
-File Risk,0.51264393,0.17367798
-HTTP Risk,1.8137321,0.614472
-Email Risk (Logon),0.55158305,0.18687011
-USB Risk (Device),0.07373303,0.02497992

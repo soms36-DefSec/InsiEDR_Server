@@ -1,7 +1,0 @@
-,Predicted_normal,Predicted_email_exfil,Predicted_sabotage,Predicted_usb_exfil,Predicted_flight_risk,Predicted_cloud_exfil
-Actual_normal,11614,220,173,215,256,208
-Actual_email_exfil,81,58,2,2,2,4
-Actual_sabotage,82,0,60,2,4,1
-Actual_usb_exfil,85,3,3,59,1,2
-Actual_flight_risk,77,1,2,2,67,2
-Actual_cloud_exfil,82,5,1,1,2,59

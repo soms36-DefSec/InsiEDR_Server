@@ -1,5 +1,0 @@
-file_access_count
-daily_unique_filename_count
-daily_new_filename_count
-daily_file_access_entropy
-file_risk

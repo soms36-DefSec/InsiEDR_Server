@@ -1,3 +1,0 @@
-Top_K,True_Positives,False_Positives,False_Negatives,True_Negatives,Recall,Precision
-5,5,0,5,190,0.5,1.0
-10,10,0,0,190,1.0,1.0
