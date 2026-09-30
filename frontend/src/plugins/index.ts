@@ -12,35 +12,19 @@
  */
 
 import { pluginRegistry } from './registry';
-import { SocMatrixPlugin } from './soc-matrix/SocMatrixPlugin';
 import { TelemetryExplorerPlugin } from './telemetry-explorer/TelemetryExplorerPlugin';
-import { ShieldAlert, Terminal } from 'lucide-react';
+import { Terminal } from 'lucide-react';
 
 export function initializePlugins(): void {
-  // 1. SOC Matrix Plugin: Primary operational posture and machine learning telemetry
-  pluginRegistry.register({
-    id: 'soc-matrix',
-    name: 'SOC Matrix',
-    description: 'Fleet posture, live threat feed, and behavioral machine learning',
-    icon: ShieldAlert,
-    component: SocMatrixPlugin,
-    category: 'monitoring',
-    badge: (ctx) => {
-      const crit = ctx.summary?.risk_counts.critical || 0;
-      return crit > 0 ? crit : undefined;
-    },
-    order: 1,
-  });
-
-  // 2. Telemetry Explorer Plugin: Raw event stream forensics and virtualized payload inspection
+  // Telemetry Explorer Plugin: Raw event stream forensics, live log collection, and ML dataset export
   pluginRegistry.register({
     id: 'telemetry-explorer',
-    name: 'Telemetry Explorer',
-    description: 'Raw event stream, payload inspector, and virtualized log analysis',
+    name: 'Telemetry & Dataset Explorer',
+    description: 'Raw event stream, payload inspector, and ML model training dataset export',
     icon: Terminal,
     component: TelemetryExplorerPlugin,
     category: 'investigation',
-    order: 2,
+    order: 1,
   });
 }
 

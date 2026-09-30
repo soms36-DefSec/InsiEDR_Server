@@ -47,21 +47,15 @@ load_env()
 
 from server.config import config
 from server.api.agents import router as agents_bp
-from server.api.analysis import router as analysis_bp
-from server.api.anomalies import router as anomalies_bp
-from server.api.baseline import router as baseline_bp
 from server.api.health import router as health_bp
 from server.api.logs import router as logs_bp
 from server.api.stats import router as stats_bp
-from server.api.model import router as model_bp
 from server.api.events import router as events_bp
 from server.api.export import router as export_bp
 from server.api.docs import router as docs_bp
 from server.api.keys import router as keys_bp
 from server.api.errors import register_error_handlers
 from server.plugin_registry import registry
-from server.detectors.registry import detector_registry
-from server.features.registry import feature_registry
 from server.storage.postgres_storage import PostgresStorage
 from server.storage.clickhouse_storage import ClickHouseStorage
 from server.storage.hybrid_storage import HybridStorage
@@ -81,8 +75,6 @@ def create_app(*, storage=None, apply_migrations: bool = True) -> FastAPI:
     async def lifespan(app: FastAPI):
         # Startup phase
         registry.initialize()
-        detector_registry.initialize_defaults()
-        feature_registry.initialize_defaults()
         nonlocal storage
         if storage is None and config.database_dsn:
             try:
@@ -119,10 +111,6 @@ def create_app(*, storage=None, apply_migrations: bool = True) -> FastAPI:
                 except Exception as e:
                     logging.getLogger("insiedr.app").warning("Migration warning: %s", e)
 
-        # Dedicated thread pool for async ML fallback
-        ml_executor = ThreadPoolExecutor(max_workers=8, thread_name_prefix="ML_Worker")
-        app.state.ml_executor = ml_executor
-        app.extensions["ml_executor"] = ml_executor
 
         # Task queue worker
         if storage is not None:
@@ -146,11 +134,6 @@ def create_app(*, storage=None, apply_migrations: bool = True) -> FastAPI:
                 app.state.task_queue_worker.stop()
             except Exception:
                 pass
-        if hasattr(app.state, "ml_executor") and app.state.ml_executor:
-            try:
-                app.state.ml_executor.shutdown(wait=False)
-            except Exception:
-                pass
         if hasattr(app.state, "storage") and app.state.storage and hasattr(app.state.storage, "close"):
             try:
                 app.state.storage.close()
@@ -158,9 +141,9 @@ def create_app(*, storage=None, apply_migrations: bool = True) -> FastAPI:
                 pass
 
     app = FastAPI(
-        title="InsiEDR Enterprise Threat Defense Center",
-        description="Enterprise REST and SSE API for endpoint telemetry ingestion, threat analysis, ML risk scoring, and streaming defense operations.",
-        version="1.0.0",
+        title="InsiEDR Telemetry & Dataset Collection Server",
+        description="REST API for endpoint telemetry ingestion, persistent storage, and training dataset export.",
+        version="2.0.0",
         docs_url="/docs",
         redoc_url="/redoc",
         lifespan=lifespan,
@@ -193,13 +176,9 @@ def create_app(*, storage=None, apply_migrations: bool = True) -> FastAPI:
 
     # Register API routers (REST, SSE, Export, Docs, Dashboard)
     app.include_router(agents_bp)
-    app.include_router(analysis_bp)
-    app.include_router(anomalies_bp)
-    app.include_router(baseline_bp)
     app.include_router(logs_bp)
     app.include_router(health_bp)
     app.include_router(stats_bp)
-    app.include_router(model_bp)
     app.include_router(events_bp)
     app.include_router(export_bp)
     app.include_router(docs_bp)

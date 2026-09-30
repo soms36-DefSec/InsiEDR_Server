@@ -34,12 +34,12 @@ export const Badge: React.FC<BadgeProps> = ({
       <span
         className={`inline-flex items-center gap-1.5 font-medium rounded-md border ${
           isOnline
-            ? 'bg-emerald-50 text-emerald-700 border-emerald-200'
-            : 'bg-slate-50 text-slate-600 border-slate-200'
+            ? 'bg-[#F0FDF4] text-[#166534] border-[#DCFCE7]'
+            : 'bg-[#F3F4F6] text-[#4B5563] border-[#E5E7EB]'
         } ${sizeClasses} ${className}`}
       >
         <span
-          className={`w-1.5 h-1.5 rounded-full ${isOnline ? 'bg-emerald-500' : 'bg-slate-400'}`}
+          className={`w-1.5 h-1.5 rounded-full ${isOnline ? 'bg-[#16A34A]' : 'bg-[#9CA3AF]'}`}
         />
         {children || (isOnline ? 'Online' : 'Offline')}
       </span>
@@ -49,7 +49,7 @@ export const Badge: React.FC<BadgeProps> = ({
   if (variant === 'collector') {
     return (
       <span
-        className={`inline-flex items-center font-mono font-medium rounded border bg-slate-100 text-slate-700 border-slate-200 ${sizeClasses} ${className}`}
+        className={`inline-flex items-center font-mono font-medium rounded-md border bg-[#F8FAFC] text-[#475569] border-[#E2E8F0] ${sizeClasses} ${className}`}
       >
         {children || level}
       </span>
@@ -59,7 +59,7 @@ export const Badge: React.FC<BadgeProps> = ({
   if (variant === 'neutral') {
     return (
       <span
-        className={`inline-flex items-center font-medium rounded-md border bg-slate-50 text-slate-600 border-slate-200 ${sizeClasses} ${className}`}
+        className={`inline-flex items-center font-medium rounded-md border bg-[#F9FAFB] text-[#4B5563] border-[#E5E7EB] ${sizeClasses} ${className}`}
       >
         {children || level}
       </span>
@@ -67,18 +67,18 @@ export const Badge: React.FC<BadgeProps> = ({
   }
 
   // Risk badges
-  let colorClasses = 'bg-emerald-50 text-emerald-700 border-emerald-200';
+  let colorClasses = 'bg-[#F0FDF4] text-[#166534] border-[#DCFCE7] font-medium';
   if (norm === 'CRITICAL') {
-    colorClasses = 'bg-rose-50 text-rose-700 border-rose-200 font-semibold';
+    colorClasses = 'bg-[#FEF2F2] text-[#991B1B] border-[#FEE2E2] font-semibold';
   } else if (norm === 'HIGH') {
-    colorClasses = 'bg-orange-50 text-orange-700 border-orange-200 font-semibold';
+    colorClasses = 'bg-[#FFF7ED] text-[#C2410C] border-[#FFEDD5] font-semibold';
   } else if (norm === 'MEDIUM') {
-    colorClasses = 'bg-amber-50 text-amber-800 border-amber-200 font-medium';
+    colorClasses = 'bg-[#FEFCE8] text-[#854D0E] border-[#FEF08A] font-medium';
   }
 
   return (
     <span
-      className={`inline-flex items-center tracking-wide font-sans rounded-md border ${colorClasses} ${sizeClasses} ${className}`}
+      className={`inline-flex items-center tracking-normal font-sans rounded-md border ${colorClasses} ${sizeClasses} ${className}`}
     >
       {children || norm}
     </span>

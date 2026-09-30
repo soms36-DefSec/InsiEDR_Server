@@ -23,7 +23,6 @@ from shared.protocol import (
 )
 
 from server.config import config
-from server.model_bridge import bridge as model_bridge
 from server.plugin_registry import registry
 
 
@@ -293,14 +292,6 @@ async def process_encrypted_request(req) -> tuple[int, dict[str, Any]]:
         except Exception:
             pass
 
-        # Enqueue ML inference as a durable task
-        if task_queue is not None:
-            task_queue.enqueue("ml_inference", payload)
-        elif ml_executor is not None:
-            ml_executor.submit(model_bridge.process_payload, storage, payload)
-        else:
-            # Synchronous processing fallback
-            model_bridge.process_payload(storage, payload)
 
     except Exception as exc:
         import traceback

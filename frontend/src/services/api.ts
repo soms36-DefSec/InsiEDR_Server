@@ -145,6 +145,30 @@ export function triggerServerExport(
 }
 
 /**
+ * Triggers a download of the ML Model Training Dataset from the FastAPI server.
+ * Allows filtering by specific user, rolling N-day window, and output format (Excel .xlsx, CSV, NDJSON).
+ */
+export function triggerTrainingDatasetExport(options: {
+  username?: string | null;
+  days?: number;
+  format?: 'xlsx' | 'csv' | 'json';
+  limit?: number;
+}): void {
+  const params = new URLSearchParams();
+  const format = options.format || 'xlsx';
+  params.set('format', format);
+  if (options.days && options.days > 0) params.set('days', String(options.days));
+  if (options.username && options.username.trim() !== '') {
+    params.set('username', options.username.trim());
+  }
+  if (options.limit && options.limit > 0) params.set('limit', String(options.limit));
+
+  const ext = format === 'xlsx' ? 'xlsx' : (format === 'json' ? 'json' : 'csv');
+  const url = `/api/v1/export/training-dataset.${ext}?${params.toString()}`;
+  window.open(url, '_blank');
+}
+
+/**
  * Securely triggers a client-side file download via a synthetic Blob URL,
  * ensuring proper DOM detachment and memory cleanup.
  */

@@ -1,8 +1,9 @@
 import React, { useState } from 'react';
 import type { EDRPlugin, PluginContextData } from '../../plugins/registry';
 import { Button } from '../ui/Button';
-import { RefreshCw, Download, Cpu, Monitor, ChevronDown, FileSpreadsheet, FileCode, ShieldAlert } from 'lucide-react';
+import { RefreshCw, Download, Monitor, ChevronDown, FileCode, Database, Sparkles } from 'lucide-react';
 import { triggerServerExport } from '../../services/api';
+import { ExportTrainingDatasetModal } from '../telemetry/ExportTrainingDatasetModal';
 
 export interface TopNavbarProps {
   plugins: EDRPlugin[];
@@ -13,7 +14,7 @@ export interface TopNavbarProps {
   autoRefresh: boolean;
   onToggleAutoRefresh: () => void;
   onRefresh: () => Promise<void>;
-  onExportCSV: () => void;
+  onExportCSV?: () => void;
 }
 
 export const TopNavbar: React.FC<TopNavbarProps> = ({
@@ -25,15 +26,13 @@ export const TopNavbar: React.FC<TopNavbarProps> = ({
   autoRefresh,
   onToggleAutoRefresh,
   onRefresh,
-  onExportCSV,
 }) => {
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [showExportMenu, setShowExportMenu] = useState(false);
+  const [showTrainingModal, setShowTrainingModal] = useState(false);
 
   const summary = context.summary;
-  const health = context.health;
   const pcStatus = summary?.pc_status;
-  const modelPipeline = health?.model_pipeline || 'ready';
 
   const handleRefresh = async () => {
     setIsRefreshing(true);
@@ -45,19 +44,19 @@ export const TopNavbar: React.FC<TopNavbarProps> = ({
   };
 
   return (
-    <nav className="bg-[#0b1329] text-slate-200 border-b border-slate-800 sticky top-0 z-40 select-none shadow-sm">
-      <div className="max-w-[1700px] mx-auto px-6 h-16 flex items-center justify-between gap-4">
+    <nav className="bg-white text-slate-800 border-b border-slate-200 sticky top-0 z-40 select-none shadow-[0_1px_2px_rgba(0,0,0,0.03)]">
+      <div className="max-w-[1700px] mx-auto px-6 h-14 flex items-center justify-between gap-4">
         {/* Brand & Logo */}
         <div className="flex items-center gap-3 shrink-0">
-          <div className="w-8 h-8 rounded-md bg-blue-600 flex items-center justify-center text-white font-bold text-sm tracking-tight shadow-sm shadow-blue-500/30">
+          <div className="w-7 h-7 rounded-md bg-blue-600 flex items-center justify-center text-white font-bold text-xs tracking-tight shadow-xs">
             IE
           </div>
           <div>
             <div className="flex items-center gap-1.5">
-              <span className="text-sm font-bold text-white tracking-tight">InsiEDR</span>
+              <span className="text-sm font-semibold text-slate-900 tracking-tight">InsiEDR</span>
             </div>
-            <div className="text-[10px] text-slate-400 font-medium tracking-wide leading-none mt-0.5">
-              Insider Threat Detection
+            <div className="text-[11px] text-slate-500 font-normal leading-none mt-0.5">
+              Telemetry & Dataset Collection
             </div>
           </div>
         </div>
@@ -73,22 +72,22 @@ export const TopNavbar: React.FC<TopNavbarProps> = ({
               <button
                 key={plugin.id}
                 onClick={() => onSelectPlugin(plugin.id)}
-                className={`flex items-center gap-2 px-3.5 py-2 rounded-md text-xs font-semibold transition-all cursor-pointer whitespace-nowrap ${
+                className={`flex items-center gap-2 px-3 py-1.5 rounded-md text-xs transition-colors cursor-pointer whitespace-nowrap ${
                   isActive
-                    ? 'bg-slate-800 text-white shadow-xs border border-slate-700/60'
-                    : 'text-slate-300 hover:bg-slate-800/60 hover:text-white border border-transparent'
+                    ? 'bg-blue-50 text-blue-700 font-medium border border-blue-200'
+                    : 'text-slate-600 hover:bg-slate-100 hover:text-slate-900 border border-transparent font-normal'
                 }`}
               >
                 <Icon
-                  className={`w-3.5 h-3.5 ${isActive ? 'text-blue-400' : 'text-slate-400'}`}
+                  className={`w-3.5 h-3.5 ${isActive ? 'text-blue-600' : 'text-slate-400'}`}
                 />
                 <span>{plugin.name}</span>
                 {badgeVal !== null && badgeVal !== undefined && (
                   <span
-                    className={`text-[10px] px-1.5 py-0.2 rounded-full font-bold ${
+                    className={`text-[10px] px-1.5 py-0.2 rounded-full font-medium ${
                       typeof badgeVal === 'number' && badgeVal > 0
-                        ? 'bg-rose-500/20 text-rose-300 border border-rose-500/40'
-                        : 'bg-slate-800 text-slate-400'
+                        ? 'bg-red-50 text-red-700 border border-red-200'
+                        : 'bg-slate-100 text-slate-600'
                     }`}
                   >
                     {badgeVal}
@@ -102,42 +101,38 @@ export const TopNavbar: React.FC<TopNavbarProps> = ({
         {/* Right Section: Fleet Status & Action Controls */}
         <div className="flex items-center gap-3 shrink-0">
           {/* Fleet Status Pill */}
-          <div className="hidden lg:flex items-center gap-2.5 px-3 py-1.5 rounded-md bg-slate-900/90 border border-slate-800 text-xs">
-            <div className="flex items-center gap-1.5 text-slate-300" title="Fleet PCs Online / Total">
+          <div className="hidden lg:flex items-center gap-2.5 px-3 py-1.5 rounded-md bg-slate-50 border border-slate-200 text-xs">
+            <div className="flex items-center gap-1.5 text-slate-600" title="Fleet PCs Online / Total">
               <Monitor className="w-3.5 h-3.5 text-slate-400" />
-              <span className="font-semibold text-emerald-400">
+              <span className="font-semibold text-emerald-700">
                 {pcStatus ? pcStatus.online_pcs : '—'}
               </span>
-              <span className="text-slate-500">/</span>
-              <span className="text-slate-400">{pcStatus ? pcStatus.total_pcs : '—'}</span>
+              <span className="text-slate-300">/</span>
+              <span className="text-slate-600">{pcStatus ? pcStatus.total_pcs : '—'}</span>
             </div>
 
-            <span className="w-px h-3.5 bg-slate-800" />
+            <span className="w-px h-3.5 bg-slate-200" />
 
-            <div className="flex items-center gap-1.5 text-slate-300" title="Model Inference Pipeline">
-              <Cpu className="w-3.5 h-3.5 text-blue-400" />
-              <span
-                className={`font-semibold uppercase text-[10px] ${
-                  modelPipeline === 'ready' ? 'text-emerald-400' : 'text-amber-400'
-                }`}
-              >
-                {modelPipeline}
+            <div className="flex items-center gap-1.5 text-slate-600" title="Telemetry Ingestion Status">
+              <Database className="w-3.5 h-3.5 text-emerald-600" />
+              <span className="font-semibold uppercase text-[10px] text-emerald-700">
+                ACTIVE
               </span>
             </div>
           </div>
 
           {/* Real-time Stream Status */}
-          <div className="flex items-center gap-2 px-2.5 py-1.5 rounded-md border border-slate-800 bg-slate-900/90 text-xs">
+          <div className="flex items-center gap-2 px-2.5 py-1.5 rounded-md border border-slate-200 bg-slate-50 text-xs">
             <span
               className={`w-2 h-2 rounded-full ${
                 connectionMode === 'sse'
-                  ? 'bg-emerald-400 animate-pulse-subtle'
+                  ? 'bg-emerald-600 animate-pulse-subtle'
                   : connectionMode === 'polling'
-                  ? 'bg-amber-400'
-                  : 'bg-slate-500'
+                  ? 'bg-amber-500'
+                  : 'bg-slate-400'
               }`}
             />
-            <span className="text-slate-300 text-[11px] font-medium hidden sm:inline">
+            <span className="text-slate-600 text-[11px] font-normal hidden sm:inline">
               {connectionMode === 'sse'
                 ? 'Stream Active'
                 : autoRefresh
@@ -146,7 +141,7 @@ export const TopNavbar: React.FC<TopNavbarProps> = ({
             </span>
             <button
               onClick={onToggleAutoRefresh}
-              className="text-[10px] font-bold text-blue-400 hover:text-blue-300 cursor-pointer"
+              className="text-[11px] font-medium text-blue-600 hover:text-blue-800 cursor-pointer"
             >
               {autoRefresh ? 'Pause' : 'Resume'}
             </button>
@@ -156,12 +151,11 @@ export const TopNavbar: React.FC<TopNavbarProps> = ({
           <button
             onClick={handleRefresh}
             disabled={isRefreshing}
-            className="p-2 rounded-md bg-slate-800/80 hover:bg-slate-700 text-slate-300 hover:text-white border border-slate-700/60 transition-colors cursor-pointer disabled:opacity-50"
+            className="p-2 rounded-md bg-white hover:bg-slate-50 text-slate-600 hover:text-slate-900 border border-slate-200 shadow-2xs transition-colors cursor-pointer disabled:opacity-50"
             title="Refresh telemetry"
           >
             <RefreshCw className={`w-3.5 h-3.5 ${isRefreshing ? 'animate-spin' : ''}`} />
           </button>
-
 
           {/* Export Dropdown */}
           <div className="relative">
@@ -169,11 +163,11 @@ export const TopNavbar: React.FC<TopNavbarProps> = ({
               variant="primary"
               size="sm"
               onClick={() => setShowExportMenu((prev) => !prev)}
-              icon={<Download className="w-3.5 h-3.5 text-white" />}
-              className="bg-blue-600 hover:bg-blue-500 border-blue-600 text-white font-semibold flex items-center gap-1.5"
+              icon={<Download className="w-3.5 h-3.5" />}
+              className="flex items-center gap-1.5"
             >
               <span>Export</span>
-              <ChevronDown className="w-3 h-3 text-blue-200" />
+              <ChevronDown className="w-3 h-3 opacity-80" />
             </Button>
 
             {showExportMenu && (
@@ -182,53 +176,48 @@ export const TopNavbar: React.FC<TopNavbarProps> = ({
                   className="fixed inset-0 z-40"
                   onClick={() => setShowExportMenu(false)}
                 />
-                <div className="absolute right-0 mt-2 w-60 bg-slate-900 border border-slate-700 rounded-lg shadow-xl z-50 py-1.5 text-xs">
-                  <div className="px-3 py-1 text-[10px] font-bold uppercase tracking-wider text-slate-400">
-                    Quick Exports
+                <div className="absolute right-0 mt-2 w-64 bg-white border border-slate-200 rounded-lg shadow-lg z-50 py-1.5 text-xs">
+                  {/* ML Model Training Dataset Option */}
+                  <div className="px-3 py-1 text-[10px] font-semibold uppercase tracking-wider text-slate-500 flex items-center gap-1.5">
+                    <Sparkles className="w-3 h-3 text-blue-600" />
+                    Model Training Dataset
                   </div>
                   <button
                     onClick={() => {
-                      onExportCSV();
+                      setShowTrainingModal(true);
                       setShowExportMenu(false);
                     }}
-                    className="w-full text-left px-3 py-2 text-slate-200 hover:bg-slate-800 flex items-center gap-2 transition-colors cursor-pointer"
+                    className="w-full text-left px-3 py-2 text-slate-800 hover:bg-blue-50/70 flex items-center gap-2.5 transition-colors cursor-pointer border-b border-slate-100"
                   >
-                    <FileSpreadsheet className="w-3.5 h-3.5 text-blue-400 shrink-0" />
-                    <span>Fleet Risk Summary (CSV)</span>
+                    <Database className="w-4 h-4 text-blue-600 shrink-0" />
+                    <div>
+                      <div className="font-semibold text-slate-900 text-xs">Export ML Dataset (Excel/CSV)</div>
+                      <div className="text-[10px] text-slate-500">User, Parameters & Raw Logs (N Days)</div>
+                    </div>
                   </button>
 
-                  <div className="my-1 border-t border-slate-800" />
-                  <div className="px-3 py-1 text-[10px] font-bold uppercase tracking-wider text-slate-400">
-                    Server Streaming Exports
+                  <div className="my-1 border-t border-slate-100" />
+                  <div className="px-3 py-1 text-[10px] font-semibold uppercase tracking-wider text-slate-400">
+                    Raw Telemetry Streams
                   </div>
                   <button
                     onClick={() => {
                       triggerServerExport('logs', 'csv');
                       setShowExportMenu(false);
                     }}
-                    className="w-full text-left px-3 py-2 text-slate-200 hover:bg-slate-800 flex items-center gap-2 transition-colors cursor-pointer"
+                    className="w-full text-left px-3 py-1.5 text-slate-700 hover:bg-slate-50 hover:text-slate-900 flex items-center gap-2 transition-colors cursor-pointer"
                   >
-                    <Download className="w-3.5 h-3.5 text-emerald-400 shrink-0" />
+                    <Download className="w-3.5 h-3.5 text-emerald-600 shrink-0" />
                     <span>Stream All Logs (CSV)</span>
-                  </button>
-                  <button
-                    onClick={() => {
-                      triggerServerExport('threats', 'csv');
-                      setShowExportMenu(false);
-                    }}
-                    className="w-full text-left px-3 py-2 text-slate-200 hover:bg-slate-800 flex items-center gap-2 transition-colors cursor-pointer"
-                  >
-                    <ShieldAlert className="w-3.5 h-3.5 text-rose-400 shrink-0" />
-                    <span>Stream Threat Detections (CSV)</span>
                   </button>
                   <button
                     onClick={() => {
                       triggerServerExport('logs', 'json');
                       setShowExportMenu(false);
                     }}
-                    className="w-full text-left px-3 py-2 text-slate-200 hover:bg-slate-800 flex items-center gap-2 transition-colors cursor-pointer"
+                    className="w-full text-left px-3 py-1.5 text-slate-700 hover:bg-slate-50 hover:text-slate-900 flex items-center gap-2 transition-colors cursor-pointer"
                   >
-                    <FileCode className="w-3.5 h-3.5 text-amber-400 shrink-0" />
+                    <FileCode className="w-3.5 h-3.5 text-amber-600 shrink-0" />
                     <span>Stream Logs (NDJSON)</span>
                   </button>
                 </div>
@@ -237,6 +226,13 @@ export const TopNavbar: React.FC<TopNavbarProps> = ({
           </div>
         </div>
       </div>
+
+      {/* ML Model Training Dataset Export Modal */}
+      <ExportTrainingDatasetModal
+        isOpen={showTrainingModal}
+        onClose={() => setShowTrainingModal(false)}
+        availableUsers={summary?.users || []}
+      />
     </nav>
   );
 };

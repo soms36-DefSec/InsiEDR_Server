@@ -4,7 +4,6 @@ from fastapi import APIRouter, Depends
 from fastapi.responses import JSONResponse
 
 from server.plugin_registry import registry
-from server.model_bridge import bridge as model_bridge
 from server.api.events import broadcaster
 from server.api.deps import get_storage, get_task_queue
 
@@ -30,16 +29,6 @@ async def health(
     crypto = "ok" if ("hpke" in schemes or "aes-256-gcm" in schemes) else "unconfigured"
     plaintext = "enabled" if "plaintext" in schemes else "disabled"
 
-    model_readiness = model_bridge.readiness()
-    if model_readiness["ready"]:
-        model_pipeline = "ready"
-    elif model_readiness["missing_artifacts"]:
-        model_pipeline = "missing_artifacts"
-    elif model_readiness["missing_dependencies"]:
-        model_pipeline = "missing_dependencies"
-    else:
-        model_pipeline = "disabled"
-
     queue_status = "unavailable"
     queue_backend = "none"
     if task_queue is not None:
@@ -60,9 +49,7 @@ async def health(
         "crypto_schemes": schemes,
         "plaintext_crypto": plaintext,
         "migrations": "ok" if storage is not None else "not_configured",
-        "model_pipeline": model_pipeline,
-        "model_missing_artifacts": model_readiness["missing_artifacts"],
-        "model_missing_dependencies": model_readiness["missing_dependencies"],
+        "telemetry_collection": "ok",
         "queue_backend": queue_backend,
         "queue_status": queue_status,
         "sse_subscribers": sse_subscribers,

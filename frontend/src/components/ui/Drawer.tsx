@@ -53,23 +53,23 @@ export const Drawer: React.FC<DrawerProps> = ({
     <div className="fixed inset-0 z-50 overflow-hidden">
       {/* Backdrop */}
       <div
-        className="fixed inset-0 bg-slate-900/40 backdrop-blur-xs transition-opacity"
+        className="fixed inset-0 bg-slate-900/30 transition-opacity"
         onClick={onClose}
       />
 
       <div className="fixed inset-y-0 right-0 flex max-w-full pl-10">
         <div
-          className={`w-screen ${widthClasses} bg-white shadow-2xl border-l border-slate-200 flex flex-col`}
+          className={`w-screen ${widthClasses} bg-white shadow-xl border-l border-slate-200 flex flex-col`}
         >
           {/* Header */}
-          <div className="px-6 py-5 border-b border-slate-200 flex items-center justify-between bg-slate-50/50">
+          <div className="px-6 py-4 border-b border-slate-200 flex items-center justify-between bg-white">
             <div>
               <div className="text-base font-semibold text-slate-900 tracking-tight">{title}</div>
               {subtitle && <div className="text-xs text-slate-500 mt-0.5">{subtitle}</div>}
             </div>
             <button
               onClick={onClose}
-              className="p-1.5 text-slate-400 hover:text-slate-700 hover:bg-slate-200/60 rounded-md transition-colors cursor-pointer"
+              className="p-1.5 text-slate-400 hover:text-slate-700 hover:bg-slate-100 rounded-md transition-colors cursor-pointer"
               title="Close panel (Esc)"
             >
               <X className="w-5 h-5" />
@@ -81,7 +81,7 @@ export const Drawer: React.FC<DrawerProps> = ({
 
           {/* Footer */}
           {footer && (
-            <div className="px-6 py-4 border-t border-slate-200 bg-slate-50 flex items-center justify-between gap-3">
+            <div className="px-6 py-4 border-t border-slate-200 bg-slate-50/80 flex items-center justify-between gap-3">
               {footer}
             </div>
           )}

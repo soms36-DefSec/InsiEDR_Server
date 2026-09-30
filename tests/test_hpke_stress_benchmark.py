@@ -34,7 +34,7 @@ from tests.test_fastapi_server import MockStorage
 
 import sys
 from pathlib import Path
-agent_repo = Path("d:/Projects/AISH/InsiEDR")
+agent_repo = Path("d:/Projects/AISH/InsiEDR-agent")
 if str(agent_repo) not in sys.path:
     sys.path.insert(0, str(agent_repo))
 

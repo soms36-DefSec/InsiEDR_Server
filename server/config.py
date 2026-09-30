@@ -210,7 +210,7 @@ class ServerConfig:
 
     @property
     def enable_model_pipeline(self) -> bool:
-        return self._env_bool("INSIEDR_ENABLE_MODEL_PIPELINE", True)
+        return self._env_bool("INSIEDR_ENABLE_MODEL_PIPELINE", False)
 
     @property
     def model_isolation_forest_path(self) -> str:
@@ -235,6 +235,9 @@ class ServerConfig:
         candidate = os.path.join(base, "latest_data", "models")
         if os.path.isdir(candidate):
             return candidate
+        candidate2 = os.path.join(base, "model", "latest_data", "models")
+        if os.path.isdir(candidate2):
+            return candidate2
         # Fallback: if pointed at old-style layout where models/ sits at the root
         return os.path.join(base, "models")
 

@@ -137,6 +137,73 @@ class HybridStorage(BaseStorage):
     def get_pc_status(self, seconds_since_online: int = 300) -> Dict[str, Any]:
         return self.fleet.get_pc_status(seconds_since_online=seconds_since_online)
 
+    def get_agent(self, agent_id: str) -> Dict[str, Any] | None:
+        return self.fleet.get_agent(agent_id)
+
+    def upsert_agent_heartbeat(
+        self,
+        agent_id: str,
+        hostname: str,
+        ip_address: str | None = None,
+        agent_version: str | None = None,
+        status: str = "active",
+        metrics: dict[str, Any] | None = None,
+        config_version: str | None = None,
+    ) -> None:
+        self.fleet.upsert_agent_heartbeat(
+            agent_id=agent_id,
+            hostname=hostname,
+            ip_address=ip_address,
+            agent_version=agent_version,
+            status=status,
+            metrics=metrics,
+            config_version=config_version,
+        )
+
+    def queue_agent_task(
+        self,
+        agent_id: str,
+        command: str,
+        params: dict[str, Any] | None = None,
+        signature: str | None = None,
+        task_id: str | None = None,
+    ) -> str:
+        return self.fleet.queue_task(
+            agent_id=agent_id,
+            command=command,
+            params=params,
+            signature=signature,
+            task_id=task_id,
+        )
+
+    def get_pending_agent_tasks(self, agent_id: str) -> List[Dict[str, Any]]:
+        return self.fleet.get_pending_tasks(agent_id)
+
+    def mark_tasks_dispatched(self, task_ids: List[str]) -> None:
+        self.fleet.mark_tasks_dispatched(task_ids)
+
+    def update_agent_task_result(
+        self,
+        agent_id: str,
+        task_id: str,
+        status: str,
+        exit_code: int,
+        message: str,
+        completed_at: str | None = None,
+    ) -> bool:
+        return self.fleet.update_task_result(
+            agent_id=agent_id,
+            task_id=task_id,
+            status=status,
+            exit_code=exit_code,
+            message=message,
+            completed_at=completed_at,
+        )
+
+    def list_agent_tasks(self, agent_id: str, limit: int = 50, offset: int = 0) -> List[Dict[str, Any]]:
+        return self.fleet.list_agent_tasks(agent_id=agent_id, limit=limit, offset=offset)
+
+
     # --------------------------------------------------------------------------
     # Telemetry & Logs
     # --------------------------------------------------------------------------
@@ -153,8 +220,12 @@ class HybridStorage(BaseStorage):
     def list_daily_feature_vectors(self, username: str | None, hostname: str | None, limit: int = 16) -> List[Dict[str, Any]]:
         return self.telemetry.list_daily_feature_vectors(username=username, hostname=hostname, limit=limit)
 
+    def list_normalized_features(self, limit: int = 1000, offset: int = 0, **filters) -> List[Dict[str, Any]]:
+        return self.pg.list_normalized_features(limit=limit, offset=offset, **filters)
+
     def get_user_collectors(self, username: str) -> List[Dict[str, Any]]:
         return self.pg.get_user_collectors(username)
+
 
     # --------------------------------------------------------------------------
     # Threat Intelligence, Models & Baselines

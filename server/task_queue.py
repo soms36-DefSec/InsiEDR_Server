@@ -482,7 +482,6 @@ def start_worker(storage, app) -> TaskWorker:
       - PgTaskQueue (PostgreSQL) is used as a fallback when Redis is not available.
     """
     from server.config import config
-    from server.model_bridge import bridge as model_bridge
     from server.utils.webhook import _send_webhook
 
     # --- Select queue backend ---
@@ -504,22 +503,11 @@ def start_worker(storage, app) -> TaskWorker:
         queue = PgTaskQueue(storage)
         log.info("start_worker: using PgTaskQueue (no REDIS_URL configured)")
 
-    # ---- Handler: ML inference pipeline ----
-    def handle_ml_inference(payload: dict[str, Any]) -> None:
-        storage_instance = storage
-        if storage_instance is None and hasattr(app, "state"):
-            storage_instance = getattr(app.state, "storage", None)
-        if storage_instance is None and hasattr(app, "extensions"):
-            storage_instance = app.extensions.get("insiedr_storage")
-        if storage_instance:
-            model_bridge.process_payload(storage_instance, payload)
-
     # ---- Handler: Webhook alert ----
     def handle_webhook_alert(payload: dict[str, Any]) -> None:
         _send_webhook(payload)
 
     worker = TaskWorker(queue)
-    worker.register("ml_inference", handle_ml_inference)
     worker.register("webhook_alert", handle_webhook_alert)
     worker.start()
 

@@ -38,7 +38,9 @@ full_repo_dump.txt
 reports/
 .dist/
 dist/
+!server/dashboard/dist/
 build/
+deploy/
 
 # Logs
 *.log

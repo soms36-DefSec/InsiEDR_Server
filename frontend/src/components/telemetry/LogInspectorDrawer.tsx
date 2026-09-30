@@ -104,10 +104,10 @@ export const LogInspectorDrawer: React.FC<LogInspectorDrawerProps> = ({ log, onC
       <div className="flex items-center gap-2 border-b border-slate-200 pb-2">
         <button
           onClick={() => setActiveTab('structured')}
-          className={`px-3 py-1.5 rounded-md text-xs font-semibold cursor-pointer transition-colors flex items-center gap-1.5 ${
+          className={`px-3 py-1.5 rounded-md text-xs transition-colors cursor-pointer flex items-center gap-1.5 ${
             activeTab === 'structured'
-              ? 'bg-slate-900 text-white shadow-xs'
-              : 'text-slate-600 hover:bg-slate-100 hover:text-slate-900'
+              ? 'bg-blue-50 text-blue-700 font-medium border border-blue-200'
+              : 'text-slate-600 hover:bg-slate-100 hover:text-slate-900 border border-transparent font-normal'
           }`}
         >
           <Terminal className="w-3.5 h-3.5" />
@@ -115,10 +115,10 @@ export const LogInspectorDrawer: React.FC<LogInspectorDrawerProps> = ({ log, onC
         </button>
         <button
           onClick={() => setActiveTab('raw')}
-          className={`px-3 py-1.5 rounded-md text-xs font-semibold cursor-pointer transition-colors flex items-center gap-1.5 ${
+          className={`px-3 py-1.5 rounded-md text-xs transition-colors cursor-pointer flex items-center gap-1.5 ${
             activeTab === 'raw'
-              ? 'bg-slate-900 text-white shadow-xs'
-              : 'text-slate-600 hover:bg-slate-100 hover:text-slate-900'
+              ? 'bg-blue-50 text-blue-700 font-medium border border-blue-200'
+              : 'text-slate-600 hover:bg-slate-100 hover:text-slate-900 border border-transparent font-normal'
           }`}
         >
           <FileCode className="w-3.5 h-3.5" />

@@ -21,6 +21,7 @@ import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import type { PluginProps } from '../registry';
 import { VirtualizedLogTable } from '../../components/telemetry/VirtualizedLogTable';
 import { LogInspectorDrawer } from '../../components/telemetry/LogInspectorDrawer';
+import { ExportTrainingDatasetModal } from '../../components/telemetry/ExportTrainingDatasetModal';
 import { Button } from '../../components/ui/Button';
 import type { TelemetryLog } from '../../types/telemetry';
 import { fetchTelemetry, exportTelemetryCSV, exportTelemetryJSON, triggerServerExport } from '../../services/api';
@@ -33,11 +34,13 @@ import {
   Clock,
   ShieldAlert,
   Activity,
+  FileSpreadsheet,
 } from 'lucide-react';
 
 export const TelemetryExplorerPlugin: React.FC<PluginProps> = ({ context }) => {
   const [logs, setLogs] = useState<TelemetryLog[]>(context.logs || []);
   const [selectedLog, setSelectedLog] = useState<TelemetryLog | null>(null);
+  const [showTrainingModal, setShowTrainingModal] = useState<boolean>(false);
 
   // Filters State
   const [searchTerm, setSearchTerm] = useState('');
@@ -147,9 +150,9 @@ export const TelemetryExplorerPlugin: React.FC<PluginProps> = ({ context }) => {
     timeRange !== 'all';
 
   return (
-    <div className="space-y-4">
+    <div className="space-y-6">
       {/* Comprehensive Filter Toolbar */}
-      <div className="bg-white border border-slate-200 rounded-lg p-4 shadow-xs space-y-3">
+      <div className="bg-white border border-slate-200 rounded-lg p-5 shadow-[0_1px_3px_rgba(0,0,0,0.06)] space-y-4">
         <div className="flex flex-wrap items-center justify-between gap-3">
           {/* Search bar */}
           <div className="relative flex-1 min-w-[240px] max-w-md">
@@ -159,7 +162,7 @@ export const TelemetryExplorerPlugin: React.FC<PluginProps> = ({ context }) => {
               placeholder="Search user, hostname, IP, or payload attribute..."
               value={searchTerm}
               onChange={(e) => setSearchTerm(e.target.value)}
-              className="w-full pl-8 pr-3 py-1.5 text-xs bg-slate-50 border border-slate-200 rounded-md outline-none focus:border-blue-500 focus:bg-white text-slate-900 transition-colors"
+              className="w-full pl-8 pr-8 h-[38px] text-xs bg-white border border-slate-200 rounded-md outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-500/20 text-slate-900 transition-colors shadow-2xs"
             />
             {searchTerm && (
               <button
@@ -174,13 +177,13 @@ export const TelemetryExplorerPlugin: React.FC<PluginProps> = ({ context }) => {
           {/* Quick Filter Selectors */}
           <div className="flex items-center gap-2 flex-wrap">
             {/* Collector Dropdown */}
-            <div className="flex items-center gap-1 bg-slate-50 border border-slate-200 rounded-md px-2.5 py-1 text-xs">
-              <Activity className="w-3 h-3 text-slate-400 shrink-0" />
+            <div className="flex items-center gap-1.5 bg-white border border-slate-200 rounded-md px-3 h-[38px] text-xs shadow-2xs">
+              <Activity className="w-3.5 h-3.5 text-slate-400 shrink-0" />
               <span className="text-slate-500 font-medium">Collector:</span>
               <select
                 value={activeCollector}
                 onChange={(e) => setActiveCollector(e.target.value)}
-                className="bg-transparent font-semibold text-slate-800 outline-none cursor-pointer"
+                className="bg-transparent font-medium text-slate-800 outline-none cursor-pointer"
               >
                 <option value="all">All Watchers</option>
                 <option value="logon">Logon Watcher</option>
@@ -192,13 +195,13 @@ export const TelemetryExplorerPlugin: React.FC<PluginProps> = ({ context }) => {
             </div>
 
             {/* Status Dropdown */}
-            <div className="flex items-center gap-1 bg-slate-50 border border-slate-200 rounded-md px-2.5 py-1 text-xs">
-              <ShieldAlert className="w-3 h-3 text-slate-400 shrink-0" />
+            <div className="flex items-center gap-1.5 bg-white border border-slate-200 rounded-md px-3 h-[38px] text-xs shadow-2xs">
+              <ShieldAlert className="w-3.5 h-3.5 text-slate-400 shrink-0" />
               <span className="text-slate-500 font-medium">Status:</span>
               <select
                 value={statusFilter}
                 onChange={(e) => setStatusFilter(e.target.value)}
-                className="bg-transparent font-semibold text-slate-800 outline-none cursor-pointer"
+                className="bg-transparent font-medium text-slate-800 outline-none cursor-pointer"
               >
                 <option value="all">All Statuses</option>
                 <option value="success">Success / Normal</option>
@@ -208,13 +211,13 @@ export const TelemetryExplorerPlugin: React.FC<PluginProps> = ({ context }) => {
             </div>
 
             {/* Time Window Dropdown */}
-            <div className="flex items-center gap-1 bg-slate-50 border border-slate-200 rounded-md px-2.5 py-1 text-xs">
-              <Clock className="w-3 h-3 text-slate-400 shrink-0" />
+            <div className="flex items-center gap-1.5 bg-white border border-slate-200 rounded-md px-3 h-[38px] text-xs shadow-2xs">
+              <Clock className="w-3.5 h-3.5 text-slate-400 shrink-0" />
               <span className="text-slate-500 font-medium">Time:</span>
               <select
                 value={timeRange}
                 onChange={(e) => setTimeRange(e.target.value)}
-                className="bg-transparent font-semibold text-slate-800 outline-none cursor-pointer"
+                className="bg-transparent font-medium text-slate-800 outline-none cursor-pointer"
               >
                 <option value="all">All Recorded Time</option>
                 <option value="15m">Last 15 Minutes</option>
@@ -231,7 +234,7 @@ export const TelemetryExplorerPlugin: React.FC<PluginProps> = ({ context }) => {
               variant="secondary"
               size="sm"
               onClick={() => exportTelemetryCSV(filteredLogs)}
-              icon={<Download className="w-3.5 h-3.5 text-slate-600" />}
+              icon={<Download className="w-3.5 h-3.5" />}
               title="Export filtered logs currently loaded to CSV"
             >
               CSV
@@ -240,7 +243,7 @@ export const TelemetryExplorerPlugin: React.FC<PluginProps> = ({ context }) => {
               variant="secondary"
               size="sm"
               onClick={() => exportTelemetryJSON(filteredLogs)}
-              icon={<Download className="w-3.5 h-3.5 text-slate-600" />}
+              icon={<Download className="w-3.5 h-3.5" />}
               title="Export filtered logs currently loaded to JSON"
             >
               JSON
@@ -249,11 +252,19 @@ export const TelemetryExplorerPlugin: React.FC<PluginProps> = ({ context }) => {
               variant="primary"
               size="sm"
               onClick={() => triggerServerExport('logs', 'csv', { collector: activeCollector })}
-              icon={<Download className="w-3.5 h-3.5 text-white" />}
+              icon={<Download className="w-3.5 h-3.5" />}
               title="Stream full server telemetry dataset (CSV)"
-              className="bg-blue-600 hover:bg-blue-500 text-white font-medium"
             >
               Stream All
+            </Button>
+            <Button
+              variant="secondary"
+              size="sm"
+              onClick={() => setShowTrainingModal(true)}
+              icon={<FileSpreadsheet className="w-3.5 h-3.5 text-blue-600" />}
+              title="Export User, Parameters, and Raw Logs over N days for ML training"
+            >
+              ML Dataset
             </Button>
             <Button
               variant="secondary"
@@ -354,6 +365,14 @@ export const TelemetryExplorerPlugin: React.FC<PluginProps> = ({ context }) => {
       <LogInspectorDrawer
         log={selectedLog}
         onClose={() => setSelectedLog(null)}
+      />
+
+      {/* ML Training Dataset Export Modal */}
+      <ExportTrainingDatasetModal
+        isOpen={showTrainingModal}
+        onClose={() => setShowTrainingModal(false)}
+        availableUsers={context.summary?.users || []}
+        defaultUsername={searchTerm.trim() || undefined}
       />
     </div>
   );

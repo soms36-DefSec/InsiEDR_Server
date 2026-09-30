@@ -490,6 +490,80 @@ class PostgresStorage(BaseStorage):
                 )
                 return self._rows_to_dicts(cursor)
 
+    @property
+    def fleet(self):
+        if not hasattr(self, "_fleet_repo") or self._fleet_repo is None:
+            from server.storage.repositories.fleet_repo import FleetRepository
+            self._fleet_repo = FleetRepository(self)
+        return self._fleet_repo
+
+    def get_agent(self, agent_id: str) -> dict[str, Any] | None:
+        return self.fleet.get_agent(agent_id)
+
+    def upsert_agent_heartbeat(
+        self,
+        agent_id: str,
+        hostname: str,
+        ip_address: str | None = None,
+        agent_version: str | None = None,
+        status: str = "active",
+        metrics: dict[str, Any] | None = None,
+        config_version: str | None = None,
+    ) -> None:
+        self.fleet.upsert_agent_heartbeat(
+            agent_id=agent_id,
+            hostname=hostname,
+            ip_address=ip_address,
+            agent_version=agent_version,
+            status=status,
+            metrics=metrics,
+            config_version=config_version,
+        )
+
+    def queue_agent_task(
+        self,
+        agent_id: str,
+        command: str,
+        params: dict[str, Any] | None = None,
+        signature: str | None = None,
+        task_id: str | None = None,
+    ) -> str:
+        return self.fleet.queue_task(
+            agent_id=agent_id,
+            command=command,
+            params=params,
+            signature=signature,
+            task_id=task_id,
+        )
+
+    def get_pending_agent_tasks(self, agent_id: str) -> list[dict[str, Any]]:
+        return self.fleet.get_pending_tasks(agent_id)
+
+    def mark_tasks_dispatched(self, task_ids: list[str]) -> None:
+        self.fleet.mark_tasks_dispatched(task_ids)
+
+    def update_agent_task_result(
+        self,
+        agent_id: str,
+        task_id: str,
+        status: str,
+        exit_code: int,
+        message: str,
+        completed_at: str | None = None,
+    ) -> bool:
+        return self.fleet.update_task_result(
+            agent_id=agent_id,
+            task_id=task_id,
+            status=status,
+            exit_code=exit_code,
+            message=message,
+            completed_at=completed_at,
+        )
+
+    def list_agent_tasks(self, agent_id: str, limit: int = 50, offset: int = 0) -> list[dict[str, Any]]:
+        return self.fleet.list_agent_tasks(agent_id=agent_id, limit=limit, offset=offset)
+
+
     def list_logs(
         self,
         limit: int = 100,
@@ -710,15 +784,89 @@ class PostgresStorage(BaseStorage):
                         elif text is not None:
                             features[name] = text
                         elif json_value is not None:
-                            features[name] = json_value if isinstance(json_value, dict) else json.loads(json_value)
+                            if isinstance(json_value, (dict, list)):
+                                features[name] = json_value
+                            elif isinstance(json_value, str):
+                                try:
+                                    features[name] = json.loads(json_value)
+                                except Exception:
+                                    features[name] = json_value
+                            else:
+                                features[name] = json_value
                         else:
                             features[name] = None
+
                     return features
                 except Exception:
                     conn.rollback()
                     return {}
 
+    def list_normalized_features(
+        self,
+        limit: int = 1000,
+        offset: int = 0,
+        agent_id: str | None = None,
+        username: str | None = None,
+        collector: str | None = None,
+        feature_name: str | None = None,
+        start_time: str | None = None,
+        end_time: str | None = None,
+    ) -> list[dict[str, Any]]:
+        with self.connection() as conn:
+            with closing(conn.cursor()) as cursor:
+                try:
+                    where = []
+                    params: list[Any] = []
+                    if agent_id:
+                        where.append("agent_id = %s")
+                        params.append(agent_id)
+                    if username:
+                        where.append("username = %s")
+                        params.append(username)
+                    if collector:
+                        where.append("collector = %s")
+                        params.append(collector)
+                    if feature_name:
+                        where.append("feature_name = %s")
+                        params.append(feature_name)
+                    if start_time:
+                        where.append("created_at >= %s")
+                        params.append(start_time)
+                    if end_time:
+                        where.append("created_at <= %s")
+                        params.append(end_time)
+
+                    where_sql = "WHERE " + " AND ".join(where) if where else ""
+                    cursor.execute(
+                        f"""
+                        SELECT id, payload_id, agent_id, username, hostname, collector,
+                               feature_name, feature_value_numeric, feature_value_text, feature_value_json,
+                               feature_timestamp, source_quality, created_at
+                        FROM normalized_features
+                        {where_sql}
+                        ORDER BY created_at DESC
+                        LIMIT %s OFFSET %s
+                        """,
+                        tuple(params + [limit, offset]),
+                    )
+                    rows = self._rows_to_dicts(cursor)
+                    for r in rows:
+                        js = r.get("feature_value_json")
+                        if js is not None:
+                            if isinstance(js, (dict, list)):
+                                r["feature_value_json"] = js
+                            elif isinstance(js, str):
+                                try:
+                                    r["feature_value_json"] = json.loads(js)
+                                except Exception:
+                                    pass
+                    return rows
+                except Exception:
+                    conn.rollback()
+                    return []
+
     def list_daily_feature_vectors(self, username: str | None, hostname: str | None, limit: int = 16) -> list[dict[str, Any]]:
+
         with self.connection() as conn:
             with closing(conn.cursor()) as cursor:
                 try:
@@ -754,9 +902,18 @@ class PostgresStorage(BaseStorage):
                         elif text is not None:
                             grouped[day][name] = text
                         elif json_value is not None:
-                            grouped[day][name] = json_value if isinstance(json_value, dict) else json.loads(json_value)
+                            if isinstance(json_value, (dict, list)):
+                                grouped[day][name] = json_value
+                            elif isinstance(json_value, str):
+                                try:
+                                    grouped[day][name] = json.loads(json_value)
+                                except Exception:
+                                    grouped[day][name] = json_value
+                            else:
+                                grouped[day][name] = json_value
                         else:
                             grouped[day][name] = None
+
                     days = sorted(grouped.keys())[-limit:]
                     return [{"date": day, "features": grouped[day]} for day in days]
                 except Exception:

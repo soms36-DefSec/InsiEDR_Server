@@ -96,6 +96,59 @@ class MockStorage:
     def get_pc_status(self, seconds_since_online=300):
         return {"online_count": 2, "offline_count": 0, "total_count": 2}
 
+    def list_normalized_features(self, limit=100, offset=0, **kwargs):
+        return [
+            {
+                "username": "alice",
+                "agent_id": "agent-01",
+                "collector": "keystroke-collector",
+                "feature_name": "mean_flight_time_ms",
+                "feature_value": 110.5,
+                "window_end": "2026-09-08T10:00:00Z",
+                "features_json": {"mean_flight_time_ms": 110.5, "typing_speed_cpm": 320.0},
+            },
+            {
+                "username": "alice",
+                "agent_id": "agent-01",
+                "collector": "file-collector",
+                "feature_name": "files_accessed",
+                "feature_value": 15.0,
+                "window_end": "2026-09-08T10:00:00Z",
+                "features_json": {"files_accessed": 15.0},
+            },
+        ]
+
+    def list_collector_results(self, limit=100, offset=0, collector=None, username=None):
+        return [
+            {
+                "payload_id": "payload-ks-01",
+                "agent_id": "agent-01",
+                "hostname": "DESKTOP-SEC01",
+                "collector": "keystroke-collector",
+                "collector_collected_at": "2026-09-08T10:00:00Z",
+                "received_at": "2026-09-08T10:00:01Z",
+                "username": "alice",
+                "status": "success",
+                "payload_json": {
+                    "mean_flight_time_ms": 120.5,
+                    "std_flight_time_ms": 15.2,
+                    "mean_dwell_time_ms": 65.4,
+                    "std_dwell_time_ms": 8.1,
+                    "typing_speed_cpm": 280.0,
+                    "backspace_ratio": 0.04,
+                    "keystroke_timings": [[65.4, 120.5], [70.1, 115.2]],
+                },
+                "features_json": {
+                    "mean_flight_time_ms": 120.5,
+                    "std_flight_time_ms": 15.2,
+                    "mean_dwell_time_ms": 65.4,
+                    "std_dwell_time_ms": 8.1,
+                    "typing_speed_cpm": 280.0,
+                    "backspace_ratio": 0.04,
+                },
+            }
+        ]
+
 
 @pytest.fixture
 def mock_storage():
@@ -156,16 +209,16 @@ def test_dual_route_agents(client):
     assert len(r1.json()["agents"]) == 2
 
 
-def test_dual_route_anomalies_and_threats(client):
-    """Verify /api/anomalies and /api/v1/threats aliases work."""
-    r_anom = client.get("/api/anomalies")
-    r_v1 = client.get("/api/v1/anomalies")
-    r_threats = client.get("/api/v1/threats")
-    assert r_anom.status_code == 200
+def test_dashboard_summary_and_stats(client):
+    """Verify /api/dashboard-summary and /api/stats work for fleet telemetry."""
+    r_summary = client.get("/api/dashboard-summary")
+    r_v1 = client.get("/api/v1/dashboard-summary")
+    assert r_summary.status_code == 200
     assert r_v1.status_code == 200
-    assert r_threats.status_code == 200
-    assert r_anom.json()["ok"] is True
-    assert len(r_threats.json()["risk_events"]) == 1
+    data = r_summary.json()
+    assert data["ok"] is True
+    assert len(data["agents"]) == 2
+    assert "risk_counts" in data
 
 
 # ------------------------------------------------------------------------------
@@ -383,3 +436,115 @@ def test_extension_based_exports(client):
     assert resp_threats.status_code == 200
     assert "text/csv" in resp_threats.headers.get("content-type", "")
     assert "id,created_at,payload_id" in resp_threats.text
+
+
+def test_training_dataset_export_csv(client):
+    """Verify ML training dataset export in streaming CSV format."""
+    resp = client.get("/api/v1/export/training-dataset.csv?days=14&username=alice")
+    assert resp.status_code == 200
+    assert "text/csv" in resp.headers.get("content-type", "")
+    content = resp.text
+    assert "user,collected_at,parameters,raw_logs,agent_id,hostname,payload_id" in content
+    # Verify user row exists
+    assert "alice" in content
+    # Verify parameters JSON is present
+    assert "{" in content
+
+
+def test_training_dataset_export_excel(client):
+    """Verify ML training dataset export in Excel spreadsheet (.xlsx) format."""
+    import io
+    import openpyxl
+
+    resp = client.get("/api/v1/export/training-dataset.xlsx?days=30&username=alice")
+    assert resp.status_code == 200
+    assert "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" in resp.headers.get("content-type", "")
+    assert len(resp.content) > 1000
+
+    # Parse in-memory with openpyxl to ensure sheet structure and integrity
+    wb = openpyxl.load_workbook(io.BytesIO(resp.content))
+    assert "Dataset_Overview" in wb.sheetnames
+    assert "Tabular_Feature_Matrix" in wb.sheetnames
+    assert "Dataset_Metadata" in wb.sheetnames
+
+    overview_sheet = wb["Dataset_Overview"]
+    headers = [cell.value for cell in overview_sheet[1]]
+    assert "User" in headers
+    assert "Parameters (Model Features)" in headers
+    assert "Raw Logs" in headers
+
+
+def test_training_dataset_export_ndjson(client):
+    """Verify ML training dataset export in NDJSON format."""
+    resp = client.get("/api/v1/export/training-dataset.json?days=7")
+    assert resp.status_code == 200
+    assert "application/x-ndjson" in resp.headers.get("content-type", "")
+    lines = resp.text.strip().splitlines()
+    assert len(lines) > 0
+    first_record = json.loads(lines[0])
+    assert "user" in first_record
+    assert "parameters" in first_record
+    assert "raw_logs" in first_record
+
+
+def test_features_export_csv(client):
+    """Verify raw and normalized features export in streaming CSV format."""
+    resp = client.get("/api/v1/export/features?format=csv")
+    assert resp.status_code == 200
+    assert "text/csv" in resp.headers.get("content-type", "")
+    content = resp.text
+    assert "id,payload_id,collected_at,agent_id,username,hostname,collector,feature_name,value,source_quality" in content
+    assert "alice" in content
+    assert "keystroke-collector" in content
+
+
+def test_features_export_excel(client):
+    """Verify normalized features export in Excel spreadsheet (.xlsx) format."""
+    import io
+    import openpyxl
+
+    resp = client.get("/api/v1/export/features.xlsx")
+    assert resp.status_code == 200
+    assert "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" in resp.headers.get("content-type", "")
+    assert len(resp.content) > 1000
+
+    wb = openpyxl.load_workbook(io.BytesIO(resp.content))
+    assert "Normalized_Features" in wb.sheetnames
+    sheet = wb["Normalized_Features"]
+    headers = [cell.value for cell in sheet[1]]
+    assert "Username" in headers
+    assert "Collector" in headers
+    assert "Feature Name" in headers
+    assert "Numeric Value" in headers
+
+
+def test_keystrokes_export_csv(client):
+    """Verify keystroke biometric features export in streaming CSV format."""
+    resp = client.get("/api/v1/export/keystrokes.csv")
+    assert resp.status_code == 200
+    assert "text/csv" in resp.headers.get("content-type", "")
+    content = resp.text
+    assert "username,hostname,agent_id,collected_at,mean_flight_time_ms" in content
+    assert "120.5" in content
+    assert "typing_speed_cpm" in content
+
+
+def test_keystrokes_export_excel(client):
+    """Verify keystroke dynamics export in Excel spreadsheet (.xlsx) format."""
+    import io
+    import openpyxl
+
+    resp = client.get("/api/v1/export/keystrokes?format=xlsx")
+    assert resp.status_code == 200
+    assert "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" in resp.headers.get("content-type", "")
+    assert len(resp.content) > 1000
+
+    wb = openpyxl.load_workbook(io.BytesIO(resp.content))
+    assert "Keystroke_Dynamics" in wb.sheetnames
+    kd_sheet = wb["Keystroke_Dynamics"]
+    headers = [cell.value for cell in kd_sheet[1]]
+    assert "Username" in headers
+    assert "Mean Flight (ms)" in headers
+    assert "Mean Dwell (ms)" in headers
+    assert "Typing Speed (CPM)" in headers
+

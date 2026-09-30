@@ -88,9 +88,9 @@ export const VirtualizedLogTable: React.FC<VirtualizedLogTableProps> = ({
   }
 
   return (
-    <div className="border border-slate-200 rounded-lg overflow-hidden bg-white shadow-xs">
+    <div className="border border-slate-200 rounded-lg overflow-hidden bg-white shadow-[0_1px_3px_rgba(0,0,0,0.06)]">
       {/* Fixed Header */}
-      <div className="bg-slate-50/80 border-b border-slate-200 grid grid-cols-12 px-4 py-2.5 text-xs font-semibold text-slate-600 select-none">
+      <div className="bg-slate-50/80 border-b border-slate-200 grid grid-cols-12 px-6 py-3 text-xs font-medium text-slate-500 select-none">
         <div className="col-span-2">Timestamp</div>
         <div className="col-span-2">Hostname</div>
         <div className="col-span-2">User</div>
@@ -124,7 +124,7 @@ export const VirtualizedLogTable: React.FC<VirtualizedLogTableProps> = ({
                 <div
                   key={log.id || actualIndex}
                   onClick={() => onSelectLog(log)}
-                  className="grid grid-cols-12 px-4 items-center text-xs border-b border-slate-100 hover:bg-slate-50/90 transition-colors cursor-pointer group"
+                  className="grid grid-cols-12 px-6 items-center text-xs border-b border-slate-100 hover:bg-slate-50 transition-colors cursor-pointer group"
                   style={{ height: `${ROW_HEIGHT}px` }}
                 >
                   {/* Timestamp */}
@@ -133,12 +133,12 @@ export const VirtualizedLogTable: React.FC<VirtualizedLogTableProps> = ({
                   </div>
 
                   {/* Hostname */}
-                  <div className="col-span-2 font-mono font-medium text-slate-900 truncate">
+                  <div className="col-span-2 font-mono text-slate-600 truncate">
                     {log.hostname}
                   </div>
 
                   {/* Username */}
-                  <div className="col-span-2 font-medium text-slate-800 truncate">
+                  <div className="col-span-2 font-medium text-slate-900 truncate">
                     {log.username}
                   </div>
 

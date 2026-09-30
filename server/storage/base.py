@@ -47,6 +47,21 @@ class BaseStorage:
     def list_daily_feature_vectors(self, username: str | None, hostname: str | None, limit: int = 16) -> list[dict[str, Any]]:
         raise NotImplementedError()
 
+    def list_normalized_features(
+        self,
+        limit: int = 1000,
+        offset: int = 0,
+        agent_id: str | None = None,
+        username: str | None = None,
+        collector: str | None = None,
+        feature_name: str | None = None,
+        start_time: str | None = None,
+        end_time: str | None = None,
+    ) -> list[dict[str, Any]]:
+        """Returns rows from normalized_features matching the specified filters."""
+        raise NotImplementedError()
+
+
     def save_model_output(self, output: dict[str, Any]) -> None:
         raise NotImplementedError()
 
@@ -71,3 +86,56 @@ class BaseStorage:
     def get_user_predictions(self, username: str) -> dict[str, Any] | None:
         """Returns model predictions (short-term and long-term) for a user"""
         raise NotImplementedError()
+
+    def upsert_agent_heartbeat(
+        self,
+        agent_id: str,
+        hostname: str,
+        ip_address: str | None = None,
+        agent_version: str | None = None,
+        status: str = "active",
+        metrics: dict[str, Any] | None = None,
+        config_version: str | None = None,
+    ) -> None:
+        """Upsert agent presence, status, and health metrics on heartbeat."""
+        raise NotImplementedError()
+
+    def queue_agent_task(
+        self,
+        agent_id: str,
+        command: str,
+        params: dict[str, Any] | None = None,
+        signature: str | None = None,
+        task_id: str | None = None,
+    ) -> str:
+        """Enqueue a remote command for the agent to execute on next heartbeat."""
+        raise NotImplementedError()
+
+    def get_pending_agent_tasks(self, agent_id: str) -> list[dict[str, Any]]:
+        """Fetch pending tasks queued for the specified agent."""
+        raise NotImplementedError()
+
+    def mark_tasks_dispatched(self, task_ids: list[str]) -> None:
+        """Mark tasks as dispatched to the agent."""
+        raise NotImplementedError()
+
+    def update_agent_task_result(
+        self,
+        agent_id: str,
+        task_id: str,
+        status: str,
+        exit_code: int,
+        message: str,
+        completed_at: str | None = None,
+    ) -> bool:
+        """Record the execution result returned by the agent."""
+        raise NotImplementedError()
+
+    def list_agent_tasks(self, agent_id: str, limit: int = 50, offset: int = 0) -> list[dict[str, Any]]:
+        """List tasks for an agent with execution status and timestamps."""
+        raise NotImplementedError()
+
+    def get_agent(self, agent_id: str) -> dict[str, Any] | None:
+        """Get agent details by ID."""
+        raise NotImplementedError()
+

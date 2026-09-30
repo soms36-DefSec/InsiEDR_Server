@@ -32,9 +32,9 @@ export const Card: React.FC<CardProps> = ({
   const hasHeader = title || action;
 
   return (
-    <div className={`bg-white border border-slate-200 rounded-lg shadow-xs overflow-hidden ${className}`}>
+    <div className={`bg-white border border-slate-200 rounded-lg shadow-[0_1px_3px_rgba(0,0,0,0.06)] overflow-hidden ${className}`}>
       {hasHeader && (
-        <div className="px-5 py-4 border-b border-slate-100 flex items-center justify-between gap-4">
+        <div className="px-6 py-4 border-b border-slate-200 flex items-center justify-between gap-4 bg-white">
           <div>
             {title && <h3 className="text-sm font-semibold text-slate-900 tracking-tight">{title}</h3>}
             {subtitle && <p className="text-xs text-slate-500 mt-0.5">{subtitle}</p>}
@@ -42,7 +42,7 @@ export const Card: React.FC<CardProps> = ({
           {action && <div className="flex items-center gap-2">{action}</div>}
         </div>
       )}
-      <div className={noPadding ? bodyClassName : `p-5 ${bodyClassName}`}>{children}</div>
+      <div className={noPadding ? bodyClassName : `p-6 ${bodyClassName}`}>{children}</div>
     </div>
   );
 };
