@@ -86,9 +86,7 @@ services:
       - SYSTEM_DEFAULT_PROFILE=${SYSTEM_DEFAULT_PROFILE:-DEFAULT}
       - ENABLE_CORROBORATION_GUARD=true
     volumes:
-      - ./heuristics:/app/heuristics
       - ./server:/app/server
-      - ./models:/app/models
       - ./data/dlq:/app/data/dlq
     deploy:
       replicas: 3
