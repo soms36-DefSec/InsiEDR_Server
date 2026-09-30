@@ -85,9 +85,6 @@ services:
     volumes:
       - ./server:/app/server
       - ./data/dlq:/app/data/dlq
-    deploy:
-      replicas: 3
-    # Nginx will route to these instances on port 5000 internally
 
   nginx:
     image: nginx:alpine
