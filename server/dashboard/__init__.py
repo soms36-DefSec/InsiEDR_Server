@@ -10,6 +10,22 @@ router = APIRouter(tags=["Frontend Dashboard"])
 bp = router  # Backward compatibility alias
 
 
+@router.get("/favicon.svg", include_in_schema=False)
+async def serve_favicon():
+    fav = DIST_DIR / "favicon.svg"
+    if fav.is_file():
+        return FileResponse(fav)
+    return HTMLResponse("", status_code=404)
+
+
+@router.get("/icons.svg", include_in_schema=False)
+async def serve_icons():
+    icons = DIST_DIR / "icons.svg"
+    if icons.is_file():
+        return FileResponse(icons)
+    return HTMLResponse("", status_code=404)
+
+
 @router.get("/dashboard", include_in_schema=False)
 @router.get("/dashboard/", include_in_schema=False)
 @router.get("/dashboard/{path:path}", include_in_schema=False)
