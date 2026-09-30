@@ -25,8 +25,8 @@ COPY . .
 # Expose the port the app runs on
 EXPOSE 5000
 
-# Container Healthcheck
-HEALTHCHECK --interval=30s --timeout=5s --start-period=15s --retries=3 \
+# Container Healthcheck (allowing sufficient time for DB migrations on cold start)
+HEALTHCHECK --interval=15s --timeout=10s --start-period=45s --retries=5 \
     CMD curl -f http://localhost:5000/api/health || exit 1
 
 # Run the app with uvicorn ASGI server

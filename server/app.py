@@ -41,7 +41,8 @@ def load_env():
                         val = parts[1].strip()
                         if (val.startswith('"') and val.endswith('"')) or (val.startswith("'") and val.endswith("'")):
                             val = val[1:-1]
-                        os.environ[key] = val
+                        if key not in os.environ:
+                            os.environ[key] = val
 
 load_env()
 
