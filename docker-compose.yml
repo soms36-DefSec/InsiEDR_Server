@@ -53,7 +53,7 @@ services:
       - clickhouse_logs:/var/log/clickhouse-server
       - ./server/storage/clickhouse_schema.sql:/docker-entrypoint-initdb.d/01_schema.sql:ro
     healthcheck:
-      test: ["CMD-SHELL", "wget --no-verbose --tries=1 --spider http://localhost:8123/ping || exit 1"]
+      test: ["CMD", "clickhouse-client", "--query", "SELECT 1"]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -62,12 +62,9 @@ services:
     build: .
     restart: always
     depends_on:
-      db:
-        condition: service_healthy
-      redis:
-        condition: service_healthy
-      clickhouse:
-        condition: service_healthy
+      - db
+      - redis
+      - clickhouse
     env_file:
       - .env
     environment:
