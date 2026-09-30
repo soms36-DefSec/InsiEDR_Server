@@ -299,13 +299,12 @@ def test_fastapi_hpke_telemetry_ingestion():
     envelope = agent_crypto.encrypt_payload(telemetry)
     headers = encrypted_payload_headers(envelope, agent_id="agent-hpke-prod", payload_id=payload_id)
 
-    with patch("server.api.ingest.model_bridge.process_payload"):
-        resp = client.post("/api/logs", content=json.dumps(envelope), headers=headers)
-        assert resp.status_code == 202
-        res_body = resp.json()
-        assert res_body["ok"] is True
-        assert res_body["payload_id"] == payload_id
-        assert res_body["status"] == "accepted"
+    resp = client.post("/api/logs", content=json.dumps(envelope), headers=headers)
+    assert resp.status_code == 202
+    res_body = resp.json()
+    assert res_body["ok"] is True
+    assert res_body["payload_id"] == payload_id
+    assert res_body["status"] == "accepted"
 
     # Verify storage was called with decrypted payload
     assert len(stored_payloads) == 1

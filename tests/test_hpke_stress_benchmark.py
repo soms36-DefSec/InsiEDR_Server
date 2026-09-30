@@ -166,17 +166,15 @@ def test_hpke_duplicate_payload_rejection():
     # 1. First submission succeeds
     env1 = agent_crypto.encrypt_payload(telemetry)
     h1 = encrypted_payload_headers(env1, agent_id="benchmark-agent", payload_id="duplicate-payload-01")
-    with patch("server.api.ingest.model_bridge.process_payload"):
-        r1 = client.post("/api/logs", content=json.dumps(env1), headers=h1)
-        assert r1.status_code == 202
+    r1 = client.post("/api/logs", content=json.dumps(env1), headers=h1)
+    assert r1.status_code == 202
 
     # 2. Second submission with different ephemeral ciphertext triggers duplicate collision detection
     env2 = agent_crypto.encrypt_payload(telemetry)  # Different ephemeral key & nonce
     h2 = encrypted_payload_headers(env2, agent_id="benchmark-agent", payload_id="duplicate-payload-01")
-    with patch("server.api.ingest.model_bridge.process_payload"):
-        r2 = client.post("/api/logs", content=json.dumps(env2), headers=h2)
-        assert r2.status_code == 400
-        assert "duplicate" in r2.text.lower()
+    r2 = client.post("/api/logs", content=json.dumps(env2), headers=h2)
+    assert r2.status_code == 400
+    assert "duplicate" in r2.text.lower()
 
 
 def test_hpke_replay_window_expiration():
