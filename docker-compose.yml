@@ -43,9 +43,6 @@ services:
       CLICKHOUSE_USER: ${CLICKHOUSE_USER:-default}
       CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD:-insiedr_ch_pass}
       CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT: 1
-    ports:
-      - "8123:8123"
-      - "9000:9000"
     volumes:
       - clickhouse_data:/var/lib/clickhouse
       - clickhouse_logs:/var/log/clickhouse-server
@@ -60,9 +57,12 @@ services:
     build: .
     restart: always
     depends_on:
-      - db
-      - redis
-      - clickhouse
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      clickhouse:
+        condition: service_healthy
     env_file:
       - .env
     environment:
@@ -81,7 +81,6 @@ services:
       - SYSTEM_DEFAULT_PROFILE=${SYSTEM_DEFAULT_PROFILE:-DEFAULT}
       - ENABLE_CORROBORATION_GUARD=true
     volumes:
-      - ./server:/app/server
       - ./data/dlq:/app/data/dlq
 
   nginx:
