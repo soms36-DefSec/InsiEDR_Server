@@ -147,3 +147,17 @@ def test_hybrid_storage_fallback_without_clickhouse():
     stats = hybrid.get_stats()
     assert stats["agents"] == 1
     assert stats["logs"] == 10
+
+
+def test_hybrid_storage_fallback_when_clickhouse_empty():
+    pg = DummyPGStorage()
+    ch = MagicMock()
+    ch.is_connected.return_value = True
+    ch.list_logs.return_value = []  # ClickHouse has no rows
+    ch.list_collector_results.return_value = []
+
+    hybrid = HybridStorage(postgres_storage=pg, clickhouse_storage=ch)
+
+    # When ClickHouse returns empty, it falls back to PG logs
+    logs = hybrid.list_logs(limit=10)
+    assert logs == [{"payload_id": "pg-log-1"}]

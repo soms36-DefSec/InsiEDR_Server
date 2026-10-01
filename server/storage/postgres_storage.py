@@ -268,6 +268,20 @@ class PostgresStorage(BaseStorage):
             return psycopg2.connect(self.dsn)
         apply_migrations_dir(get_conn, MIGRATIONS_DIR)
 
+        # Self-healing partition safeguard for PostgreSQL
+        if not self._is_sqlite and self.dsn:
+            try:
+                conn = get_conn()
+                try:
+                    with conn.cursor() as cur:
+                        cur.execute("CREATE TABLE IF NOT EXISTS raw_payloads_default PARTITION OF raw_payloads DEFAULT;")
+                        cur.execute("CREATE TABLE IF NOT EXISTS collector_results_default PARTITION OF collector_results DEFAULT;")
+                    conn.commit()
+                finally:
+                    conn.close()
+            except Exception as e:
+                logger.warning("Default partition verification note: %s", e)
+
     def _upsert_agent(self, cursor, decrypted_payload: dict[str, Any]) -> None:
         agent_id = decrypted_payload["agent_id"]
         hostname = decrypted_payload.get("hostname")
@@ -446,8 +460,20 @@ class PostgresStorage(BaseStorage):
                         else:
                             execute_batch(cursor, q, normalized_features_args)
                     conn.commit()
-                except Exception:
+                except Exception as exc:
                     conn.rollback()
+                    err_msg = str(exc).lower()
+                    if ("no partition" in err_msg or "partition" in err_msg) and not self._is_sqlite and self.dsn:
+                        try:
+                            with self.connection() as fix_conn:
+                                with closing(fix_conn.cursor()) as fix_cur:
+                                    fix_cur.execute("CREATE TABLE IF NOT EXISTS raw_payloads_default PARTITION OF raw_payloads DEFAULT;")
+                                    fix_cur.execute("CREATE TABLE IF NOT EXISTS collector_results_default PARTITION OF collector_results DEFAULT;")
+                                fix_conn.commit()
+                            # Retry this insert once after auto-creating the missing default partitions
+                            return self.store_raw_payload(envelope, decrypted_payload)
+                        except Exception:
+                            pass
                     raise
 
     def get_payload(self, payload_id: str) -> dict[str, Any] | None:

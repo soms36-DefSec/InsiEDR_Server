@@ -139,7 +139,21 @@ class ClickHouseStorage:
                 if self.ca_cert:
                     kwargs["ca_cert"] = self.ca_cert
 
-            self._client = clickhouse_connect.get_client(**kwargs)
+            try:
+                self._client = clickhouse_connect.get_client(**kwargs)
+            except Exception as conn_err:
+                err_str = str(conn_err).lower()
+                if "does not exist" in err_str or "unknown database" in err_str or "database" in err_str:
+                    logger.info("ClickHouse database '%s' not found. Connecting via 'default' to bootstrap...", self.database)
+                    boot_kwargs = dict(kwargs)
+                    boot_kwargs["database"] = "default"
+                    boot_client = clickhouse_connect.get_client(**boot_kwargs)
+                    boot_client.command(f"CREATE DATABASE IF NOT EXISTS {self.database}")
+                    boot_client.close()
+                    self._client = clickhouse_connect.get_client(**kwargs)
+                else:
+                    raise conn_err
+
             self._client.command("SELECT 1")
             self._is_connected = True
             logger.info("Connected to ClickHouse database '%s' at %s:%s (secure=%s)",
@@ -163,8 +177,11 @@ class ClickHouseStorage:
     def ensure_schema(self) -> None:
         """Create ClickHouse database and telemetry tables if not already present."""
         if not self.is_connected():
-            return
+            self._init_connection()
+            if not self.is_connected():
+                return
         try:
+            self._client.command(f"CREATE DATABASE IF NOT EXISTS {self.database}")
             if SCHEMA_FILE.is_file():
                 sql_content = SCHEMA_FILE.read_text(encoding="utf-8")
                 # Split statements by semicolon
@@ -172,8 +189,8 @@ class ClickHouseStorage:
                 for stmt in statements:
                     if stmt.upper().startswith("USE "):
                         continue
-                    self._client.command(stmt)
-                logger.info("ClickHouse schema verified and up to date.")
+                    self._client.command(stmt, settings={"default_database": self.database})
+                logger.info("ClickHouse schema verified and up to date in '%s'.", self.database)
         except Exception as exc:
             logger.error("Failed ensuring ClickHouse schema: %s", exc)
 

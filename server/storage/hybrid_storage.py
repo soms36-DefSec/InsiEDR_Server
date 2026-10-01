@@ -123,6 +123,7 @@ class HybridStorage(BaseStorage):
             self.telemetry.store_payload(clean_envelope, clean_payload)
         except Exception as exc:
             logger.error("Failed storing telemetry payload: %s", exc)
+            raise
 
     def get_payload(self, payload_id: str) -> Optional[Dict[str, Any]]:
         return self.pg.get_payload(payload_id)
