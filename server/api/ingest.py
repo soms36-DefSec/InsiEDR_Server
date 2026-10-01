@@ -138,19 +138,24 @@ def validate_collector_results(payload: dict[str, Any]) -> None:
             raise ValidationError(f"summary.{key} mismatch")
 
 
-def _check_duplicate_policy(storage, envelope: dict[str, Any], payload: dict[str, Any]) -> None:
+def _check_duplicate_policy(storage, envelope: dict[str, Any], payload: dict[str, Any]) -> bool:
     get_payload = getattr(storage, "get_payload", None)
     if not callable(get_payload):
-        return
+        return False
     existing = get_payload(str(payload.get("payload_id")))
     if not existing:
-        return
+        return False
     existing_envelope = existing.get("encrypted_envelope_json") or {}
     if isinstance(existing_envelope, str):
         try:
             existing_envelope = json.loads(existing_envelope)
         except json.JSONDecodeError:
             existing_envelope = {}
+    # The persisted plaintext hash may describe the privacy-scrubbed payload.
+    # An exact, already authenticated encrypted envelope is the original retry;
+    # it must not be rejected because storage redacted a credential.
+    if existing_envelope and _hash_json(existing_envelope) == _hash_json(envelope):
+        return True
     existing_cipher_hash = existing.get("ciphertext_hash") or _hash_text(existing_envelope.get("ciphertext"))
     existing_decrypted_hash = existing.get("decrypted_payload_hash")
     new_cipher_hash = _hash_text(envelope.get("ciphertext"))
@@ -159,6 +164,7 @@ def _check_duplicate_policy(storage, envelope: dict[str, Any], payload: dict[str
         raise IngestError("duplicate payload_id with different ciphertext")
     if existing_decrypted_hash and existing_decrypted_hash != new_decrypted_hash:
         raise IngestError("duplicate payload_id with different decrypted payload")
+    return True
 
 
 async def process_encrypted_request(req) -> tuple[int, dict[str, Any]]:
@@ -276,7 +282,8 @@ async def process_encrypted_request(req) -> tuple[int, dict[str, Any]]:
         raise StorageUnavailableError("storage is not configured")
 
     try:
-        _check_duplicate_policy(storage, envelope, payload)
+        if _check_duplicate_policy(storage, envelope, payload):
+            return 202, {"ok": True, "payload_id": payload_id, "status": "accepted"}
         storage.store_raw_payload(envelope, payload)
 
         # Dispatch real-time agent status update to SSE stream

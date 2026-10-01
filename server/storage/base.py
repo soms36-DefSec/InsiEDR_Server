@@ -44,6 +44,14 @@ class BaseStorage:
     def get_feature_vector(self, payload_id: str) -> dict[str, Any]:
         raise NotImplementedError()
 
+    def get_latest_collector_states(self, agent_id: str) -> list[dict[str, Any]]:
+        """Latest observation per collector, retaining its own timestamp and status.
+
+        Absent collectors are not zero-valued observations. A collector payload is
+        a complete observation; missing fields within it remain unavailable.
+        """
+        raise NotImplementedError()
+
     def list_daily_feature_vectors(self, username: str | None, hostname: str | None, limit: int = 16) -> list[dict[str, Any]]:
         raise NotImplementedError()
 

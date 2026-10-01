@@ -237,6 +237,8 @@ class PostgresStorage(BaseStorage):
             return []
         rows = []
         for name, value in payload.items():
+            if value is None:
+                continue
             row = {
                 "payload_id": decrypted_payload.get("payload_id"),
                 "agent_id": decrypted_payload.get("agent_id"),
@@ -318,10 +320,11 @@ class PostgresStorage(BaseStorage):
             ),
         )
 
-    def store_raw_payload(self, envelope: dict[str, Any], decrypted_payload: dict[str, Any]) -> None:
+    def store_raw_payload(self, envelope: dict[str, Any], decrypted_payload: dict[str, Any]) -> bool:
+        """Commit telemetry atomically; return False for an already stored payload."""
         payload_id = decrypted_payload.get("payload_id")
         if not payload_id:
-            return
+            raise ValueError("payload_id is required")
             
         with self.connection() as conn:
             with closing(conn.cursor()) as cursor:
@@ -363,7 +366,7 @@ class PostgresStorage(BaseStorage):
                     if not cursor.fetchone():
                         # The payload was a duplicate, ignore it idempotently.
                         conn.commit()
-                        return
+                        return False
 
                     collector_results_args = []
                     risk_events_args = []
@@ -381,7 +384,7 @@ class PostgresStorage(BaseStorage):
                             collector_result.get("collected_at"),
                             collector_result.get("hostname"),
                             collector_result.get("status"),
-                            Json(payload) if config.store_plaintext_payloads and payload else None,
+                            Json(payload) if config.store_plaintext_payloads and payload is not None else None,
                             error.get("type") if isinstance(error, dict) else None,
                             error.get("message") if isinstance(error, dict) else None,
                             source_quality,
@@ -460,6 +463,7 @@ class PostgresStorage(BaseStorage):
                         else:
                             execute_batch(cursor, q, normalized_features_args)
                     conn.commit()
+                    return True
                 except Exception as exc:
                     conn.rollback()
                     err_msg = str(exc).lower()
@@ -499,6 +503,70 @@ class PostgresStorage(BaseStorage):
     def _rows_to_dicts(cursor) -> list[dict[str, Any]]:
         columns = [column[0] for column in cursor.description or []]
         return [dict(zip(columns, row)) for row in cursor.fetchall()]
+
+    def get_latest_collector_states(self, agent_id: str) -> list[dict[str, Any]]:
+        columns = """agent_id, collector, hostname, status, payload_json,
+                     collector_collected_at, payload_id, error_type, error_message,
+                     source_quality"""
+        # Timestamps belong to the observation, not its delivery time: an older
+        # offline replay must never replace a more recently collected state.
+        if self._is_sqlite:
+            query = f"""
+                SELECT {columns} FROM (
+                    SELECT *, ROW_NUMBER() OVER (
+                        PARTITION BY collector
+                        ORDER BY collector_collected_at DESC, payload_id DESC, id DESC
+                    ) AS state_rank
+                    FROM collector_results WHERE agent_id = %s
+                ) AS states WHERE state_rank = 1 ORDER BY collector
+            """
+        else:
+            query = f"""
+                SELECT DISTINCT ON (collector) {columns}
+                FROM collector_results WHERE agent_id = %s
+                ORDER BY collector, collector_collected_at DESC NULLS LAST,
+                         payload_id DESC, id DESC
+            """
+        with self.connection() as conn:
+            with closing(conn.cursor()) as cursor:
+                cursor.execute(query, (agent_id,))
+                states = self._rows_to_dicts(cursor)
+                # Plaintext payload retention is disabled by default. The
+                # already persisted normalized features still provide observed
+                # metrics without decrypting archived envelopes or inventing 0.
+                missing = {(state["payload_id"], state["collector"]): state
+                           for state in states if state["payload_json"] is None}
+                if missing:
+                    payload_ids = sorted({key[0] for key in missing})
+                    placeholders = ", ".join(["%s"] * len(payload_ids))
+                    cursor.execute(
+                        f"""SELECT payload_id, collector, feature_name,
+                                   feature_value_numeric, feature_value_text,
+                                   feature_value_json
+                            FROM normalized_features
+                            WHERE agent_id = %s AND payload_id IN ({placeholders})
+                            ORDER BY id""",
+                        tuple([agent_id] + payload_ids),
+                    )
+                    for payload_id, collector, name, numeric, text, json_value in cursor.fetchall():
+                        state = missing.get((payload_id, collector))
+                        if state is None:
+                            continue
+                        if numeric is not None:
+                            value = numeric
+                        elif text is not None:
+                            value = text
+                        elif json_value is not None:
+                            value = json.loads(json_value) if isinstance(json_value, str) else json_value
+                        else:
+                            continue
+                        if state["payload_json"] is None:
+                            state["payload_json"] = {}
+                        state["payload_json"][name] = value
+        for state in states:
+            if isinstance(state["payload_json"], str):
+                state["payload_json"] = json.loads(state["payload_json"])
+        return states
 
     def list_agents(self, limit: int = 100, offset: int = 0) -> list[dict[str, Any]]:
         with self.connection() as conn:

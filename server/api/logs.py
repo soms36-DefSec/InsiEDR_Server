@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import inspect
+from datetime import datetime, timezone
 from fastapi import APIRouter, Depends, Query, Request
 from fastapi.responses import JSONResponse
 
@@ -9,6 +10,38 @@ from server.api.deps import get_storage
 
 router = APIRouter(prefix="/api", tags=["Telemetry & Ingestion"])
 bp = router  # Backward compatibility alias
+
+
+@router.get("/collector-states/{agent_id}")
+@router.get("/v1/collector-states/{agent_id}")
+async def get_collector_states(
+    agent_id: str,
+    stale_after_seconds: int = Query(600, ge=1),
+    storage=Depends(get_storage),
+):
+    """Current observations across sparse payloads, with explicit freshness.
+
+    An omitted collector keeps its last observation; it is never synthesized as
+    zero. Timestamps describe collection time, and failures remain visible.
+    """
+    if storage is None:
+        return JSONResponse({"ok": False, "error": "storage is not configured", "states": []}, status_code=503)
+    states = storage.get_latest_collector_states(agent_id)
+    now = datetime.now(timezone.utc)
+    for state in states:
+        observed = state.get("collector_collected_at")
+        try:
+            if isinstance(observed, str):
+                observed = datetime.fromisoformat(observed.replace("Z", "+00:00"))
+            if observed.tzinfo is None:
+                observed = observed.replace(tzinfo=timezone.utc)
+            age = max(0.0, (now - observed).total_seconds())
+        except (AttributeError, TypeError, ValueError):
+            age = None
+        state["age_seconds"] = age
+        state["stale"] = age is None or age > stale_after_seconds
+    return {"ok": True, "agent_id": agent_id, "states": states,
+            "as_of": now, "stale_after_seconds": stale_after_seconds}
 
 
 @router.post("/logs")

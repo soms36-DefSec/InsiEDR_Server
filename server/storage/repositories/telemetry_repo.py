@@ -24,24 +24,27 @@ class TelemetryRepository:
         return self.ch is not None and getattr(self.ch, "is_connected", lambda: False)()
 
     def store_payload(self, envelope: Dict[str, Any], decrypted_payload: Dict[str, Any]) -> None:
-        """Store telemetry with dual-write resilience: ACID persistence in PostgreSQL + high-velocity OLAP in ClickHouse."""
-        pg_success = False
-        if self.pg:
-            try:
-                self.pg.store_raw_payload(envelope, decrypted_payload)
-                pg_success = True
-            except Exception as pg_err:
-                logger.error("PostgreSQL store_raw_payload failed: %s", pg_err)
-                if not self._has_ch():
-                    raise
+        """Require a durable PG commit before the caller can acknowledge telemetry.
+
+        ClickHouse's in-memory batch queue is an asynchronous analytics replica,
+        not sufficient evidence for an agent to discard its durable spool entry.
+        """
+        if self.pg is None:
+            raise RuntimeError("durable PostgreSQL telemetry storage is unavailable")
+        inserted = self.pg.store_raw_payload(envelope, decrypted_payload)
+        if inserted is False:
+            return  # A concurrent retry must not duplicate ClickHouse event rows.
 
         if self._has_ch():
             try:
                 self.ch.store_raw_payload(envelope, decrypted_payload)
             except Exception as ch_err:
                 logger.warning("ClickHouse store_raw_payload failed: %s", ch_err)
-                if not pg_success:
-                    raise
+
+    def get_latest_collector_states(self, agent_id: str) -> List[Dict[str, Any]]:
+        # PostgreSQL contains every acknowledged observation. ClickHouse may be
+        # behind or partially flushed; using it here could resurrect old state.
+        return self.pg.get_latest_collector_states(agent_id)
 
     def list_logs(self, limit: int = 100, offset: int = 0, **filters) -> List[Dict[str, Any]]:
         """Query raw payload logs. Tries ClickHouse first, falling back to PostgreSQL if empty or on error."""

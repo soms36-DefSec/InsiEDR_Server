@@ -304,6 +304,8 @@ class ClickHouseStorage:
             payload_data = cr.get("payload")
             if isinstance(payload_data, dict):
                 for feat_name, feat_val in payload_data.items():
+                    if feat_val is None:
+                        continue
                     feat_row = {
                         "id": str(uuid.uuid4()),
                         "payload_id": str(payload_id),
@@ -470,6 +472,36 @@ class ClickHouseStorage:
         except Exception as exc:
             logger.error("ClickHouse list_logs query failed: %s", exc)
             return []
+
+    def get_latest_collector_states(self, agent_id: str) -> List[Dict[str, Any]]:
+        """Select one whole observation, so nullable fields cannot mix snapshots."""
+        query = """
+            SELECT collector,
+                   tupleElement(state, 1) AS agent_id,
+                   tupleElement(state, 2) AS hostname,
+                   tupleElement(state, 3) AS status,
+                   tupleElement(state, 4) AS payload_json,
+                   tupleElement(state, 5) AS collector_collected_at,
+                   tupleElement(state, 6) AS payload_id,
+                   tupleElement(state, 7) AS error_type,
+                   tupleElement(state, 8) AS error_message,
+                   tupleElement(state, 9) AS source_quality
+            FROM (
+                SELECT collector,
+                       argMax(tuple(agent_id, hostname, status, payload_json,
+                                    collector_collected_at, payload_id, error_type,
+                                    error_message, source_quality),
+                              tuple(collector_collected_at, payload_id, id)) AS state
+                FROM collector_results WHERE agent_id = %(agent_id)s
+                GROUP BY collector
+            ) ORDER BY collector
+        """
+        result = self._query(query, parameters={"agent_id": agent_id})
+        states = [dict(zip(result.column_names, row)) for row in result.result_rows]
+        for state in states:
+            if isinstance(state["payload_json"], str):
+                state["payload_json"] = json.loads(state["payload_json"])
+        return states
 
     def list_collector_results(
         self,

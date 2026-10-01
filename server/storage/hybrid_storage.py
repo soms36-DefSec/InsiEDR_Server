@@ -107,7 +107,7 @@ class HybridStorage(BaseStorage):
         if ctx.is_dropped:
             logger.info("Payload '%s' was dropped before storage: %s",
                         decrypted_payload.get("payload_id"), ctx.drop_reason)
-            return
+            raise ValueError("telemetry was rejected by a storage interceptor")
 
         clean_envelope = ctx.envelope
         clean_payload = ctx.decrypted_payload
@@ -217,6 +217,9 @@ class HybridStorage(BaseStorage):
 
     def get_feature_vector(self, payload_id: str) -> Dict[str, Any]:
         return self.telemetry.get_feature_vector(payload_id)
+
+    def get_latest_collector_states(self, agent_id: str) -> List[Dict[str, Any]]:
+        return self.telemetry.get_latest_collector_states(agent_id)
 
     def list_daily_feature_vectors(self, username: str | None, hostname: str | None, limit: int = 16) -> List[Dict[str, Any]]:
         return self.telemetry.list_daily_feature_vectors(username=username, hostname=hostname, limit=limit)
