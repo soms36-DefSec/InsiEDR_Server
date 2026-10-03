@@ -509,6 +509,9 @@ class ClickHouseStorage:
         offset: int = 0,
         collector: str | None = None,
         username: str | None = None,
+        start_time: str | None = None,
+        end_time: str | None = None,
+        exact_collector: bool = False,
     ) -> List[Dict[str, Any]]:
         """Query collector observation history for dashboards and streaming export."""
         if not self.is_connected():
@@ -518,11 +521,21 @@ class ClickHouseStorage:
         params: Dict[str, Any] = {}
 
         if collector:
-            where_clauses.append("collector ILIKE %(collector)s")
-            params["collector"] = f"%{collector}%"
+            if exact_collector:
+                where_clauses.append("lower(collector) = lower(%(collector)s)")
+                params["collector"] = collector
+            else:
+                where_clauses.append("collector ILIKE %(collector)s")
+                params["collector"] = f"%{collector}%"
         if username:
             where_clauses.append("payload_id IN (SELECT payload_id FROM raw_payloads WHERE username ILIKE %(username)s)")
             params["username"] = f"%{username}%"
+        if start_time:
+            where_clauses.append("collector_collected_at >= %(start_time)s")
+            params["start_time"] = start_time
+        if end_time:
+            where_clauses.append("collector_collected_at <= %(end_time)s")
+            params["end_time"] = end_time
 
         where_sql = ("WHERE " + " AND ".join(where_clauses)) if where_clauses else ""
         query = f"""
@@ -555,6 +568,33 @@ class ClickHouseStorage:
             return results
         except Exception as exc:
             logger.error("ClickHouse list_collector_results failed: %s", exc)
+            return []
+
+    def get_distinct_collectors(self) -> List[str]:
+        default_collectors = [
+            "logon", "file", "process", "network", "device", "http",
+            "lsass_monitor", "registry", "keystroke-collector",
+            "decoy-monitor", "clipboard-monitor", "persistence_monitor",
+            "dns_monitor", "driver_monitor", "wmi_activity", "usn_monitor"
+        ]
+        if not self.is_connected():
+            return sorted(default_collectors)
+        try:
+            res = self._query("SELECT DISTINCT collector FROM collector_results WHERE collector != ''")
+            found = {str(r[0]).strip().lower() for r in res.result_rows if r[0]}
+            return sorted(list(set(default_collectors) | found))
+        except Exception as exc:
+            logger.warning("ClickHouse get_distinct_collectors failed: %s", exc)
+            return sorted(default_collectors)
+
+    def get_distinct_usernames(self) -> List[str]:
+        if not self.is_connected():
+            return []
+        try:
+            res = self._query("SELECT DISTINCT username FROM raw_payloads WHERE username != ''")
+            return sorted([str(r[0]).strip() for r in res.result_rows if r[0]])
+        except Exception as exc:
+            logger.warning("ClickHouse get_distinct_usernames failed: %s", exc)
             return []
 
     def list_risk_events(self, limit: int = 100, offset: int = 0) -> List[Dict[str, Any]]:

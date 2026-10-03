@@ -22,6 +22,7 @@ import type { PluginProps } from '../registry';
 import { VirtualizedLogTable } from '../../components/telemetry/VirtualizedLogTable';
 import { LogInspectorDrawer } from '../../components/telemetry/LogInspectorDrawer';
 import { ExportTrainingDatasetModal } from '../../components/telemetry/ExportTrainingDatasetModal';
+import { CollectorDatasetExportModal } from '../../components/telemetry/CollectorDatasetExportModal';
 import { Button } from '../../components/ui/Button';
 import type { TelemetryLog } from '../../types/telemetry';
 import { fetchTelemetry, exportTelemetryCSV, exportTelemetryJSON, triggerServerExport } from '../../services/api';
@@ -35,12 +36,14 @@ import {
   ShieldAlert,
   Activity,
   FileSpreadsheet,
+  Layers,
 } from 'lucide-react';
 
 export const TelemetryExplorerPlugin: React.FC<PluginProps> = ({ context }) => {
   const [logs, setLogs] = useState<TelemetryLog[]>(context.logs || []);
   const [selectedLog, setSelectedLog] = useState<TelemetryLog | null>(null);
   const [showTrainingModal, setShowTrainingModal] = useState<boolean>(false);
+  const [showCollectorExportModal, setShowCollectorExportModal] = useState<boolean>(false);
 
   // Filters State
   const [searchTerm, setSearchTerm] = useState('');
@@ -269,6 +272,15 @@ export const TelemetryExplorerPlugin: React.FC<PluginProps> = ({ context }) => {
             <Button
               variant="secondary"
               size="sm"
+              onClick={() => setShowCollectorExportModal(true)}
+              icon={<Layers className="w-3.5 h-3.5 text-indigo-600" />}
+              title="Export single collector dataset with unrolled feature columns"
+            >
+              Collector Dataset
+            </Button>
+            <Button
+              variant="secondary"
+              size="sm"
               onClick={() => loadLogs(0, false)}
               disabled={isLoading}
               icon={<RefreshCw className={`w-3.5 h-3.5 ${isLoading ? 'animate-spin' : ''}`} />}
@@ -372,6 +384,14 @@ export const TelemetryExplorerPlugin: React.FC<PluginProps> = ({ context }) => {
         isOpen={showTrainingModal}
         onClose={() => setShowTrainingModal(false)}
         availableUsers={context.summary?.users || []}
+        defaultUsername={searchTerm.trim() || undefined}
+      />
+
+      {/* Collector-Specific Dataset Export Modal */}
+      <CollectorDatasetExportModal
+        isOpen={showCollectorExportModal}
+        onClose={() => setShowCollectorExportModal(false)}
+        defaultCollector={activeCollector !== 'all' ? activeCollector : 'logon'}
         defaultUsername={searchTerm.trim() || undefined}
       />
     </div>

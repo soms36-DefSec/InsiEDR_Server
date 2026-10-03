@@ -230,6 +230,12 @@ class HybridStorage(BaseStorage):
     def get_user_collectors(self, username: str) -> List[Dict[str, Any]]:
         return self.pg.get_user_collectors(username)
 
+    def get_distinct_collectors(self) -> List[str]:
+        return getattr(self.telemetry, "get_distinct_collectors", lambda: [])()
+
+    def get_distinct_usernames(self) -> List[str]:
+        return getattr(self.telemetry, "get_distinct_usernames", lambda: [])()
+
 
     # --------------------------------------------------------------------------
     # Threat Intelligence, Models & Baselines

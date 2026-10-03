@@ -118,7 +118,7 @@ class MockStorage:
             },
         ]
 
-    def list_collector_results(self, limit=100, offset=0, collector=None, username=None):
+    def list_collector_results(self, limit=100, offset=0, collector=None, username=None, **kwargs):
         return [
             {
                 "payload_id": "payload-ks-01",
@@ -148,6 +148,12 @@ class MockStorage:
                 },
             }
         ]
+
+    def get_distinct_collectors(self):
+        return ["keystroke-collector", "file", "logon", "process"]
+
+    def get_distinct_usernames(self):
+        return ["alice", "bob"]
 
 
 @pytest.fixture

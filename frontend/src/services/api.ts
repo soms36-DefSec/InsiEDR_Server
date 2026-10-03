@@ -224,3 +224,65 @@ export function exportAssessmentJSON(assessment: Record<string, unknown>): void 
   const user = (assessment.username as string) || 'endpoint';
   downloadFile(JSON.stringify(assessment, null, 2), `insiedr_assessment_${user}_${Date.now()}.json`, 'application/json');
 }
+
+export interface CollectorPreviewResponse {
+  ok: boolean;
+  collector: string;
+  total_samples: number;
+  columns: string[];
+  feature_columns: string[];
+  preview_rows: Record<string, unknown>[];
+  filename: string;
+}
+
+/**
+ * Fetches the list of available collectors and fleet usernames for dataset export filtering.
+ */
+export async function fetchAvailableCollectors(): Promise<{ ok: boolean; collectors: string[]; usernames: string[] }> {
+  return fetchApi<{ ok: boolean; collectors: string[]; usernames: string[] }>('/api/v1/export/collectors');
+}
+
+/**
+ * Fetches a schema preview and sample matching records for a selected collector.
+ */
+export async function fetchCollectorPreview(options: {
+  collector: string;
+  startDate?: string | null;
+  endDate?: string | null;
+  username?: string | null;
+  limit?: number;
+}): Promise<CollectorPreviewResponse> {
+  const params = new URLSearchParams({ collector: options.collector });
+  if (options.startDate) params.set('start_date', options.startDate);
+  if (options.endDate) params.set('end_date', options.endDate);
+  if (options.username && options.username.trim() !== '') {
+    params.set('username', options.username.trim());
+  }
+  if (options.limit) params.set('limit', String(options.limit));
+
+  return fetchApi<CollectorPreviewResponse>(`/api/v1/export/collector-preview?${params.toString()}`);
+}
+
+/**
+ * Triggers a download of a collector-specific dataset with unrolled feature columns.
+ */
+export function triggerCollectorDatasetExport(options: {
+  collector: string;
+  startDate?: string | null;
+  endDate?: string | null;
+  username?: string | null;
+  limit?: number;
+}): void {
+  const params = new URLSearchParams({ collector: options.collector });
+  if (options.startDate) params.set('start_date', options.startDate);
+  if (options.endDate) params.set('end_date', options.endDate);
+  if (options.username && options.username.trim() !== '') {
+    params.set('username', options.username.trim());
+  }
+  if (options.limit && options.limit > 0) {
+    params.set('limit', String(options.limit));
+  }
+
+  const url = `/api/v1/export/collector-dataset.csv?${params.toString()}`;
+  window.open(url, '_blank');
+}

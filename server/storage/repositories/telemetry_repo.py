@@ -82,3 +82,23 @@ class TelemetryRepository:
     def list_daily_feature_vectors(self, username: str | None, hostname: str | None, limit: int = 16) -> List[Dict[str, Any]]:
         """Retrieve day-bucketed feature vectors for time-series anomaly models."""
         return self.pg.list_daily_feature_vectors(username=username, hostname=hostname, limit=limit)
+
+    def get_distinct_collectors(self) -> List[str]:
+        if self._has_ch():
+            try:
+                cols = self.ch.get_distinct_collectors()
+                if cols:
+                    return cols
+            except Exception:
+                pass
+        return getattr(self.pg, "get_distinct_collectors", lambda: [])()
+
+    def get_distinct_usernames(self) -> List[str]:
+        if self._has_ch():
+            try:
+                users = self.ch.get_distinct_usernames()
+                if users:
+                    return users
+            except Exception:
+                pass
+        return getattr(self.pg, "get_distinct_usernames", lambda: [])()

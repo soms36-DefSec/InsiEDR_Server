@@ -711,17 +711,36 @@ class PostgresStorage(BaseStorage):
                 )
                 return self._rows_to_dicts(cursor)
 
-    def list_collector_results(self, limit: int = 100, offset: int = 0, collector: str = None, username: str = None) -> list[dict[str, Any]]:
+    def list_collector_results(
+        self,
+        limit: int = 100,
+        offset: int = 0,
+        collector: str = None,
+        username: str = None,
+        start_time: str = None,
+        end_time: str = None,
+        exact_collector: bool = False,
+    ) -> list[dict[str, Any]]:
         with self.connection() as conn:
             with closing(conn.cursor()) as cursor:
                 where_parts = []
                 params = []
                 if collector:
-                    where_parts.append("cr.collector ILIKE %s")
-                    params.append(f"%{collector}%")
+                    if exact_collector:
+                        where_parts.append("LOWER(cr.collector) = LOWER(%s)")
+                        params.append(collector)
+                    else:
+                        where_parts.append("cr.collector ILIKE %s")
+                        params.append(f"%{collector}%")
                 if username:
                     where_parts.append("rp.username ILIKE %s")
                     params.append(f"%{username}%")
+                if start_time:
+                    where_parts.append("COALESCE(cr.collector_collected_at, rp.received_at) >= %s")
+                    params.append(start_time)
+                if end_time:
+                    where_parts.append("COALESCE(cr.collector_collected_at, rp.received_at) <= %s")
+                    params.append(end_time)
                 
                 where_clause = "WHERE " + " AND ".join(where_parts) if where_parts else ""
                 params.extend([limit, offset])
@@ -767,6 +786,42 @@ class PostgresStorage(BaseStorage):
                         "risk_score": row[12]
                     })
                 return results
+
+    def get_distinct_collectors(self) -> list[str]:
+        """Return distinct collector names present in collector_results merged with known collectors."""
+        default_collectors = [
+            "logon", "file", "process", "network", "device", "http",
+            "lsass_monitor", "registry", "keystroke-collector",
+            "decoy-monitor", "clipboard-monitor", "persistence_monitor",
+            "dns_monitor", "driver_monitor", "wmi_activity", "usn_monitor"
+        ]
+        found = set()
+        with self.connection() as conn:
+            with closing(conn.cursor()) as cursor:
+                try:
+                    cursor.execute("SELECT DISTINCT collector FROM collector_results WHERE collector IS NOT NULL AND collector != '' ORDER BY collector")
+                    for row in cursor.fetchall():
+                        if row[0]:
+                            found.add(str(row[0]).strip().lower())
+                except Exception:
+                    pass
+        # Union and sort
+        combined = set(default_collectors) | found
+        return sorted(list(combined))
+
+    def get_distinct_usernames(self) -> list[str]:
+        """Return distinct usernames recorded across raw_payloads."""
+        usernames = set()
+        with self.connection() as conn:
+            with closing(conn.cursor()) as cursor:
+                try:
+                    cursor.execute("SELECT DISTINCT username FROM raw_payloads WHERE username IS NOT NULL AND username != '' ORDER BY username")
+                    for row in cursor.fetchall():
+                        if row[0]:
+                            usernames.add(str(row[0]).strip())
+                except Exception:
+                    pass
+        return sorted(list(usernames))
 
     def list_anomalies(self, limit: int = 100, offset: int = 0) -> list[dict[str, Any]]:
         with self.connection() as conn:

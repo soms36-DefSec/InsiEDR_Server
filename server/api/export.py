@@ -3,6 +3,7 @@ from __future__ import annotations
 import csv
 import io
 import json
+import re
 from datetime import datetime, timedelta, timezone
 from typing import Any, Generator
 from fastapi import APIRouter, Depends, Query, Request
@@ -1180,4 +1181,315 @@ async def export_keystrokes(
         )
 
 
+# ------------------------------------------------------------------------------
+# Collector-Specific Dataset Export & Dynamic Feature Schema
+# ------------------------------------------------------------------------------
 
+def flatten_collector_payload(payload: Any, prefix: str = "", sep: str = "_") -> dict[str, Any]:
+    """Recursively flatten nested dictionary features into single-level column keys.
+    Preserves types: int, float, bool, str.
+    Example:
+        {"event_count": 15, "etw_lifecycle": {"started_count": 5}}
+        -> {"event_count": 15, "etw_lifecycle_started_count": 5}
+    """
+    flat: dict[str, Any] = {}
+    if not isinstance(payload, dict):
+        return flat
+    for k, v in payload.items():
+        if str(k).startswith("_"):
+            continue
+        clean_key = str(k).strip().replace(" ", "_").replace("-", "_").replace(".", "_")
+        col_name = f"{prefix}{sep}{clean_key}" if prefix else clean_key
+        if isinstance(v, dict):
+            flat.update(flatten_collector_payload(v, prefix=col_name, sep=sep))
+        elif isinstance(v, (list, tuple)):
+            if not v:
+                flat[col_name] = ""
+            elif all(isinstance(x, (int, float, str, bool)) for x in v):
+                flat[col_name] = ";".join(str(x) for x in v)
+            else:
+                flat[col_name] = json.dumps(v, default=str)
+        elif isinstance(v, bool):
+            flat[col_name] = v
+        elif isinstance(v, (int, float)):
+            flat[col_name] = v
+        elif v is None:
+            flat[col_name] = ""
+        else:
+            flat[col_name] = str(v)
+    return flat
+
+
+def _normalize_iso_date_bound(val: str | None, is_end: bool = False) -> str | None:
+    if not val or not val.strip():
+        return None
+    s = val.strip()
+    if len(s) == 10 and s.count("-") == 2:
+        return f"{s}T23:59:59Z" if is_end else f"{s}T00:00:00Z"
+    return s
+
+
+def _build_collector_filename(collector: str, start_date: str | None, end_date: str | None, username: str | None) -> str:
+    clean_col = re.sub(r"[^\w\-]", "_", (collector or "collector").strip().lower())
+    clean_u = f"_{re.sub(r'[^\w\-]', '_', username.strip())}" if username and username.strip() else ""
+    clean_start = start_date.strip().split("T")[0] if start_date and start_date.strip() else None
+    clean_end = end_date.strip().split("T")[0] if end_date and end_date.strip() else None
+
+    if clean_start and clean_end:
+        return f"{clean_col}{clean_u}_{clean_start}_to_{clean_end}.csv"
+    elif clean_start:
+        return f"{clean_col}{clean_u}_from_{clean_start}.csv"
+    elif clean_end:
+        return f"{clean_col}{clean_u}_until_{clean_end}.csv"
+    else:
+        ts = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
+        return f"{clean_col}{clean_u}_dataset_{ts}.csv"
+
+
+def _stream_csv_collector_dataset(
+    storage,
+    collector: str,
+    filters: dict[str, Any],
+    limit: int,
+) -> Generator[str, None, None]:
+    """Stream CSV rows for a specific collector with dynamic column unrolling."""
+    buffer = io.StringIO()
+    writer = csv.writer(buffer)
+
+    base_columns = ["timestamp", "username", "hostname", "agent_id", "status"]
+    call_filters = dict(filters)
+    call_filters["collector"] = collector
+
+    # Fetch initial batch to discover feature columns
+    first_batch_size = min(CHUNK_BATCH_SIZE, limit)
+    first_rows = storage.list_collector_results(limit=first_batch_size, offset=0, **call_filters)
+
+    if not first_rows:
+        writer.writerow(base_columns)
+        yield buffer.getvalue()
+        return
+
+    # Discover feature columns from the first batch
+    discovered_keys = set()
+    flattened_first_batch = []
+    for r in first_rows:
+        raw_payload = r.get("payload") or r.get("payload_json") or {}
+        if isinstance(raw_payload, str):
+            try:
+                raw_payload = json.loads(raw_payload)
+            except Exception:
+                raw_payload = {}
+        flat = flatten_collector_payload(raw_payload)
+        flattened_first_batch.append((r, flat))
+        discovered_keys.update(flat.keys())
+
+    feature_columns = sorted(list(discovered_keys))
+    header = base_columns + feature_columns
+
+    writer.writerow(header)
+    yield buffer.getvalue()
+    buffer.seek(0)
+    buffer.truncate(0)
+
+    # Output first batch
+    for r, flat in flattened_first_batch:
+        ts = _format_timestamp(r.get("collected_at") or r.get("collector_collected_at") or r.get("received_at"))
+        row_vals = [
+            ts,
+            r.get("username") or "",
+            r.get("hostname") or "",
+            r.get("agent_id") or "",
+            r.get("status") or "success",
+        ]
+        for col in feature_columns:
+            val = flat.get(col, "")
+            row_vals.append(val if val is not None else "")
+        writer.writerow(row_vals)
+
+    yield buffer.getvalue()
+    buffer.seek(0)
+    buffer.truncate(0)
+
+    exported = len(first_rows)
+    offset = len(first_rows)
+
+    # Stream remaining batches if requested limit exceeds first batch
+    while exported < limit and len(first_rows) == first_batch_size:
+        batch_limit = min(CHUNK_BATCH_SIZE, limit - exported)
+        rows = storage.list_collector_results(limit=batch_limit, offset=offset, **call_filters)
+        if not rows:
+            break
+
+        for r in rows:
+            raw_payload = r.get("payload") or r.get("payload_json") or {}
+            if isinstance(raw_payload, str):
+                try:
+                    raw_payload = json.loads(raw_payload)
+                except Exception:
+                    raw_payload = {}
+            flat = flatten_collector_payload(raw_payload)
+
+            ts = _format_timestamp(r.get("collected_at") or r.get("collector_collected_at") or r.get("received_at"))
+            row_vals = [
+                ts,
+                r.get("username") or "",
+                r.get("hostname") or "",
+                r.get("agent_id") or "",
+                r.get("status") or "success",
+            ]
+            for col in feature_columns:
+                val = flat.get(col, "")
+                row_vals.append(val if val is not None else "")
+            writer.writerow(row_vals)
+
+        yield buffer.getvalue()
+        buffer.seek(0)
+        buffer.truncate(0)
+
+        count = len(rows)
+        exported += count
+        offset += count
+        if count < batch_limit:
+            break
+
+
+@router.get("/v1/export/collectors")
+@router.get("/export/collectors")
+async def get_export_collectors(storage=Depends(get_storage)):
+    """Return available telemetry collectors and known users for export filtering."""
+    if storage is None:
+        return JSONResponse({"ok": False, "error": "Storage is not configured"}, status_code=503)
+
+    collectors = getattr(storage, "get_distinct_collectors", lambda: [
+        "logon", "file", "process", "network", "device", "http",
+        "lsass_monitor", "registry", "keystroke-collector"
+    ])()
+    usernames = getattr(storage, "get_distinct_usernames", lambda: [])()
+
+    return {
+        "ok": True,
+        "collectors": collectors,
+        "usernames": usernames,
+    }
+
+
+@router.get("/v1/export/collector-preview")
+@router.get("/export/collector-preview")
+async def preview_collector_dataset(
+    collector: str = Query(..., description="Target collector name (e.g. 'logon', 'file', 'process')"),
+    start_date: str | None = Query(None, description="Start date (YYYY-MM-DD or ISO timestamp)"),
+    end_date: str | None = Query(None, description="End date (YYYY-MM-DD or ISO timestamp)"),
+    username: str | None = Query(None, description="Filter by user or omit for all"),
+    limit: int = Query(50, ge=1, le=200, description="Preview sample limit"),
+    storage=Depends(get_storage),
+):
+    """Preview collector-specific dataset schema and matching records before full export."""
+    if storage is None:
+        return JSONResponse({"ok": False, "error": "Storage is not configured"}, status_code=503)
+
+    if not collector or not collector.strip():
+        return JSONResponse({"ok": False, "error": "Collector parameter is required"}, status_code=400)
+
+    start_iso = _normalize_iso_date_bound(start_date, is_end=False)
+    end_iso = _normalize_iso_date_bound(end_date, is_end=True)
+
+    filters: dict[str, Any] = {"collector": collector.strip()}
+    if username and username.strip():
+        filters["username"] = username.strip()
+    if start_iso:
+        filters["start_time"] = start_iso
+    if end_iso:
+        filters["end_time"] = end_iso
+
+    rows = storage.list_collector_results(limit=limit, offset=0, **filters)
+
+    base_columns = ["timestamp", "username", "hostname", "agent_id", "status"]
+    discovered_keys = set()
+    flattened_rows = []
+
+    for r in rows:
+        raw_payload = r.get("payload") or r.get("payload_json") or {}
+        if isinstance(raw_payload, str):
+            try:
+                raw_payload = json.loads(raw_payload)
+            except Exception:
+                raw_payload = {}
+        flat = flatten_collector_payload(raw_payload)
+        discovered_keys.update(flat.keys())
+        ts = _format_timestamp(r.get("collected_at") or r.get("collector_collected_at") or r.get("received_at"))
+
+        item = {
+            "timestamp": ts,
+            "username": r.get("username") or "",
+            "hostname": r.get("hostname") or "",
+            "agent_id": r.get("agent_id") or "",
+            "status": r.get("status") or "success",
+        }
+        item.update(flat)
+        flattened_rows.append(item)
+
+    feature_columns = sorted(list(discovered_keys))
+    all_columns = base_columns + feature_columns
+
+    # Normalize rows to ensure every column exists
+    preview_rows = []
+    for r in flattened_rows:
+        row_dict = {}
+        for c in all_columns:
+            row_dict[c] = r.get(c, "")
+        preview_rows.append(row_dict)
+
+    return {
+        "ok": True,
+        "collector": collector.strip(),
+        "total_samples": len(rows),
+        "columns": all_columns,
+        "feature_columns": feature_columns,
+        "preview_rows": preview_rows,
+        "filename": _build_collector_filename(collector, start_date, end_date, username),
+    }
+
+
+@router.get("/v1/export/collector-dataset.csv")
+@router.get("/v1/export/collector-dataset")
+@router.get("/export/collector-dataset.csv")
+@router.get("/export/collector-dataset")
+async def export_collector_dataset(
+    request: Request,
+    collector: str = Query(..., description="Target collector name (e.g. 'logon', 'file', 'process')"),
+    start_date: str | None = Query(None, description="Start date (YYYY-MM-DD or ISO timestamp)"),
+    end_date: str | None = Query(None, description="End date (YYYY-MM-DD or ISO timestamp)"),
+    username: str | None = Query(None, description="Filter by user or omit for all"),
+    limit: int = Query(50000, ge=1, le=200000, description="Maximum number of log samples to export"),
+    storage=Depends(get_storage),
+):
+    """Export collector-specific dataset with unrolled feature columns in CSV format."""
+    if storage is None:
+        return JSONResponse({"ok": False, "error": "Storage is not configured"}, status_code=503)
+
+    if not collector or not collector.strip():
+        return JSONResponse({"ok": False, "error": "Collector parameter is required"}, status_code=400)
+
+    bounded_limit = min(max(1, limit), 200000)
+    start_iso = _normalize_iso_date_bound(start_date, is_end=False)
+    end_iso = _normalize_iso_date_bound(end_date, is_end=True)
+
+    filters: dict[str, Any] = {}
+    if username and username.strip():
+        filters["username"] = username.strip()
+    if start_iso:
+        filters["start_time"] = start_iso
+    if end_iso:
+        filters["end_time"] = end_iso
+
+    filename = _build_collector_filename(collector, start_date, end_date, username)
+    generator = _stream_csv_collector_dataset(storage, collector.strip(), filters, bounded_limit)
+
+    return StreamingResponse(
+        generator,
+        media_type="text/csv; charset=utf-8",
+        headers={
+            "Content-Disposition": f'attachment; filename="{filename}"',
+            "Cache-Control": "no-cache",
+        },
+    )
