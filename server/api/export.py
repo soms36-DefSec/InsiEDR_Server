@@ -1231,7 +1231,11 @@ def _normalize_iso_date_bound(val: str | None, is_end: bool = False) -> str | No
 
 def _build_collector_filename(collector: str, start_date: str | None, end_date: str | None, username: str | None) -> str:
     clean_col = re.sub(r"[^\w\-]", "_", (collector or "collector").strip().lower())
-    clean_u = f"_{re.sub(r'[^\w\-]', '_', username.strip())}" if username and username.strip() else ""
+    if username and username.strip():
+        sanitized_user = re.sub(r"[^\w\-]", "_", username.strip())
+        clean_u = f"_{sanitized_user}"
+    else:
+        clean_u = ""
     clean_start = start_date.strip().split("T")[0] if start_date and start_date.strip() else None
     clean_end = end_date.strip().split("T")[0] if end_date and end_date.strip() else None
 
