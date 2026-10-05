@@ -1,12 +1,13 @@
 from __future__ import annotations
 
+import anyio
 import inspect
 from datetime import datetime, timezone
 from fastapi import APIRouter, Depends, Query, Request
 from fastapi.responses import JSONResponse
 
 from server.api.ingest import process_encrypted_request, IngestError
-from server.api.deps import get_storage
+from server.api.deps import get_storage, require_operator, OperatorPrincipal
 
 router = APIRouter(prefix="/api", tags=["Telemetry & Ingestion"])
 bp = router  # Backward compatibility alias
@@ -18,6 +19,7 @@ async def get_collector_states(
     agent_id: str,
     stale_after_seconds: int = Query(600, ge=1),
     storage=Depends(get_storage),
+    operator: OperatorPrincipal = Depends(require_operator("operator:read")),
 ):
     """Current observations across sparse payloads, with explicit freshness.
 
@@ -26,7 +28,9 @@ async def get_collector_states(
     """
     if storage is None:
         return JSONResponse({"ok": False, "error": "storage is not configured", "states": []}, status_code=503)
-    states = storage.get_latest_collector_states(agent_id)
+    states = await anyio.to_thread.run_sync(
+        lambda: storage.get_latest_collector_states(agent_id)
+    ) if hasattr(storage, "get_latest_collector_states") else []
     now = datetime.now(timezone.utc)
     for state in states:
         observed = state.get("collector_collected_at")
@@ -68,6 +72,7 @@ async def get_logs(
     start_time: str | None = None,
     end_time: str | None = None,
     storage=Depends(get_storage),
+    operator: OperatorPrincipal = Depends(require_operator("operator:read")),
 ):
     if storage is None:
         return JSONResponse({"ok": False, "error": "storage is not configured", "logs": []}, status_code=503)
@@ -88,7 +93,9 @@ async def get_logs(
         if v and (accepts_kwargs or k in sig.parameters)
     }
 
-    logs = storage.list_logs(limit=limit, offset=offset, **valid_filters)
+    logs = await anyio.to_thread.run_sync(
+        lambda: storage.list_logs(limit=limit, offset=offset, **valid_filters)
+    ) if hasattr(storage, "list_logs") else []
     return {"ok": True, "logs": logs}
 
 
@@ -100,13 +107,19 @@ async def get_telemetry(
     collector: str | None = None,
     username: str | None = None,
     storage=Depends(get_storage),
+    operator: OperatorPrincipal = Depends(require_operator("operator:read")),
 ):
     if storage is None:
         return JSONResponse({"ok": False, "error": "storage is not configured", "telemetry": []}, status_code=503)
 
     try:
-        telemetry = storage.list_collector_results(limit=limit, offset=offset, collector=collector, username=username)
+        telemetry = await anyio.to_thread.run_sync(
+            lambda: storage.list_collector_results(limit=limit, offset=offset, collector=collector, username=username)
+        )
+        total = await anyio.to_thread.run_sync(
+            lambda: getattr(storage, "count_collector_results", lambda **kw: len(telemetry))(collector=collector, username=username)
+        )
     except AttributeError:
         return JSONResponse({"ok": False, "error": "storage method not implemented", "telemetry": []}, status_code=501)
-    return {"ok": True, "logs": telemetry}
+    return {"ok": True, "logs": telemetry, "total": total, "offset": offset, "limit": limit}
 

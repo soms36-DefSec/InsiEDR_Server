@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import os
 from contextlib import contextmanager, closing
 from pathlib import Path
@@ -16,6 +17,8 @@ from psycopg2.extras import Json, execute_batch
 
 from server.config import config
 from shared.crypto_utils import CryptoConfigError
+
+logger = logging.getLogger("insiedr.storage.postgres")
 
 MIGRATIONS_DIR = Path(__file__).resolve().parent / "migrations"
 
@@ -462,6 +465,55 @@ class PostgresStorage(BaseStorage):
                             cursor.executemany(q, normalized_features_args)
                         else:
                             execute_batch(cursor, q, normalized_features_args)
+
+                    # Transactional Outbox: insert into clickhouse_outbox inside same transaction.
+                    # Use a SAVEPOINT so that a missing table (partial migration) does NOT abort
+                    # the entire transaction — in PostgreSQL a SQL error aborts the whole
+                    # transaction; catching the exception alone cannot restore it.
+                    try:
+                        if not is_sqlite:
+                            cursor.execute("SAVEPOINT insiedr_outbox_sp")
+
+                        # Respect store_plaintext_payloads: when False, strip decrypted
+                        # payload body from the outbox entry so the outbox table does not
+                        # become a plaintext data store that bypasses the privacy policy.
+                        # Keep only identifiers needed for routing and deduplication.
+                        if config.store_plaintext_payloads:
+                            outbox_record = {"envelope": envelope, "payload": decrypted_payload}
+                        else:
+                            outbox_record = {
+                                "envelope": {k: v for k, v in envelope.items() if k != "ciphertext"},
+                                "payload": {
+                                    "payload_id": decrypted_payload.get("payload_id"),
+                                    "agent_id": decrypted_payload.get("agent_id"),
+                                    "collected_at": decrypted_payload.get("collected_at"),
+                                    "_plaintext_stripped": True,
+                                },
+                            }
+
+                        cursor.execute(
+                            """
+                            INSERT INTO clickhouse_outbox (target_table, record_json, status, attempts, created_at)
+                            VALUES (%s, %s, 'pending', 0, CURRENT_TIMESTAMP)
+                            """,
+                            ("raw_payloads", Json(outbox_record)),
+                        )
+                        if not is_sqlite:
+                            cursor.execute("RELEASE SAVEPOINT insiedr_outbox_sp")
+                    except Exception as ob_err:
+                        err_str = str(ob_err).lower()
+                        if "clickhouse_outbox" in err_str and ("does not exist" in err_str or "no such table" in err_str):
+                            # Table missing (partial migration) — roll back savepoint only,
+                            # preserving the already-executed main data inserts.
+                            if not is_sqlite:
+                                try:
+                                    cursor.execute("ROLLBACK TO SAVEPOINT insiedr_outbox_sp")
+                                    cursor.execute("RELEASE SAVEPOINT insiedr_outbox_sp")
+                                except Exception:
+                                    pass
+                            logger.debug("clickhouse_outbox table not present; outbox entry skipped for payload %s", payload_id)
+                        else:
+                            raise
                     conn.commit()
                     return True
                 except Exception as exc:
@@ -621,6 +673,9 @@ class PostgresStorage(BaseStorage):
         params: dict[str, Any] | None = None,
         signature: str | None = None,
         task_id: str | None = None,
+        actor_id: str | None = None,
+        actor_role: str | None = None,
+        ip_address: str | None = None,
     ) -> str:
         return self.fleet.queue_task(
             agent_id=agent_id,
@@ -628,6 +683,9 @@ class PostgresStorage(BaseStorage):
             params=params,
             signature=signature,
             task_id=task_id,
+            actor_id=actor_id,
+            actor_role=actor_role,
+            ip_address=ip_address,
         )
 
     def get_pending_agent_tasks(self, agent_id: str) -> list[dict[str, Any]]:
@@ -635,6 +693,174 @@ class PostgresStorage(BaseStorage):
 
     def mark_tasks_dispatched(self, task_ids: list[str]) -> None:
         self.fleet.mark_tasks_dispatched(task_ids)
+
+    def acknowledge_agent_task(self, agent_id: str, task_id: str) -> bool:
+        return self.fleet.acknowledge_task(agent_id=agent_id, task_id=task_id)
+
+    def enqueue_clickhouse_outbox(self, target_table: str, record_data: dict[str, Any]) -> None:
+        """Enqueue an analytics record into the transactional outbox table."""
+        with self.connection() as conn:
+            with closing(conn.cursor()) as cur:
+                try:
+                    cur.execute(
+                        """
+                        INSERT INTO clickhouse_outbox (target_table, record_json, status, attempts, created_at)
+                        VALUES (%s, %s, 'pending', 0, CURRENT_TIMESTAMP)
+                        """,
+                        (target_table, Json(record_data)),
+                    )
+                    conn.commit()
+                except Exception as exc:
+                    logger.debug("clickhouse_outbox insert non-fatal error: %s", exc)
+
+    def get_pending_clickhouse_outbox(self, limit: int = 100) -> list[dict[str, Any]]:
+        """Fetch oldest pending outbox records for replication catchup.
+
+        Uses ``FOR UPDATE SKIP LOCKED`` on PostgreSQL so that multiple concurrent
+        reconciler workers each claim an exclusive, non-overlapping batch.  The
+        caller is responsible for committing (or rolling back) the surrounding
+        connection so the row-level locks are released after processing.
+        SQLite does not support this syntax; the plain query is used there.
+        """
+        with self.connection() as conn:
+            with closing(conn.cursor()) as cur:
+                try:
+                    is_sqlite = self._is_sqlite
+                    skip_locked = "" if is_sqlite else "FOR UPDATE SKIP LOCKED"
+                    cur.execute(
+                        f"""
+                        SELECT outbox_id, target_table, record_json, attempts
+                        FROM clickhouse_outbox
+                        WHERE status = 'pending'
+                        ORDER BY outbox_id ASC
+                        LIMIT %s
+                        {skip_locked}
+                        """,
+                        (limit,),
+                    )
+                    cols = [col[0] for col in cur.description or []]
+                    rows = cur.fetchall()
+                    results = []
+                    for row in rows:
+                        item = dict(zip(cols, row))
+                        if isinstance(item.get("record_json"), str):
+                            try:
+                                item["record_json"] = json.loads(item["record_json"])
+                            except Exception:
+                                pass
+                        results.append(item)
+                    return results
+                except Exception as exc:
+                    logger.debug("Failed querying clickhouse_outbox: %s", exc)
+                    return []
+
+    def mark_clickhouse_outbox_completed(self, outbox_ids: list[int]) -> None:
+        """Mark outbox records as successfully replicated to ClickHouse."""
+        if not outbox_ids:
+            return
+        with self.connection() as conn:
+            with closing(conn.cursor()) as cur:
+                try:
+                    cur.execute(
+                        """
+                        UPDATE clickhouse_outbox
+                        SET status = 'completed', processed_at = CURRENT_TIMESTAMP
+                        WHERE outbox_id = ANY(%s)
+                        """,
+                        (outbox_ids,),
+                    )
+                    conn.commit()
+                except Exception:
+                    for oid in outbox_ids:
+                        try:
+                            cur.execute(
+                                "UPDATE clickhouse_outbox SET status = 'completed', processed_at = CURRENT_TIMESTAMP WHERE outbox_id = %s",
+                                (oid,)
+                            )
+                        except Exception:
+                            pass
+                    conn.commit()
+
+    def increment_clickhouse_outbox_attempts(self, outbox_ids: list[int], error_msg: str) -> None:
+        """Increment attempt count and update last_error on failed outbox reconciliation."""
+        if not outbox_ids:
+            return
+        with self.connection() as conn:
+            with closing(conn.cursor()) as cur:
+                for oid in outbox_ids:
+                    try:
+                        cur.execute(
+                            """
+                            UPDATE clickhouse_outbox
+                            SET attempts = attempts + 1, last_error = %s
+                            WHERE outbox_id = %s
+                            """,
+                            (error_msg[:500], oid),
+                        )
+                    except Exception:
+                        pass
+                conn.commit()
+
+    def mark_outbox_completed_by_payload_id(self, payload_id: str) -> None:
+        """Mark outbox record completed when direct ClickHouse ingestion succeeded."""
+        if not payload_id:
+            return
+        with self.connection() as conn:
+            with closing(conn.cursor()) as cur:
+                try:
+                    cur.execute(
+                        """
+                        UPDATE clickhouse_outbox
+                        SET status = 'completed', processed_at = CURRENT_TIMESTAMP
+                        WHERE target_table = 'raw_payloads'
+                          AND status = 'pending'
+                          AND record_json->'payload'->>'payload_id' = %s
+                        """,
+                        (str(payload_id),),
+                    )
+                    conn.commit()
+                except Exception as exc:
+                    logger.debug("Failed updating outbox by payload_id: %s", exc)
+
+    def purge_completed_clickhouse_outbox(self, retention_days: int | None = None) -> int:
+        """Delete completed outbox entries older than retention_days.
+
+        Prevents unbounded table growth and limits the window during which
+        decrypted payload data (or its metadata stub) sits in the outbox.
+        Returns the number of rows deleted, or 0 on error / unsupported backend.
+
+        Uses an interval expression compatible with PostgreSQL.  SQLite is
+        skipped because the outbox migration is PostgreSQL-only.
+        """
+        if self._is_sqlite:
+            return 0  # Outbox is PostgreSQL-only in production
+
+        days = retention_days if retention_days is not None else config.payload_retention_days
+        days = max(1, int(days))
+
+        with self.connection() as conn:
+            with closing(conn.cursor()) as cur:
+                try:
+                    cur.execute(
+                        """
+                        DELETE FROM clickhouse_outbox
+                        WHERE status = 'completed'
+                          AND processed_at < NOW() - INTERVAL '%s days'
+                        """,
+                        (days,),
+                    )
+                    deleted = cur.rowcount or 0
+                    conn.commit()
+                    if deleted:
+                        logger.info("Purged %d completed clickhouse_outbox entries older than %d days", deleted, days)
+                    return deleted
+                except Exception as exc:
+                    logger.debug("clickhouse_outbox purge non-fatal: %s", exc)
+                    try:
+                        conn.rollback()
+                    except Exception:
+                        pass
+                    return 0
 
     def update_agent_task_result(
         self,
@@ -822,6 +1048,48 @@ class PostgresStorage(BaseStorage):
                 except Exception:
                     pass
         return sorted(list(usernames))
+
+    def count_collector_results(
+        self,
+        collector: str = None,
+        username: str = None,
+        start_time: str = None,
+        end_time: str = None,
+        exact_collector: bool = False,
+    ) -> int:
+        with self.connection() as conn:
+            with closing(conn.cursor()) as cursor:
+                where_parts = []
+                params = []
+                if collector:
+                    if exact_collector:
+                        where_parts.append("LOWER(cr.collector) = LOWER(%s)")
+                        params.append(collector)
+                    else:
+                        where_parts.append("cr.collector ILIKE %s")
+                        params.append(f"%{collector}%")
+                if username:
+                    where_parts.append("rp.username ILIKE %s")
+                    params.append(f"%{username}%")
+                if start_time:
+                    where_parts.append("COALESCE(cr.collector_collected_at, rp.received_at) >= %s")
+                    params.append(start_time)
+                if end_time:
+                    where_parts.append("COALESCE(cr.collector_collected_at, rp.received_at) <= %s")
+                    params.append(end_time)
+
+                where_clause = "WHERE " + " AND ".join(where_parts) if where_parts else ""
+                cursor.execute(
+                    f"""
+                    SELECT COUNT(*)
+                    FROM collector_results cr
+                    LEFT JOIN raw_payloads rp ON cr.payload_id = rp.payload_id
+                    {where_clause}
+                    """,
+                    tuple(params)
+                )
+                row = cursor.fetchone()
+                return int(row[0]) if row else 0
 
     def list_anomalies(self, limit: int = 100, offset: int = 0) -> list[dict[str, Any]]:
         with self.connection() as conn:

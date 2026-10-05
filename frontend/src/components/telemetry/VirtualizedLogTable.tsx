@@ -93,8 +93,8 @@ export const VirtualizedLogTable: React.FC<VirtualizedLogTableProps> = ({
       <div className="bg-slate-50/80 border-b border-slate-200 grid grid-cols-12 px-6 py-3 text-xs font-medium text-slate-500 select-none">
         <div className="col-span-2">Timestamp</div>
         <div className="col-span-2">Hostname</div>
-        <div className="col-span-2">User</div>
-        <div className="col-span-1">Collector</div>
+        <div className="col-span-1">User</div>
+        <div className="col-span-2">Collector</div>
         <div className="col-span-4">Payload Summary</div>
         <div className="col-span-1 text-right">Status</div>
       </div>
@@ -102,7 +102,7 @@ export const VirtualizedLogTable: React.FC<VirtualizedLogTableProps> = ({
       {/* Virtualized Scroll Viewport */}
       <div
         ref={containerRef}
-        className="overflow-y-auto relative h-[520px]"
+        className="overflow-y-auto relative min-h-[320px] max-h-[580px]"
         style={{ willChange: 'transform' }}
       >
         <div style={{ height: `${totalHeight}px`, position: 'relative' }}>
@@ -138,12 +138,12 @@ export const VirtualizedLogTable: React.FC<VirtualizedLogTableProps> = ({
                   </div>
 
                   {/* Username */}
-                  <div className="col-span-2 font-medium text-slate-900 truncate">
+                  <div className="col-span-1 font-medium text-slate-900 truncate">
                     {log.username}
                   </div>
 
                   {/* Collector */}
-                  <div className="col-span-1">
+                  <div className="col-span-2 pr-2 flex items-center overflow-hidden">
                     <Badge level={log.collector} variant="collector" size="sm" />
                   </div>
 

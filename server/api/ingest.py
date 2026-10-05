@@ -24,6 +24,8 @@ from shared.protocol import (
 
 from server.config import config
 from server.plugin_registry import registry
+from server.api.deps import authenticate_agent_request, verify_agent_identity
+from server.api.errors import AuthenticationError, ForbiddenError
 
 
 class IngestError(Exception):
@@ -81,8 +83,14 @@ def validate_envelope_shape(body: Any) -> dict[str, Any]:
     for k in required:
         if k not in body:
             raise IngestError(f"missing envelope field: {k}")
-    scheme = body.get("scheme")
-    if scheme == CRYPTO_SCHEME_AESGCM:
+    scheme = str(body.get("scheme", ""))
+    plugin = registry.get(scheme)
+    if plugin and hasattr(plugin, "validate_envelope"):
+        try:
+            plugin.validate_envelope(body)
+        except Exception as exc:
+            raise IngestError(str(exc)) from exc
+    elif scheme == CRYPTO_SCHEME_AESGCM:
         for k in ("key_id", "nonce", "ciphertext"):
             if not body.get(k):
                 raise IngestError(f"missing envelope field: {k}")
@@ -103,6 +111,8 @@ def validate_collector_results(payload: dict[str, Any]) -> None:
     collectors = payload.get("collectors")
     if not isinstance(collectors, list):
         raise ValidationError("collectors must be a list")
+    if len(collectors) > config.max_collectors_per_payload:
+        raise ValidationError(f"collector count ({len(collectors)}) exceeds maximum limit of {config.max_collectors_per_payload}")
     success_count = 0
     failed_count = 0
     for index, collector in enumerate(collectors):
@@ -168,23 +178,20 @@ def _check_duplicate_policy(storage, envelope: dict[str, Any], payload: dict[str
 
 
 async def process_encrypted_request(req) -> tuple[int, dict[str, Any]]:
-    # 1. Transport Security (HTTPS) Enforcement
+    # 1. Transport Security (HTTPS) Enforcement & Request Admission
+    content_len = req.headers.get("content-length")
+    if content_len:
+        try:
+            if int(content_len) > config.max_request_bytes:
+                raise IngestError(f"request size exceeds limit of {config.max_request_bytes} bytes", status_code=413)
+        except ValueError:
+            pass
+
     is_secure = getattr(req, "is_secure", False)
     if not is_secure and hasattr(req, "url"):
         is_secure = (req.url.scheme == "https")
     if config.require_https and not is_secure:
         raise IngestError("HTTPS is required for telemetry ingestion", status_code=403)
-
-    # 2. Bearer Token / Auth Validation
-    expected_token = config.agent_bearer_token
-    if expected_token:
-        import hmac
-        auth_header = req.headers.get("Authorization", "")
-        if not auth_header.startswith("Bearer "):
-            raise IngestError("invalid or missing Bearer token", status_code=403)
-        provided_token = auth_header.split(" ", 1)[1]
-        if not hmac.compare_digest(provided_token.encode("utf-8"), expected_token.encode("utf-8")):
-            raise IngestError("invalid or missing Bearer token", status_code=403)
 
     # Basic header validation
     content_type = getattr(req, "content_type", req.headers.get("content-type", ""))
@@ -199,6 +206,15 @@ async def process_encrypted_request(req) -> tuple[int, dict[str, Any]]:
         raise IngestError("missing required headers")
     if proto != PROTOCOL_VERSION:
         raise IngestError("protocol version mismatch")
+
+    # 2. Agent Authentication & Identity Binding (Centralized & Hardened)
+    try:
+        agent_principal = authenticate_agent_request(req)
+        verify_agent_identity(agent_id, agent_principal)
+    except AuthenticationError as e:
+        raise IngestError(str(getattr(e, "detail", str(e))), status_code=401)
+    except ForbiddenError as e:
+        raise IngestError(str(getattr(e, "detail", str(e))), status_code=403)
 
     try:
         if hasattr(req, "json") and callable(req.json):
@@ -282,9 +298,17 @@ async def process_encrypted_request(req) -> tuple[int, dict[str, Any]]:
         raise StorageUnavailableError("storage is not configured")
 
     try:
-        if _check_duplicate_policy(storage, envelope, payload):
+        import anyio
+
+        def _persist():
+            if _check_duplicate_policy(storage, envelope, payload):
+                return False
+            storage.store_raw_payload(envelope, payload)
+            return True
+
+        persisted = await anyio.to_thread.run_sync(_persist)
+        if not persisted:
             return 202, {"ok": True, "payload_id": payload_id, "status": "accepted"}
-        storage.store_raw_payload(envelope, payload)
 
         # Dispatch real-time agent status update to SSE stream
         try:

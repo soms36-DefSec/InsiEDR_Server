@@ -147,3 +147,110 @@ def test_clickhouse_storage_with_mock_client():
     # Stop flushes batcher to client
     ch.close()
     assert mock_client.insert.called
+
+
+def test_dlq_underscore_table_names_exact_routing(tmp_path: Path):
+    """
+    Regression test for P1 defect: DLQ table-name parsing must resolve
+    multi-underscore table names like 'raw_payloads' and 'collector_results'
+    rather than truncated 'raw' or 'collector'.
+    """
+    recorded_inserts: dict[str, list[dict]] = {}
+
+    def mock_insert(table: str, rows: list[dict]):
+        recorded_inserts.setdefault(table, []).extend(rows)
+
+    dlq_dir = tmp_path / "dlq_routing"
+    dlq_dir.mkdir(parents=True, exist_ok=True)
+
+    batcher = ClickHouseBatcher(
+        insert_fn=mock_insert,
+        batch_size=10,
+        dlq_dir=dlq_dir,
+        dlq_enabled=True,
+    )
+
+    # 1. Test versioned DLQ file with header metadata
+    batcher._spool_to_dlq("raw_payloads", [{"id": "r1"}, {"id": "r2"}], RuntimeError("simulated error"))
+    batcher._spool_to_dlq("collector_results", [{"id": "c1"}], RuntimeError("simulated error"))
+
+    # 2. Test legacy unversioned DLQ file naming format
+    legacy_file = dlq_dir / "dlq_raw_payloads_1728000000_9999.jsonl"
+    with open(legacy_file, "w", encoding="utf-8") as f:
+        f.write('{"id": "legacy_r1"}\n')
+
+    # Replay all DLQ files without passing explicit table
+    recovered = batcher.replay_dlq()
+    assert recovered == 4
+
+    # Verify exact destination tables
+    assert "raw_payloads" in recorded_inserts
+    assert "collector_results" in recorded_inserts
+    assert "raw" not in recorded_inserts
+    assert "collector" not in recorded_inserts
+
+    raw_ids = [r["id"] for r in recorded_inserts["raw_payloads"]]
+    assert "r1" in raw_ids
+    assert "r2" in raw_ids
+    assert "legacy_r1" in raw_ids
+
+    assert recorded_inserts["collector_results"][0]["id"] == "c1"
+
+
+def test_clickhouse_batcher_bounded_buffer_overflow(tmp_path: Path):
+    """Verify that buffer limits cap memory and trigger durable overflow spooling."""
+    dlq_dir = tmp_path / "dlq_overflow"
+    dlq_dir.mkdir(parents=True, exist_ok=True)
+
+    def failing_insert(table, rows):
+        raise RuntimeError("ClickHouse offline")
+
+    # Set tight buffer limits: max 5 rows total, batch_size 2
+    batcher = ClickHouseBatcher(
+        insert_fn=failing_insert,
+        batch_size=2,
+        flush_interval=100.0,  # Do not flush automatically by timer
+        dlq_dir=dlq_dir,
+        dlq_enabled=True,
+        max_buffer_rows=5,
+    )
+
+    # Add 10 rows without running worker (ClickHouse outage scenario)
+    for i in range(10):
+        batcher.add("raw_payloads", {"row": i})
+
+    # In-memory buffer must be capped at or below max_buffer_rows
+    assert len(batcher._buffers.get("raw_payloads", [])) <= 5
+    # Overflow rows must have been spooled to DLQ durably
+    assert batcher.total_overflow_dropped > 0
+    assert len(list(dlq_dir.glob("*.jsonl"))) > 0
+
+
+def test_dlq_corrupted_line_handling(tmp_path: Path):
+    """Verify that partially corrupt DLQ files do not crash replay and valid rows recover."""
+    recovered_rows = []
+
+    def recovery_insert(table, rows):
+        recovered_rows.extend(rows)
+
+    dlq_dir = tmp_path / "dlq_corrupt"
+    dlq_dir.mkdir(parents=True, exist_ok=True)
+
+    corrupt_file = dlq_dir / "dlq_raw_payloads_1728000000_1234.jsonl"
+    with open(corrupt_file, "w", encoding="utf-8") as f:
+        f.write('{"id": "valid_1"}\n')
+        f.write('{this is NOT json corrupt garbage}\n')
+        f.write('{"id": "valid_2"}\n')
+
+    batcher = ClickHouseBatcher(
+        insert_fn=recovery_insert,
+        dlq_dir=dlq_dir,
+        dlq_enabled=True,
+    )
+
+    count = batcher.replay_dlq()
+    assert count == 2
+    assert [r["id"] for r in recovered_rows] == ["valid_1", "valid_2"]
+    # File was processed and cleaned up
+    assert not corrupt_file.exists()
+

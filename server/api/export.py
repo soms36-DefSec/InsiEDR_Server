@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import anyio
 import csv
 import io
 import json
@@ -8,7 +9,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, Generator
 from fastapi import APIRouter, Depends, Query, Request
 from fastapi.responses import JSONResponse, Response, StreamingResponse
-from server.api.deps import get_storage
+from server.api.deps import get_storage, require_operator, OperatorPrincipal
 
 router = APIRouter(prefix="/api", tags=["Streaming Export"])
 bp = router  # Backward compatibility alias
@@ -207,6 +208,7 @@ async def export_logs(
     collector: str | None = None,
     status: str | None = None,
     storage=Depends(get_storage),
+    operator: OperatorPrincipal = Depends(require_operator("operator:read")),
 ):
     """Stream telemetry logs in CSV or JSON format with constant memory usage."""
     if storage is None:
@@ -264,6 +266,7 @@ async def export_threats(
     format: str = Query("csv"),
     limit: int = Query(50000),
     storage=Depends(get_storage),
+    operator: OperatorPrincipal = Depends(require_operator("operator:read")),
 ):
     """Stream risk events and threat detections in CSV or JSON format."""
     if storage is None:
@@ -676,6 +679,7 @@ async def export_training_dataset(
     format: str = Query("xlsx", description="Format: 'xlsx' (Excel), 'csv', or 'json'"),
     limit: int = Query(50000, ge=1, le=100000, description="Maximum number of log samples to export"),
     storage=Depends(get_storage),
+    operator: OperatorPrincipal = Depends(require_operator("operator:read")),
 ):
     """Export training dataset containing User, Parameters, and Raw Logs over N days.
     
@@ -707,12 +711,14 @@ async def export_training_dataset(
 
     if export_format == "xlsx":
         try:
-            excel_bytes = _build_excel_training_dataset(
-                storage=storage,
-                filters=filters,
-                limit=bounded_limit,
-                days=days,
-                username=username,
+            excel_bytes = await anyio.to_thread.run_sync(
+                lambda: _build_excel_training_dataset(
+                    storage=storage,
+                    filters=filters,
+                    limit=bounded_limit,
+                    days=days,
+                    username=username,
+                )
             )
             filename = f"insiedr_training_dataset_{user_label}_{days}d_{timestamp_str}.xlsx"
             return Response(
@@ -1073,6 +1079,7 @@ async def export_features(
     collector: str | None = None,
     feature_name: str | None = None,
     storage=Depends(get_storage),
+    operator: OperatorPrincipal = Depends(require_operator("operator:read")),
 ):
     """Export normalized features from all 20 sensors in Excel (.xlsx) or CSV format."""
     if storage is None:
@@ -1100,7 +1107,9 @@ async def export_features(
 
     if export_format == "xlsx":
         try:
-            excel_bytes = _build_excel_features(storage, filters, bounded_limit)
+            excel_bytes = await anyio.to_thread.run_sync(
+                lambda: _build_excel_features(storage, filters, bounded_limit)
+            )
             filename = f"insiedr_features_{timestamp_str}.xlsx"
             return Response(
                 content=excel_bytes,
@@ -1138,6 +1147,7 @@ async def export_keystrokes(
     username: str | None = None,
     agent_id: str | None = None,
     storage=Depends(get_storage),
+    operator: OperatorPrincipal = Depends(require_operator("operator:read")),
 ):
     """Export keystroke dynamics biometric feature logs in Excel (.xlsx) or CSV format."""
     if storage is None:
@@ -1156,7 +1166,9 @@ async def export_keystrokes(
 
     if export_format == "xlsx":
         try:
-            excel_bytes = _build_excel_keystrokes(storage, bounded_limit, username=username, agent_id=agent_id)
+            excel_bytes = await anyio.to_thread.run_sync(
+                lambda: _build_excel_keystrokes(storage, bounded_limit, username=username, agent_id=agent_id)
+            )
             filename = f"insiedr_keystroke_biometrics_{timestamp_str}.xlsx"
             return Response(
                 content=excel_bytes,
@@ -1359,7 +1371,10 @@ def _stream_csv_collector_dataset(
 
 @router.get("/v1/export/collectors")
 @router.get("/export/collectors")
-async def get_export_collectors(storage=Depends(get_storage)):
+async def get_export_collectors(
+    storage=Depends(get_storage),
+    operator: OperatorPrincipal = Depends(require_operator("operator:read")),
+):
     """Return available telemetry collectors and known users for export filtering."""
     if storage is None:
         return JSONResponse({"ok": False, "error": "Storage is not configured"}, status_code=503)
@@ -1386,6 +1401,7 @@ async def preview_collector_dataset(
     username: str | None = Query(None, description="Filter by user or omit for all"),
     limit: int = Query(50, ge=1, le=200, description="Preview sample limit"),
     storage=Depends(get_storage),
+    operator: OperatorPrincipal = Depends(require_operator("operator:read")),
 ):
     """Preview collector-specific dataset schema and matching records before full export."""
     if storage is None:
@@ -1464,8 +1480,9 @@ async def export_collector_dataset(
     start_date: str | None = Query(None, description="Start date (YYYY-MM-DD or ISO timestamp)"),
     end_date: str | None = Query(None, description="End date (YYYY-MM-DD or ISO timestamp)"),
     username: str | None = Query(None, description="Filter by user or omit for all"),
-    limit: int = Query(50000, ge=1, le=200000, description="Maximum number of log samples to export"),
+    limit: int = Query(50000, ge=1, le=100000, description="Maximum number of log samples to export"),
     storage=Depends(get_storage),
+    operator: OperatorPrincipal = Depends(require_operator("operator:read")),
 ):
     """Export collector-specific dataset with unrolled feature columns in CSV format."""
     if storage is None:

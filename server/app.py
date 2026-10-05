@@ -95,6 +95,9 @@ def create_app(*, storage=None, apply_migrations: bool = True) -> FastAPI:
                             max_memory_usage=config.clickhouse_max_memory,
                             dlq_enabled=config.dlq_enabled,
                             dlq_dir=config.dlq_dir,
+                            batch_size=config.ch_batch_max_rows,
+                            flush_interval=config.ch_batch_flush_interval,
+                            max_buffer_bytes=config.ch_batch_max_bytes,
                         )
                     except Exception as ch_err:
                         logging.getLogger("insiedr.app").warning("ClickHouse storage init failed, operating with PG fallback: %s", ch_err)
@@ -127,19 +130,50 @@ def create_app(*, storage=None, apply_migrations: bool = True) -> FastAPI:
                     "Could not start TaskWorker (falling back to in-memory executor): %s", exc
                 )
 
+        # Replication Reconciler worker (PostgreSQL Outbox -> ClickHouse)
+        if storage is not None and getattr(storage, "ch", None) is not None:
+            try:
+                from server.storage.reconciler import ReplicationReconciler
+                reconciler = ReplicationReconciler(
+                    postgres_storage=getattr(storage, "pg", storage),
+                    clickhouse_storage=getattr(storage, "ch", None),
+                    poll_interval=1.0,
+                    batch_size=100,
+                )
+                reconciler.start()
+                app.state.reconciler = reconciler
+                app.extensions["reconciler"] = reconciler
+                logging.getLogger("insiedr.app").info("ReplicationReconciler worker started successfully")
+            except Exception as exc:
+                logging.getLogger("insiedr.app").warning("Could not start ReplicationReconciler: %s", exc)
+
         yield
 
         # Shutdown phase
+        app.state.shutting_down = True
+        if hasattr(app.state, "reconciler") and app.state.reconciler:
+            try:
+                app.state.reconciler.stop(timeout=5.0)
+            except Exception as exc:
+                logging.getLogger("insiedr.app").warning("ReplicationReconciler stop notice: %s", exc)
+
         if hasattr(app.state, "task_queue_worker") and app.state.task_queue_worker:
             try:
-                app.state.task_queue_worker.stop()
-            except Exception:
-                pass
+                app.state.task_queue_worker.stop(timeout=5.0)
+            except Exception as exc:
+                logging.getLogger("insiedr.app").warning("TaskWorker stop notice: %s", exc)
+
+        try:
+            from server.api.events import broadcaster
+            broadcaster.stop()
+        except Exception:
+            pass
+
         if hasattr(app.state, "storage") and app.state.storage and hasattr(app.state.storage, "close"):
             try:
                 app.state.storage.close()
-            except Exception:
-                pass
+            except Exception as exc:
+                logging.getLogger("insiedr.app").warning("Storage close notice: %s", exc)
 
     app = FastAPI(
         title="InsiEDR Telemetry & Dataset Collection Server",
@@ -164,10 +198,12 @@ def create_app(*, storage=None, apply_migrations: bool = True) -> FastAPI:
     }
 
     # Cross-Origin Resource Sharing (CORS) support
+    cors_origins = config.cors_origins
+    allow_creds = cors_origins != ["*"]
     app.add_middleware(
         CORSMiddleware,
-        allow_origins=["*"],
-        allow_credentials=True,
+        allow_origins=cors_origins,
+        allow_credentials=allow_creds,
         allow_methods=["*"],
         allow_headers=["*"],
     )

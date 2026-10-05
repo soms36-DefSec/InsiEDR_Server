@@ -82,6 +82,7 @@ class ClickHouseStorage:
         database: str = "insiedr_analytics",
         batch_size: int = 500,
         flush_interval: float = 1.0,
+        max_buffer_bytes: int = 25 * 1024 * 1024,
         secure: bool = False,
         verify: bool = True,
         ca_cert: str | None = None,
@@ -115,6 +116,7 @@ class ClickHouseStorage:
             insert_fn=self._raw_batch_insert,
             batch_size=batch_size,
             flush_interval=flush_interval,
+            max_buffer_bytes=max_buffer_bytes,
             dlq_enabled=dlq_enabled,
             dlq_dir=dlq_dir,
         )
@@ -222,6 +224,11 @@ class ClickHouseStorage:
             self._client = None
             self._is_connected = False
 
+    def flush_all(self, raise_on_error: bool = False) -> None:
+        """Synchronously flush all pending batches through the batcher."""
+        if hasattr(self, "batcher") and self.batcher is not None:
+            self.batcher.flush_all(raise_on_error=raise_on_error)
+
     # --------------------------------------------------------------------------
     # Ingest & Storage APIs (Queued via Batcher)
     # --------------------------------------------------------------------------
@@ -271,8 +278,9 @@ class ClickHouseStorage:
             error = cr.get("error") if isinstance(cr.get("error"), dict) else {}
             source_quality = self._derive_source_quality(cr)
 
+            col_id = str(uuid.uuid5(uuid.NAMESPACE_OID, f"{payload_id}:col:{collector_name}"))
             col_row = {
-                "id": str(uuid.uuid4()),
+                "id": col_id,
                 "payload_id": str(payload_id),
                 "agent_id": str(agent_id or ""),
                 "collector": collector_name,
@@ -288,8 +296,9 @@ class ClickHouseStorage:
 
             # Check for tamper alert
             if collector_name == "tamper" or status == "critical":
+                risk_id = str(uuid.uuid5(uuid.NAMESPACE_OID, f"{payload_id}:risk:{collector_name}"))
                 risk_rows.append({
-                    "id": str(uuid.uuid4()),
+                    "id": risk_id,
                     "payload_id": str(payload_id),
                     "agent_id": str(agent_id or ""),
                     "username": str(decrypted_payload.get("username") or ""),
@@ -306,8 +315,9 @@ class ClickHouseStorage:
                 for feat_name, feat_val in payload_data.items():
                     if feat_val is None:
                         continue
+                    feat_id = str(uuid.uuid5(uuid.NAMESPACE_OID, f"{payload_id}:feat:{collector_name}:{feat_name}"))
                     feat_row = {
-                        "id": str(uuid.uuid4()),
+                        "id": feat_id,
                         "payload_id": str(payload_id),
                         "agent_id": str(agent_id or ""),
                         "username": str(decrypted_payload.get("username") or ""),
@@ -596,6 +606,42 @@ class ClickHouseStorage:
         except Exception as exc:
             logger.warning("ClickHouse get_distinct_usernames failed: %s", exc)
             return []
+
+    def count_collector_results(
+        self,
+        collector: str | None = None,
+        username: str | None = None,
+        start_time: str | None = None,
+        end_time: str | None = None,
+        exact_collector: bool = False,
+    ) -> int:
+        if not self.is_connected():
+            return 0
+        where_clauses = []
+        params = {}
+        if collector:
+            if exact_collector:
+                where_clauses.append("lower(collector) = lower(%(collector)s)")
+                params["collector"] = collector
+            else:
+                where_clauses.append("collector ILIKE %(collector)s")
+                params["collector"] = f"%{collector}%"
+        if username:
+            where_clauses.append("payload_id IN (SELECT payload_id FROM raw_payloads WHERE username ILIKE %(username)s)")
+            params["username"] = f"%{username}%"
+        if start_time:
+            where_clauses.append("collector_collected_at >= %(start_time)s")
+            params["start_time"] = start_time
+        if end_time:
+            where_clauses.append("collector_collected_at <= %(end_time)s")
+            params["end_time"] = end_time
+        where_sql = ("WHERE " + " AND ".join(where_clauses)) if where_clauses else ""
+        query = f"SELECT count() FROM collector_results {where_sql}"
+        try:
+            res = self._query(query, parameters=params)
+            return int(res.result_rows[0][0]) if res.result_rows else 0
+        except Exception:
+            return 0
 
     def list_risk_events(self, limit: int = 100, offset: int = 0) -> List[Dict[str, Any]]:
         """Retrieve recent correlated risk scores."""

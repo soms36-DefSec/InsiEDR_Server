@@ -35,11 +35,19 @@ class TelemetryRepository:
         if inserted is False:
             return  # A concurrent retry must not duplicate ClickHouse event rows.
 
+        # PostgreSQL has already atomically committed raw_payloads, collector_results,
+        # and the transactional clickhouse_outbox entry in store_raw_payload.
+        # Direct ClickHouse buffer admission here is a best-effort optimisation for
+        # low analytics latency.  The outbox entry intentionally remains "pending"
+        # until the background reconciler confirms durable ClickHouse insertion via
+        # flush_all(raise_on_error=True); only then is it marked completed.
+        # Marking it completed here — immediately after in-memory enqueue — would
+        # cause silent data loss on a process crash before the batcher flushes.
         if self._has_ch():
             try:
                 self.ch.store_raw_payload(envelope, decrypted_payload)
             except Exception as ch_err:
-                logger.warning("ClickHouse store_raw_payload failed: %s", ch_err)
+                logger.warning("ClickHouse direct store_raw_payload failed; transactional outbox will replicate: %s", ch_err)
 
     def get_latest_collector_states(self, agent_id: str) -> List[Dict[str, Any]]:
         # PostgreSQL contains every acknowledged observation. ClickHouse may be
@@ -102,3 +110,13 @@ class TelemetryRepository:
             except Exception:
                 pass
         return getattr(self.pg, "get_distinct_usernames", lambda: [])()
+
+    def count_collector_results(self, **filters) -> int:
+        if self._has_ch():
+            try:
+                cnt = self.ch.count_collector_results(**filters)
+                if cnt > 0:
+                    return cnt
+            except Exception:
+                pass
+        return getattr(self.pg, "count_collector_results", lambda **kw: 0)(**filters)

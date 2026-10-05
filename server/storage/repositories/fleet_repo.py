@@ -169,6 +169,14 @@ class FleetRepository:
                     logger.debug("Non-fatal: could not log to agent_heartbeats: %s", hb_err)
                 conn.commit()
 
+    VALID_TASK_STATUSES = {
+        "pending", "dispatched", "acknowledged", "running",
+        "success", "completed", "failed", "rejected", "timeout", "cancelled"
+    }
+    TERMINAL_STATES = {
+        "success", "completed", "failed", "rejected", "timeout", "cancelled"
+    }
+
     def queue_task(
         self,
         agent_id: str,
@@ -176,12 +184,17 @@ class FleetRepository:
         params: Dict[str, Any] | None = None,
         signature: str | None = None,
         task_id: str | None = None,
+        actor_id: str | None = None,
+        actor_role: str | None = None,
+        ip_address: str | None = None,
     ) -> str:
         """Enqueue a remote containment/investigation command for the agent."""
         if not task_id:
             import uuid
             task_id = str(uuid.uuid4())
         params = params or {}
+        actor = actor_id or "system"
+        role = actor_role or "operator"
         with self.pg.connection() as conn:
             with closing(conn.cursor()) as cur:
                 cur.execute(
@@ -201,22 +214,57 @@ class FleetRepository:
                     """,
                     (task_id, agent_id, command, Json(params), signature),
                 )
+                # Atomically record operator command audit log
+                try:
+                    cur.execute(
+                        """
+                        INSERT INTO command_audit_log (
+                            task_id, agent_id, command, params_json, actor_id, actor_role, ip_address, status, created_at
+                        )
+                        VALUES (%s, %s, %s, %s, %s, %s, %s, 'queued', CURRENT_TIMESTAMP)
+                        """,
+                        (task_id, agent_id, command, Json(params), actor, role, ip_address),
+                    )
+                except Exception as audit_err:
+                    err_msg = str(audit_err).lower()
+                    if "command_audit_log" in err_msg and ("does not exist" in err_msg or "no such table" in err_msg):
+                        pass
+                    else:
+                        raise
                 conn.commit()
         return task_id
 
     def get_pending_tasks(self, agent_id: str) -> List[Dict[str, Any]]:
-        """Fetch pending tasks for the given agent."""
+        """Fetch pending tasks or expired unacknowledged leases for the given agent."""
+        from datetime import datetime, timezone
+        now = datetime.now(timezone.utc)
         with self.pg.connection() as conn:
             with closing(conn.cursor()) as cur:
-                cur.execute(
-                    """
-                    SELECT task_id, command, params_json, signature
-                    FROM agent_tasks
-                    WHERE agent_id = %s AND status = 'pending'
-                    ORDER BY created_at ASC
-                    """,
-                    (agent_id,),
-                )
+                try:
+                    cur.execute(
+                        """
+                        SELECT task_id, command, params_json, signature
+                        FROM agent_tasks
+                        WHERE agent_id = %s
+                          AND (
+                            status = 'pending'
+                            OR (status = 'dispatched' AND acknowledged_at IS NULL AND lease_expires_at IS NOT NULL AND lease_expires_at < %s)
+                          )
+                        ORDER BY created_at ASC
+                        """,
+                        (agent_id, now),
+                    )
+                except Exception:
+                    # Fallback if lease columns are not present in legacy schema
+                    cur.execute(
+                        """
+                        SELECT task_id, command, params_json, signature
+                        FROM agent_tasks
+                        WHERE agent_id = %s AND status = 'pending'
+                        ORDER BY created_at ASC
+                        """,
+                        (agent_id,),
+                    )
                 cols = [col[0] for col in cur.description or []]
                 rows = cur.fetchall()
                 tasks = []
@@ -237,22 +285,63 @@ class FleetRepository:
                     })
                 return tasks
 
-    def mark_tasks_dispatched(self, task_ids: List[str]) -> None:
-        """Mark tasks as dispatched to the agent."""
+    def mark_tasks_dispatched(self, task_ids: List[str], lease_seconds: int = 120) -> None:
+        """Mark tasks as dispatched to the agent with a recoverable delivery lease."""
         if not task_ids:
             return
+        from datetime import datetime, timezone, timedelta
+        expires_at = datetime.now(timezone.utc) + timedelta(seconds=lease_seconds)
         with self.pg.connection() as conn:
             with closing(conn.cursor()) as cur:
                 for tid in task_ids:
+                    try:
+                        cur.execute(
+                            """
+                            UPDATE agent_tasks
+                            SET status = 'dispatched',
+                                dispatched_at = CURRENT_TIMESTAMP,
+                                dispatch_count = COALESCE(dispatch_count, 0) + 1,
+                                lease_expires_at = %s
+                            WHERE task_id = %s AND (status = 'pending' OR (status = 'dispatched' AND acknowledged_at IS NULL))
+                            """,
+                            (expires_at, tid),
+                        )
+                    except Exception:
+                        # Fallback for schema without lease columns
+                        cur.execute(
+                            """
+                            UPDATE agent_tasks
+                            SET status = 'dispatched', dispatched_at = CURRENT_TIMESTAMP
+                            WHERE task_id = %s AND status = 'pending'
+                            """,
+                            (tid,),
+                        )
+                conn.commit()
+
+    def acknowledge_task(self, agent_id: str, task_id: str) -> bool:
+        """Explicitly acknowledge receipt of a task by the executing agent."""
+        with self.pg.connection() as conn:
+            with closing(conn.cursor()) as cur:
+                try:
                     cur.execute(
                         """
                         UPDATE agent_tasks
-                        SET status = 'dispatched', dispatched_at = CURRENT_TIMESTAMP
-                        WHERE task_id = %s AND status = 'pending'
+                        SET status = 'acknowledged', acknowledged_at = CURRENT_TIMESTAMP
+                        WHERE task_id = %s AND agent_id = %s AND status IN ('pending', 'dispatched')
                         """,
-                        (tid,),
+                        (task_id, agent_id),
+                    )
+                except Exception:
+                    cur.execute(
+                        """
+                        UPDATE agent_tasks
+                        SET status = 'acknowledged'
+                        WHERE task_id = %s AND agent_id = %s AND status IN ('pending', 'dispatched')
+                        """,
+                        (task_id, agent_id),
                     )
                 conn.commit()
+                return cur.rowcount > 0
 
     def update_task_result(
         self,
@@ -263,19 +352,43 @@ class FleetRepository:
         message: str,
         completed_at: str | None = None,
     ) -> bool:
-        """Update task execution result reported by agent."""
+        """Update task execution result reported by agent.
+        Enforces:
+        1. Task ownership in SQL by BOTH task_id AND agent_id.
+        2. Legal state transitions (terminal states cannot be overwritten with different states).
+        3. Allowed status validation.
+        """
+        normalized_status = status.lower().strip()
+        if normalized_status not in self.VALID_TASK_STATUSES:
+            logger.warning("Rejected invalid task status '%s' for task %s", status, task_id)
+            return False
+
         with self.pg.connection() as conn:
             with closing(conn.cursor()) as cur:
                 cur.execute(
                     """
                     UPDATE agent_tasks
                     SET status = %s, exit_code = %s, message = %s, completed_at = CURRENT_TIMESTAMP
-                    WHERE task_id = %s
+                    WHERE task_id = %s AND agent_id = %s
+                      AND (status NOT IN ('success', 'completed', 'failed', 'rejected', 'timeout', 'cancelled') OR status = %s)
                     """,
-                    (status, exit_code, message, task_id),
+                    (normalized_status, exit_code, message, task_id, agent_id, normalized_status),
                 )
+                updated = cur.rowcount > 0
+                if updated:
+                    try:
+                        cur.execute(
+                            """
+                            UPDATE command_audit_log
+                            SET status = %s
+                            WHERE task_id = %s AND agent_id = %s
+                            """,
+                            (normalized_status, task_id, agent_id),
+                        )
+                    except Exception:
+                        pass
                 conn.commit()
-                return cur.rowcount > 0
+                return updated
 
     def list_agent_tasks(self, agent_id: str, limit: int = 50, offset: int = 0) -> List[Dict[str, Any]]:
         """List historical tasks executed or queued for the agent."""

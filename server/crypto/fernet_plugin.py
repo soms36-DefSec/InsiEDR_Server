@@ -18,6 +18,11 @@ class FernetPlugin:
 	def __init__(self, key: bytes | str) -> None:
 		self._fernet = Fernet(key.encode("ascii") if isinstance(key, str) else key)
 
+	def validate_envelope(self, envelope: Mapping[str, object]) -> None:
+		"""Validate required cipher-specific fields for Fernet."""
+		if not envelope.get("token"):
+			raise FernetPluginError("missing envelope field: token")
+
 	def decrypt(self, envelope: Mapping[str, object]) -> bytes:
 		if envelope.get("scheme") != self.scheme:
 			raise FernetPluginError("wrong scheme")

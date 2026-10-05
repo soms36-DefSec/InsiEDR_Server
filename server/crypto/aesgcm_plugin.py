@@ -22,6 +22,12 @@ class AESGCMPlugin:
         self.key = normalize_aes_key(key)
         self._aesgcm = AESGCM(self.key)
 
+    def validate_envelope(self, envelope: Mapping[str, object]) -> None:
+        """Validate required cipher-specific fields for AES-256-GCM."""
+        for field in ("key_id", "nonce", "ciphertext"):
+            if not envelope.get(field):
+                raise AESGCMPluginError(f"missing envelope field: {field}")
+
     def decrypt(self, envelope: Mapping[str, object]) -> bytes:
         if envelope.get("scheme") != self.scheme:
             raise AESGCMPluginError("wrong scheme")

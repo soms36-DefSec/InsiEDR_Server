@@ -25,7 +25,7 @@ services:
       "--appendonly", "yes",
       "--loglevel", "warning",
       "--maxmemory", "1gb",
-      "--maxmemory-policy", "allkeys-lru"
+      "--maxmemory-policy", "noeviction"
     ]
     volumes:
       - redis_data:/data

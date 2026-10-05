@@ -7,8 +7,9 @@ import queue
 import threading
 import time
 from typing import Any, Generator
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, Depends, Request
 from fastapi.responses import StreamingResponse
+from server.api.deps import require_operator, OperatorPrincipal
 
 logger = logging.getLogger("insiedr.api.events")
 
@@ -196,20 +197,23 @@ def _stream_response(topic: str) -> StreamingResponse:
 
 @router.get("/v1/stream/threats")
 @router.get("/stream/threats")
-async def stream_threats():
+async def stream_threats(operator: OperatorPrincipal = Depends(require_operator("operator:read"))):
     """Server-Sent Events endpoint streaming real-time threat alerts and ML anomaly scores."""
     return _stream_response("threats")
 
 
 @router.get("/v1/stream/agents")
 @router.get("/stream/agents")
-async def stream_agents():
+async def stream_agents(operator: OperatorPrincipal = Depends(require_operator("operator:read"))):
     """Server-Sent Events endpoint streaming real-time agent status, heartbeats, and tamper events."""
     return _stream_response("agents")
 
 
 @router.post("/v1/stream/test-broadcast")
-async def test_broadcast(request: Request):
+async def test_broadcast(
+    request: Request,
+    operator: OperatorPrincipal = Depends(require_operator("admin")),
+):
     """Dev/Admin endpoint to test broadcasting a synthetic alert over SSE."""
     payload = None
     try:

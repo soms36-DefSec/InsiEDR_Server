@@ -101,12 +101,64 @@ def verify_hmac_sha256(secret: bytes, payload: bytes, signature: str) -> bool:
     return hmac.compare_digest(expected, signature)
 
 
-def redact_secret(value: str | None) -> str:
+import re
+from urllib.parse import urlsplit, urlunsplit
+
+
+def redact_url_credentials(url: str | None) -> str:
+    """Safely redact credentials (user:password) from database and Redis connection URLs."""
+    if not url:
+        return "<unset>"
+    try:
+        parsed = urlsplit(url)
+        if not parsed.netloc:
+            # Fallback regex if scheme/netloc parsing failed
+            return re.sub(r"://([^:@\s]+)?(:[^@\s]+)?@", r"://***:***@", url)
+        
+        # Check if username or password is embedded
+        if parsed.password or parsed.username:
+            user = parsed.username or ""
+            # Redact password completely, mask username
+            netloc_parts = parsed.netloc.split("@")
+            host_port = netloc_parts[-1]
+            masked_userinfo = f"{user}:***" if user else ":***"
+            new_netloc = f"{masked_userinfo}@{host_port}"
+            return urlunsplit((parsed.scheme, new_netloc, parsed.path, parsed.query, parsed.fragment))
+        return url
+    except Exception:
+        return re.sub(r"://([^:@\s]+)?(:[^@\s]+)?@", r"://***:***@", url)
+
+
+def redact_dsn_credentials(dsn: str | None) -> str:
+    """Redact credentials from both URL-format and libpq keyword-format DSNs.
+
+    URL format:  ``postgresql://user:password@host/db``
+    Keyword format: ``host=db user=insiedr password=secret dbname=insiedr_db``
+    """
+    if not dsn:
+        return "<unset>"
+    stripped = dsn.strip()
+    # Detect keyword format: does not contain "://" but contains "password=" or "passfile="
+    if "://" not in stripped and ("password=" in stripped or "passfile=" in stripped):
+        # Redact the value of password= and passfile= keyword arguments
+        redacted = re.sub(
+            r"(password|passfile)\s*=\s*(\S+)",
+            r"\1=***",
+            stripped,
+            flags=re.IGNORECASE,
+        )
+        return redacted
+    return redact_url_credentials(stripped)
+
+
+def redact_secret(value: str | None, full: bool = True) -> str:
+    """Redact confidential API keys, passwords, and private key strings."""
     if not value:
         return "<unset>"
-    if len(value) <= 8:
+    if full or len(value) <= 8:
         return "<redacted>"
-    return f"{value[:3]}...{value[-3:]}"
+    return f"{value[:3]}...[REDACTED]...{value[-3:]}"
+
 
 
 X25519_KEY_BYTES = 32

@@ -41,6 +41,17 @@ class PluginRegistry:
         if config.enable_plaintext_crypto:
             self._plugins[PlaintextPlugin.scheme] = PlaintextPlugin()
 
+    def register(self, plugin: object) -> None:
+        """Explicitly register a crypto adapter."""
+        scheme = getattr(plugin, "scheme", None)
+        if not scheme:
+            raise ValueError("Crypto adapter plugin must define a 'scheme' attribute")
+        self._plugins[str(scheme)] = plugin
+
+    def unregister(self, scheme: str) -> None:
+        """Remove a registered adapter by scheme name."""
+        self._plugins.pop(scheme, None)
+
     def get(self, scheme: str):
         return self._plugins.get(scheme)
 

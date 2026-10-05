@@ -236,6 +236,9 @@ export interface TelemetryLog {
 export interface TelemetryResponse {
   ok: boolean;
   logs: TelemetryLog[];
+  total?: number;
+  offset?: number;
+  limit?: number;
   error?: string;
 }
 

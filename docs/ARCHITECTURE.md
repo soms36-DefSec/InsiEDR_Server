@@ -107,28 +107,52 @@ Decrypted telemetry is extracted into a normalized feature vector across four do
 
 ---
 
-## 4. Storage Architecture: Hybrid PostgreSQL + ClickHouse
+## 4. Storage Architecture: Authoritative PostgreSQL + ClickHouse Outbox Replication
 
-The server uses a specialized dual-storage architecture to balance transactional integrity with big-data analytics throughput:
+The server enforces an authoritative primary-source architecture balancing ACID persistence with high-throughput columnar analytics:
 
-### 1. PostgreSQL (Transactional Nervous System)
-* Stores structured entities, registered agents, security incidents, baselines, and background job states.
-* Includes 8 automated schema migrations (`server/storage/migrations/`):
+### 1. PostgreSQL (Authoritative Source of Truth)
+* Durable transactional persistence commits BEFORE returning HTTP `202 Accepted` on telemetry ingestion.
+* Strict transactional boundaries: `raw_payloads`, `collector_results`, `risk_events`, and `normalized_features` are committed together.
+* Schema migrations serialized with PostgreSQL advisory locks (`pg_advisory_lock`):
   * `001_initial_schema.sql` — Core telemetry, agents, alerts.
   * `004_table_partitioning.sql` — Daily and monthly partition tables for scalable log management.
   * `005_normalized_features_payload_idx.sql` — Feature indexes.
   * `006_user_daily_rvfl_risk.sql` — Historical temporal score caching.
   * `007_task_queue.sql` — Durable job worker queue.
   * `008_performance_indexes.sql` — B-Tree and BRIN indexes for high-speed queries.
+  * `011_command_audit.sql` — `command_audit_log`, `agent_tasks` delivery lease columns, and `clickhouse_outbox`.
 
-### 2. ClickHouse (Columnar Telemetry Warehouse)
-* When enabled via `CLICKHOUSE_ENABLED=true`, raw high-volume event telemetry is streamed into ClickHouse.
-* Allows sub-second aggregation and forensic searches across tens of millions of raw log entries.
+### 2. Transactional Outbox & ClickHouse Replication
+* ClickHouse in-memory buffer admission is **never** treated as durable persistence.
+* During telemetry persistence, outbox entries are atomically enqueued into the PostgreSQL `clickhouse_outbox` table within the **exact same database transaction** as `raw_payloads` and `collector_results` before `conn.commit()`.
+* A background `ReplicationReconciler` (`server/storage/reconciler.py`) periodically drains the outbox and replays records to ClickHouse with exponential backoff and retry tracking.
+* The reconciler guarantees durability by requiring a confirmed ClickHouse flush (`flush_all` / `flush`) before marking outbox records `completed` in PostgreSQL; on flush failure, records remain `pending` for safe retry.
+* ClickHouse Batcher (`server/storage/clickhouse_batcher.py`) enforces strict capacity bounds (`max_buffer_rows`, `max_buffer_bytes`) item-by-item, spilling any excess or oversized batches directly to the durable Dead-Letter Queue (DLQ) file store.
+* DLQ table routing parses full table names (`raw_payloads`, `collector_results`) with atomic `.tmp` publication and `.replaying` exclusive claim locks.
+
+### 3. Concurrency, Queue Safety, & Event Loop Health
+* **Atomic Redis State Transitions**: Job claiming uses `BRPOPLPUSH` into an in-flight processing list (`insiedr:tasks:processing`), and job failure/rescheduling uses atomic Redis multi/exec pipelines (`HDEL + ZADD`), eliminating task-loss windows. The background reaper sweeps orphaned jobs from both running and in-flight processing structures.
+* **Bounded Thread Offloading**: All blocking synchronous I/O operations (PostgreSQL database queries, ClickHouse queries, OpenPyXL spreadsheet generation) are offloaded to worker threads via `anyio.to_thread.run_sync`, keeping the FastAPI asynchronous event loop completely unblocked and responsive under heavy concurrent loads (verified at 236+ RPS).
 
 ---
 
-## 5. Real-Time Streaming & Dashboard Interface
+## 5. Security, Fleet Control & Zero Trust
 
-* **Server-Sent Events (SSE)**: The frontend connects to `/api/v1/stream/sse` and `/api/stream/threats` for low-latency reactive updates without polling.
+* **Operator RBAC**: Operator actions require verified bearer tokens with granular roles (`operator:containment` for isolation/unisolation, `operator:remediation` for process termination/lock/rollback, `operator:read` for telemetry queries and exports, `admin` for test broadcasts).
+* **Command Audit Trail**: Every fleet containment or remediation action is written atomically to `command_audit_log` with actor identity, role, target agent, command parameters, and client IP.
+* **Agent Credential Binding**: Agent requests (`/agent/heartbeat`, `/agent/task-result`, `/agent/task-ack`) verify credentials bound to the claimed `agent_id`, preventing cross-agent identity spoofing.
+* **SQL Task Ownership**: Result ingestion enforces `WHERE task_id = %s AND agent_id = %s` and legal state machine transitions; terminal states cannot be rewritten or reopened.
+* **Command Delivery Leases**: Remote tasks use recoverable command leases (`lease_expires_at`, `dispatch_count`) and an explicit acknowledgement protocol (`POST /api/agent/task-ack`).
+* **RFC 7807 Problem Details**: Uniform error responses formatted per RFC 7807 (`type`, `title`, `status`, `detail`, `instance`) while retaining legacy keys for backwards compatibility.
+* **Kubernetes Probes**: Ultra-lightweight `/api/health/live` (liveness) and `/api/health/ready` (readiness).
+* **Cryptographic Protocol**: The HPKE adapter implements a custom hybrid public-key encryption scheme based on X25519 ECDH, HKDF-SHA256, and AES-256-GCM inspired by RFC 9180 (Mode 0: Base). Public-key encryption alone is not treated as sender authentication; agent token binding is required.
+* **Secret Redaction**: URLs in logs and configuration strip credentials (`user:password` -> `user:***@host`).
+
+---
+
+## 6. Real-Time Streaming & Dashboard Interface
+
+* **Server-Sent Events (SSE)**: The frontend connects to `/api/v1/stream/threats` and `/api/v1/stream/agents` for low-latency reactive updates protected by operator authorization.
 * **React 19 Single-Page Application**: The production build (`frontend/dist/`) is served directly by the FastAPI backend at `/dashboard/`.
 * **API Documentation**: Interactive OpenAPI 3.0 documentation is auto-generated and served at `/docs` (Swagger UI) and `/redoc` (ReDoc).

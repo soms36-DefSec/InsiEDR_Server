@@ -12,8 +12,8 @@ CREATE INDEX IF NOT EXISTS idx_risk_events_user_time
     ON risk_events (username, created_at DESC);
 
 -- Accelerate collector results streaming export and drilldowns
-CREATE INDEX IF NOT EXISTS idx_collector_results_user_time
-    ON collector_results (username, collector_collected_at DESC);
+CREATE INDEX IF NOT EXISTS idx_collector_results_agent_time
+    ON collector_results (agent_id, collector_collected_at DESC);
 
 CREATE INDEX IF NOT EXISTS idx_collector_results_time_desc
     ON collector_results (collector_collected_at DESC);

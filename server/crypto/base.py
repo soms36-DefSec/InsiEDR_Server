@@ -1,30 +1,35 @@
-from __future__ import annotations
-
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
-from typing import Any, Mapping
+from typing import Any, Mapping, Protocol, runtime_checkable
 
 
-@dataclass
-class DecryptResult:
-    payload: dict[str, Any]
-    integrity_ok: bool
-    plugin_used: str
+class EnvelopeValidationError(ValueError):
+    """Raised when an incoming encrypted envelope fails cipher-specific validation."""
+    pass
+
+
+@runtime_checkable
+class CryptoAdapter(Protocol):
+    """Protocol defining the actual contract implemented by InsiEDR crypto adapters."""
+    scheme: str
+
+    def decrypt(self, envelope: Mapping[str, object]) -> bytes:
+        """Decrypt the cipher envelope and return decrypted JSON payload bytes."""
+        ...
+
+    def validate_envelope(self, envelope: Mapping[str, object]) -> None:
+        """Validate cipher-specific required fields in the envelope."""
+        ...
 
 
 class BaseCryptoPlugin(ABC):
-    name: str = "base"
-    version: str = "0.0.0"
-    enabled: bool = True
+    """Abstract base class for registered crypto adapters."""
+    scheme: str = "base"
 
     @abstractmethod
-    def encrypt(self, payload_bytes: bytes, key: bytes) -> bytes:
+    def decrypt(self, envelope: Mapping[str, object]) -> bytes:
         raise NotImplementedError()
 
-    @abstractmethod
-    def decrypt(self, ciphertext: bytes, key: bytes) -> DecryptResult:
-        raise NotImplementedError()
-
-    @abstractmethod
-    def can_handle(self, header_hint: str) -> bool:
-        raise NotImplementedError()
+    def validate_envelope(self, envelope: Mapping[str, object]) -> None:
+        """Default no-op envelope validation for adapters that don't need custom fields."""
+        pass

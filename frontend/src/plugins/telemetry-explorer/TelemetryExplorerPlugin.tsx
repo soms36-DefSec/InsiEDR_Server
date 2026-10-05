@@ -37,6 +37,10 @@ import {
   Activity,
   FileSpreadsheet,
   Layers,
+  ChevronLeft,
+  ChevronRight,
+  ChevronsLeft,
+  ChevronsRight,
 } from 'lucide-react';
 
 export const TelemetryExplorerPlugin: React.FC<PluginProps> = ({ context }) => {
@@ -51,45 +55,85 @@ export const TelemetryExplorerPlugin: React.FC<PluginProps> = ({ context }) => {
   const [statusFilter, setStatusFilter] = useState<string>('all');
   const [timeRange, setTimeRange] = useState<string>('all');
 
-  const [offset, setOffset] = useState(0);
-  const [isLoading, setIsLoading] = useState(false);
-  const [hasMore, setHasMore] = useState(true);
-
-  const PAGE_SIZE = 100;
+  // Pagination State
+  const [currentPage, setCurrentPage] = useState<number>(1);
+  const [pageSize, setPageSize] = useState<number>(50);
+  const [totalCount, setTotalCount] = useState<number>(0);
+  const [isLoading, setIsLoading] = useState<boolean>(false);
+  const [hasMore, setHasMore] = useState<boolean>(true);
 
   const loadLogs = useCallback(
-    async (newOffset = 0, append = false) => {
+    async (pageToLoad = 1, currentSize = pageSize) => {
       setIsLoading(true);
       try {
         const collectorParam = activeCollector !== 'all' ? activeCollector : null;
         const searchParam = searchTerm.trim() ? searchTerm.trim() : null;
+        const newOffset = (pageToLoad - 1) * currentSize;
 
         const res = await fetchTelemetry(
-          PAGE_SIZE,
+          currentSize,
           newOffset,
           collectorParam,
           searchParam
         );
         const fetched = res.logs || [];
-        if (append) {
-          setLogs((prev) => [...prev, ...fetched]);
+        setLogs(fetched);
+        setCurrentPage(pageToLoad);
+        setHasMore(fetched.length === currentSize);
+        if (typeof res.total === 'number') {
+          setTotalCount(res.total);
         } else {
-          setLogs(fetched);
+          setTotalCount(newOffset + fetched.length + (fetched.length === currentSize ? currentSize : 0));
         }
-        setOffset(newOffset);
-        setHasMore(fetched.length === PAGE_SIZE);
       } catch (err) {
         console.error('Failed to load telemetry logs:', err);
       } finally {
         setIsLoading(false);
       }
     },
-    [activeCollector, searchTerm]
+    [activeCollector, searchTerm, pageSize]
   );
 
   useEffect(() => {
-    loadLogs(0, false);
+    loadLogs(1, pageSize);
   }, [loadLogs]);
+
+  const totalPages = Math.max(1, Math.ceil((totalCount || logs.length) / pageSize));
+
+  const handlePageSizeChange = (newSize: number) => {
+    setPageSize(newSize);
+    loadLogs(1, newSize);
+  };
+
+  const handleGoToPage = (newPage: number) => {
+    if (newPage < 1 || (totalCount > 0 && newPage > totalPages) || isLoading) return;
+    loadLogs(newPage, pageSize);
+  };
+
+  const pageNumbers = useMemo(() => {
+    const pages: (number | string)[] = [];
+    if (totalPages <= 7) {
+      for (let i = 1; i <= totalPages; i++) pages.push(i);
+    } else {
+      pages.push(1);
+      if (currentPage > 3) {
+        pages.push('...');
+      }
+      const start = Math.max(2, currentPage - 1);
+      const end = Math.min(totalPages - 1, currentPage + 1);
+      for (let i = start; i <= end; i++) {
+        pages.push(i);
+      }
+      if (currentPage < totalPages - 2) {
+        pages.push('...');
+      }
+      pages.push(totalPages);
+    }
+    return pages;
+  }, [currentPage, totalPages]);
+
+  const startItem = totalCount === 0 || logs.length === 0 ? 0 : (currentPage - 1) * pageSize + 1;
+  const endItem = (currentPage - 1) * pageSize + logs.length;
 
   // Client-side multi-dimensional filtering
   const filteredLogs = useMemo(() => {
@@ -140,10 +184,6 @@ export const TelemetryExplorerPlugin: React.FC<PluginProps> = ({ context }) => {
     setActiveCollector('all');
     setStatusFilter('all');
     setTimeRange('all');
-  };
-
-  const handleLoadMore = () => {
-    loadLogs(offset + PAGE_SIZE, true);
   };
 
   const hasActiveFilters =
@@ -281,7 +321,7 @@ export const TelemetryExplorerPlugin: React.FC<PluginProps> = ({ context }) => {
             <Button
               variant="secondary"
               size="sm"
-              onClick={() => loadLogs(0, false)}
+              onClick={() => loadLogs(currentPage, pageSize)}
               disabled={isLoading}
               icon={<RefreshCw className={`w-3.5 h-3.5 ${isLoading ? 'animate-spin' : ''}`} />}
             >
@@ -358,20 +398,119 @@ export const TelemetryExplorerPlugin: React.FC<PluginProps> = ({ context }) => {
         isLoading={isLoading}
       />
 
-      {/* Load More Button */}
-      {hasMore && (
-        <div className="flex justify-center pt-1 pb-6">
+      {/* Interactive Pagination Bar */}
+      <div className="bg-white border border-slate-200 rounded-lg p-3.5 flex flex-wrap items-center justify-between gap-4 shadow-2xs text-xs">
+        {/* Left: Rows Per Page Selector & Record Range Summary */}
+        <div className="flex items-center gap-3 flex-wrap">
+          <div className="flex items-center gap-1.5 text-slate-600">
+            <span className="font-medium">Rows per page:</span>
+            <select
+              value={pageSize}
+              onChange={(e) => handlePageSizeChange(Number(e.target.value))}
+              disabled={isLoading}
+              className="bg-slate-50 border border-slate-200 rounded px-2.5 py-1 font-semibold text-slate-800 outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 cursor-pointer text-xs shadow-2xs"
+            >
+              <option value={25}>25</option>
+              <option value={50}>50</option>
+              <option value={100}>100</option>
+              <option value={200}>200</option>
+            </select>
+          </div>
+
+          <span className="text-slate-300">|</span>
+
+          <div className="text-slate-600 font-medium">
+            Showing <b className="text-slate-900 font-mono">{startItem}</b> –{' '}
+            <b className="text-slate-900 font-mono">{endItem}</b> of{' '}
+            <b className="text-slate-900 font-mono">
+              {totalCount > 0 ? totalCount.toLocaleString() : (logs.length || 0)}
+            </b>{' '}
+            records
+          </div>
+        </div>
+
+        {/* Right: Page Navigation Controls */}
+        <div className="flex items-center gap-1">
+          {/* First Page */}
           <Button
             variant="secondary"
             size="sm"
-            onClick={handleLoadMore}
-            disabled={isLoading}
-            isLoading={isLoading}
+            onClick={() => handleGoToPage(1)}
+            disabled={currentPage <= 1 || isLoading}
+            title="First Page (Page 1)"
+            className="px-2"
           >
-            Load Next 100 Telemetry Logs from Server...
+            <ChevronsLeft className="w-4 h-4" />
+          </Button>
+
+          {/* Previous Page */}
+          <Button
+            variant="secondary"
+            size="sm"
+            onClick={() => handleGoToPage(currentPage - 1)}
+            disabled={currentPage <= 1 || isLoading}
+            title="Previous Page"
+            className="px-2.5"
+          >
+            <ChevronLeft className="w-4 h-4 mr-0.5" />
+            Prev
+          </Button>
+
+          {/* Page Numbers */}
+          <div className="flex items-center gap-1 px-1">
+            {pageNumbers.map((p, idx) => {
+              if (p === '...') {
+                return (
+                  <span key={`dots-${idx}`} className="px-1.5 text-slate-400 select-none font-bold">
+                    …
+                  </span>
+                );
+              }
+              const pageNum = p as number;
+              const isActive = pageNum === currentPage;
+              return (
+                <button
+                  key={pageNum}
+                  onClick={() => handleGoToPage(pageNum)}
+                  disabled={isLoading}
+                  className={`min-w-8 h-8 px-2 rounded-md font-mono text-xs transition-colors cursor-pointer flex items-center justify-center ${
+                    isActive
+                      ? 'bg-blue-600 text-white font-semibold shadow-2xs'
+                      : 'text-slate-700 hover:bg-slate-100 hover:text-slate-900 border border-slate-200/70 font-medium'
+                  }`}
+                >
+                  {pageNum}
+                </button>
+              );
+            })}
+          </div>
+
+          {/* Next Page */}
+          <Button
+            variant="secondary"
+            size="sm"
+            onClick={() => handleGoToPage(currentPage + 1)}
+            disabled={(currentPage >= totalPages && !hasMore) || isLoading}
+            title="Next Page"
+            className="px-2.5"
+          >
+            Next
+            <ChevronRight className="w-4 h-4 ml-0.5" />
+          </Button>
+
+          {/* Last Page */}
+          <Button
+            variant="secondary"
+            size="sm"
+            onClick={() => handleGoToPage(totalPages)}
+            disabled={currentPage >= totalPages || isLoading}
+            title={`Last Page (Page ${totalPages})`}
+            className="px-2"
+          >
+            <ChevronsRight className="w-4 h-4" />
           </Button>
         </div>
-      )}
+      </div>
 
       {/* Payload Inspector Drawer */}
       <LogInspectorDrawer

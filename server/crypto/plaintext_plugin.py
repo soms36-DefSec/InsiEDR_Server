@@ -8,6 +8,11 @@ from shared.protocol import PROTOCOL_VERSION
 class PlaintextPlugin:
     scheme = "plaintext"
 
+    def validate_envelope(self, envelope: Mapping[str, object]) -> None:
+        """Validate required fields for plaintext envelope."""
+        if not (envelope.get("ciphertext") or envelope.get("payload")):
+            raise ValueError("missing envelope field: ciphertext")
+
     def decrypt(self, envelope: Mapping[str, object]) -> bytes:
         # For testing only: assume envelope['ciphertext'] is actually plaintext bytes encoded as utf-8
         try:

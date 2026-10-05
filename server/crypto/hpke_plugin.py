@@ -75,6 +75,12 @@ class HPKEPlugin:
             return next(iter(self._public_keys_bytes.values()))
         return self._public_keys_bytes.get(self._default_key_id)
 
+    def validate_envelope(self, envelope: Mapping[str, object]) -> None:
+        """Validate required cipher-specific fields for HPKE / Hybrid X25519-AESGCM."""
+        for field in ("key_id", "encapped_key", "nonce", "ciphertext"):
+            if not envelope.get(field):
+                raise HPKEPluginError(f"missing envelope field: {field}")
+
     def decrypt(self, envelope: Mapping[str, object]) -> bytes:
         if envelope.get("scheme") != self.scheme:
             raise HPKEPluginError(f"wrong scheme: expected '{self.scheme}', got '{envelope.get('scheme')}'")

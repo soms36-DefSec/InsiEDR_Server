@@ -45,20 +45,27 @@ class InterceptorPipeline:
     """Manages ordered execution of telemetry interceptors."""
 
     def __init__(self) -> None:
-        self._interceptors: List[tuple[int, str, TelemetryInterceptorFn]] = []
+        self._interceptors: List[tuple[int, str, TelemetryInterceptorFn, bool]] = []
 
-    def register(self, fn: TelemetryInterceptorFn, name: str | None = None, order: int = 50) -> TelemetryInterceptorFn:
-        """Register an interceptor with execution priority (lower order runs first)."""
+    def register(
+        self,
+        fn: TelemetryInterceptorFn,
+        name: str | None = None,
+        order: int = 50,
+        required: bool = False,
+    ) -> TelemetryInterceptorFn:
+        """Register an interceptor with execution priority and required failure policy."""
         interceptor_name = name or getattr(fn, "__name__", str(fn))
-        self._interceptors.append((order, interceptor_name, fn))
+        self._interceptors.append((order, interceptor_name, fn, required))
         self._interceptors.sort(key=lambda item: item[0])
-        logger.debug("Registered telemetry interceptor: '%s' (order=%d)", interceptor_name, order)
+        logger.debug("Registered telemetry interceptor: '%s' (order=%d, required=%s)",
+                     interceptor_name, order, required)
         return fn
 
     def process(self, envelope: Dict[str, Any], decrypted_payload: Dict[str, Any]) -> TelemetryContext:
-        """Execute all registered interceptors sequentially."""
+        """Execute all registered interceptors sequentially with fail-closed policy for required filters."""
         ctx = TelemetryContext(envelope=envelope, decrypted_payload=decrypted_payload)
-        for order, name, fn in self._interceptors:
+        for order, name, fn, required in self._interceptors:
             if ctx.is_dropped:
                 logger.info("Telemetry payload '%s' was dropped by interceptor '%s': %s",
                             decrypted_payload.get("payload_id"), name, ctx.drop_reason)
@@ -67,6 +74,11 @@ class InterceptorPipeline:
                 ctx = fn(ctx)
             except Exception as exc:
                 logger.error("Error executing telemetry interceptor '%s': %s", name, exc, exc_info=True)
+                if required:
+                    # Required security interceptor must fail closed to prevent unsanitized persistence
+                    ctx.is_dropped = True
+                    ctx.drop_reason = f"Required security interceptor '{name}' failed: {exc}"
+                    raise RuntimeError(f"Required telemetry interceptor '{name}' failed: {exc}") from exc
         return ctx
 
 
@@ -74,10 +86,10 @@ class InterceptorPipeline:
 interceptor_pipeline = InterceptorPipeline()
 
 
-def register_telemetry_interceptor(order: int = 50, name: str | None = None):
+def register_telemetry_interceptor(order: int = 50, name: str | None = None, required: bool = False):
     """Decorator to register a custom telemetry interceptor."""
     def decorator(fn: TelemetryInterceptorFn) -> TelemetryInterceptorFn:
-        return interceptor_pipeline.register(fn, name=name, order=order)
+        return interceptor_pipeline.register(fn, name=name, order=order, required=required)
     return decorator
 
 
@@ -131,7 +143,7 @@ def sanitize_string_value(text: str) -> str:
     return text
 
 
-@register_telemetry_interceptor(order=10, name="pii_and_secret_scrubber")
+@register_telemetry_interceptor(order=10, name="pii_and_secret_scrubber", required=True)
 def pii_and_secret_scrubber(ctx: TelemetryContext) -> TelemetryContext:
     """
     Enterprise Security Interceptor:

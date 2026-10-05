@@ -168,6 +168,9 @@ class HybridStorage(BaseStorage):
         params: dict[str, Any] | None = None,
         signature: str | None = None,
         task_id: str | None = None,
+        actor_id: str | None = None,
+        actor_role: str | None = None,
+        ip_address: str | None = None,
     ) -> str:
         return self.fleet.queue_task(
             agent_id=agent_id,
@@ -175,6 +178,9 @@ class HybridStorage(BaseStorage):
             params=params,
             signature=signature,
             task_id=task_id,
+            actor_id=actor_id,
+            actor_role=actor_role,
+            ip_address=ip_address,
         )
 
     def get_pending_agent_tasks(self, agent_id: str) -> List[Dict[str, Any]]:
@@ -182,6 +188,22 @@ class HybridStorage(BaseStorage):
 
     def mark_tasks_dispatched(self, task_ids: List[str]) -> None:
         self.fleet.mark_tasks_dispatched(task_ids)
+
+    def acknowledge_agent_task(self, agent_id: str, task_id: str) -> bool:
+        return self.fleet.acknowledge_task(agent_id=agent_id, task_id=task_id)
+
+    def enqueue_clickhouse_outbox(self, target_table: str, record_data: dict[str, Any]) -> None:
+        if hasattr(self.pg, "enqueue_clickhouse_outbox"):
+            self.pg.enqueue_clickhouse_outbox(target_table, record_data)
+
+    def get_pending_clickhouse_outbox(self, limit: int = 100) -> list[dict[str, Any]]:
+        if hasattr(self.pg, "get_pending_clickhouse_outbox"):
+            return self.pg.get_pending_clickhouse_outbox(limit)
+        return []
+
+    def mark_clickhouse_outbox_completed(self, outbox_ids: list[int]) -> None:
+        if hasattr(self.pg, "mark_clickhouse_outbox_completed"):
+            self.pg.mark_clickhouse_outbox_completed(outbox_ids)
 
     def update_agent_task_result(
         self,
@@ -235,6 +257,9 @@ class HybridStorage(BaseStorage):
 
     def get_distinct_usernames(self) -> List[str]:
         return getattr(self.telemetry, "get_distinct_usernames", lambda: [])()
+
+    def count_collector_results(self, **filters) -> int:
+        return getattr(self.telemetry, "count_collector_results", lambda **kw: 0)(**filters)
 
 
     # --------------------------------------------------------------------------

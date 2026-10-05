@@ -84,3 +84,27 @@ def test_pii_and_secret_scrubber():
     assert "super_secret_password" not in col_payload["cmd"]
     assert "--api-key=[REDACTED]" in col_payload["cli_command"]
     assert "--password=[REDACTED]" in col_payload["cli_command"]
+
+
+def test_interceptor_failure_policies():
+    """Verify that optional interceptors fail open while required interceptors fail closed."""
+    import pytest
+
+    pipeline = InterceptorPipeline()
+
+    def optional_faulty(ctx: TelemetryContext) -> TelemetryContext:
+        raise ValueError("Optional enrichment service timeout")
+
+    def required_faulty(ctx: TelemetryContext) -> TelemetryContext:
+        raise ValueError("Mandatory PII sanitization engine down")
+
+    # 1. Optional interceptor fails open: error logged, processing continues
+    pipeline.register(optional_faulty, name="optional_enricher", order=10, required=False)
+    ctx1 = pipeline.process(envelope={}, decrypted_payload={"payload_id": "p1", "data": "raw"})
+    assert ctx1.is_dropped is False
+    assert ctx1.decrypted_payload["data"] == "raw"
+
+    # 2. Required interceptor fails closed: raises RuntimeError and marks payload dropped
+    pipeline.register(required_faulty, name="mandatory_sanitizer", order=20, required=True)
+    with pytest.raises(RuntimeError, match="Required telemetry interceptor 'mandatory_sanitizer' failed"):
+        pipeline.process(envelope={}, decrypted_payload={"payload_id": "p2", "data": "sensitive"})

@@ -35,10 +35,10 @@ _WORKER_ID = f"{socket.gethostname()}-{uuid.uuid4().hex[:8]}"
 # How many seconds to sleep between polls when the queue is empty
 _POLL_INTERVAL = 2.0
 
-# Redis key names
-_REDIS_KEY_PENDING = "insiedr:tasks:pending"   # LIST  – RPUSH / BLPOP
-_REDIS_KEY_RETRY   = "insiedr:tasks:retry"     # ZSET  – scored by scheduled_at (epoch float)
-_REDIS_KEY_RUNNING = "insiedr:tasks:running"   # HASH  – task_id -> serialised task
+_REDIS_KEY_PENDING    = "insiedr:tasks:pending"      # LIST  – RPUSH / BRPOPLPUSH
+_REDIS_KEY_PROCESSING = "insiedr:tasks:processing"   # LIST  – in-flight claim buffer
+_REDIS_KEY_RETRY      = "insiedr:tasks:retry"        # ZSET  – scored by scheduled_at (epoch float)
+_REDIS_KEY_RUNNING    = "insiedr:tasks:running"      # HASH  – task_id -> serialised task
 
 
 class PgTaskQueue:
@@ -239,6 +239,22 @@ class RedisTaskQueue:
                     reaped = reaped + 1
                 end
             end
+            if KEYS[3] then
+                local proc = redis.call('LRANGE', KEYS[3], 0, -1)
+                for _, raw in ipairs(proc) do
+                    local ok, task = pcall(cjson.decode, raw)
+                    local task_time = nil
+                    if ok and type(task) == 'table' then
+                        task_time = tonumber(task['claimed_at']) or tonumber(task['enqueued_at'])
+                    end
+                    -- Only reap if the task has exceeded the stale cutoff; never steal active in-flight claims
+                    if task_time and task_time < stale_cutoff then
+                        redis.call('LREM', KEYS[3], 1, raw)
+                        redis.call('RPUSH', KEYS[2], raw)
+                        reaped = reaped + 1
+                    end
+                end
+            end
             return reaped
         """)
 
@@ -262,6 +278,7 @@ class RedisTaskQueue:
             "payload": payload,
             "attempts": 0,
             "max_attempts": max_attempts,
+            "enqueued_at": time.time(),
         }
         try:
             self._client.rpush(_REDIS_KEY_PENDING, json.dumps(task))
@@ -271,24 +288,49 @@ class RedisTaskQueue:
             return None
 
     def claim_next(self) -> dict[str, Any] | None:
-        """
-        Promote any matured retry tasks, then atomically pop one pending task.
-        Uses BLPOP to block for up to 2 seconds if the queue is empty, providing
-        zero-latency task dispatch.
+        """Promote any matured retry tasks, then atomically pop one pending task.
+
+        Enqueue uses RPUSH (right/tail), so FIFO pop must take from the left
+        (head).  BLMOVE source LEFT destination RIGHT atomically pops from the
+        source head and pushes onto the destination tail, preserving ordering.
+
+        The processing-list entry is stamped with claimed_at (not enqueued_at)
+        so the stale-reaper correctly measures lease age from the time of claim.
         """
         self._promote_retries()
         try:
-            # BLPOP returns a tuple (key, value) or None if timeout occurs
-            res = self._client.blpop(_REDIS_KEY_PENDING, timeout=2)
-            if res is None:
+            # BLMOVE LEFT RIGHT: left-pop (FIFO head) → right-push onto processing list
+            # Falls back to BRPOPLPUSH for Redis < 6.2 compatibility.
+            try:
+                raw = self._client.blmove(
+                    _REDIS_KEY_PENDING, _REDIS_KEY_PROCESSING,
+                    timeout=2, src="LEFT", dest="RIGHT",
+                )
+            except Exception:
+                # Redis < 6.2 fallback (note: this is LIFO — upgrade Redis when possible)
+                raw = self._client.brpoplpush(_REDIS_KEY_PENDING, _REDIS_KEY_PROCESSING, timeout=2)
+
+            if raw is None:
                 return None
-            raw = res[1]
             task: dict[str, Any] = json.loads(raw)
             task["attempts"] = task.get("attempts", 0) + 1
-            # Stamp the exact time this task was claimed so the reaper can measure
-            # how long it has been in-flight and recover it after a server crash.
-            task["claimed_at"] = time.time()
-            self._client.hset(_REDIS_KEY_RUNNING, task["id"], json.dumps(task))
+            claimed_at = time.time()
+            task["claimed_at"] = claimed_at
+
+            # Build a processing-list entry stamped with claimed_at so the
+            # stale-reaper measures age from claim time, not enqueue time.
+            processing_entry = dict(task)
+            processing_entry["claimed_at"] = claimed_at
+            processing_entry_raw = json.dumps(processing_entry)
+
+            # Atomically: remove the original (enqueued_at-stamped) item from
+            # processing list, add claimed_at-stamped entry, and register in running hash.
+            pipe = self._client.pipeline(transaction=True)
+            pipe.lrem(_REDIS_KEY_PROCESSING, 1, raw)
+            pipe.rpush(_REDIS_KEY_PROCESSING, processing_entry_raw)
+            pipe.hset(_REDIS_KEY_RUNNING, task["id"], json.dumps(task))
+            pipe.execute()
+
             return task
         except Exception as exc:
             log.error("RedisTaskQueue: failed to claim task: %s", exc)
@@ -303,25 +345,25 @@ class RedisTaskQueue:
 
     def fail(self, task_id: str, task: dict[str, Any], error: str) -> None:  # type: ignore[override]
         """
-        Remove from in-flight hash. If retries remain, schedule onto the retry
-        sorted set with exponential back-off; otherwise drop the task and log.
+        Atomically transition task from running hash. If retries remain, schedule onto
+        the retry sorted set with exponential back-off; otherwise drop the task and log.
+        Uses a transactional pipeline so HDEL and ZADD execute atomically without crash windows.
         """
-        try:
-            self._client.hdel(_REDIS_KEY_RUNNING, task_id)
-        except Exception:
-            pass
-
         attempts = task.get("attempts", 1)
         max_attempts = task.get("max_attempts", 3)
+        pipe = self._client.pipeline(transaction=True)
+        pipe.hdel(_REDIS_KEY_RUNNING, task_id)
+
         if attempts < max_attempts:
             delay_seconds = 10 * (4 ** (attempts - 1))
             scheduled_at = time.time() + delay_seconds
             retry_task = dict(task)  # preserve current attempt count
+            pipe.zadd(
+                _REDIS_KEY_RETRY,
+                {json.dumps(retry_task): scheduled_at},
+            )
             try:
-                self._client.zadd(
-                    _REDIS_KEY_RETRY,
-                    {json.dumps(retry_task): scheduled_at},
-                )
+                pipe.execute()
                 log.info(
                     "RedisTaskQueue: task %s rescheduled for retry in %ds (attempt %s/%s)",
                     task_id, delay_seconds, attempts, max_attempts,
@@ -329,6 +371,10 @@ class RedisTaskQueue:
             except Exception as exc:
                 log.error("RedisTaskQueue: failed to reschedule task %s: %s", task_id, exc)
         else:
+            try:
+                pipe.execute()
+            except Exception:
+                pass
             log.warning(
                 "RedisTaskQueue: task %s permanently failed after %s attempts: %s",
                 task_id, attempts, error,
@@ -375,7 +421,7 @@ class RedisTaskQueue:
         try:
             stale_cutoff = time.time() - stale_seconds
             reaped = self._reap_script(
-                keys=[_REDIS_KEY_RUNNING, _REDIS_KEY_PENDING],
+                keys=[_REDIS_KEY_RUNNING, _REDIS_KEY_PENDING, _REDIS_KEY_PROCESSING],
                 args=[stale_cutoff],
             )
             reaped = int(reaped or 0)
@@ -421,9 +467,15 @@ class TaskWorker:
         backend = type(self._queue).__name__
         log.info("TaskWorker started (backend=%s, worker_id=%s, poll=%.1fs)", backend, _WORKER_ID, self._poll_interval)
 
-    def stop(self) -> None:
-        """Signal the worker to stop after the current task completes."""
+    def stop(self, timeout: float = 5.0) -> bool:
+        """Signal the worker to stop and wait for active task to drain."""
         self._stop_event.set()
+        if self._thread and self._thread.is_alive():
+            self._thread.join(timeout=timeout)
+            if self._thread.is_alive():
+                log.warning("TaskWorker thread did not terminate within %.1fs timeout", timeout)
+                return False
+        return True
 
     # ------------------------------------------------------------------
     # Internal polling loop
@@ -491,7 +543,8 @@ def start_worker(storage, app) -> TaskWorker:
             rq = RedisTaskQueue(config.redis_url)
             if rq.ping():
                 queue = rq
-                log.info("start_worker: using RedisTaskQueue (%s)", config.redis_url)
+                from shared.crypto_utils import redact_url_credentials
+                log.info("start_worker: using RedisTaskQueue (%s)", redact_url_credentials(config.redis_url))
             else:
                 raise ConnectionError("Redis ping failed")
         except Exception as exc:

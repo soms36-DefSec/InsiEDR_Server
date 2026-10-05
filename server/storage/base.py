@@ -115,6 +115,9 @@ class BaseStorage:
         params: dict[str, Any] | None = None,
         signature: str | None = None,
         task_id: str | None = None,
+        actor_id: str | None = None,
+        actor_role: str | None = None,
+        ip_address: str | None = None,
     ) -> str:
         """Enqueue a remote command for the agent to execute on next heartbeat."""
         raise NotImplementedError()
@@ -125,6 +128,10 @@ class BaseStorage:
 
     def mark_tasks_dispatched(self, task_ids: list[str]) -> None:
         """Mark tasks as dispatched to the agent."""
+        raise NotImplementedError()
+
+    def acknowledge_agent_task(self, agent_id: str, task_id: str) -> bool:
+        """Explicitly acknowledge receipt of a remote task by an agent."""
         raise NotImplementedError()
 
     def update_agent_task_result(
