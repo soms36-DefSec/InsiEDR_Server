@@ -302,6 +302,47 @@ async def export_threats(
     )
 
 
+def _resolve_decrypted_payload(row: dict[str, Any]) -> dict[str, Any] | None:
+    """Resolve decrypted telemetry payload from raw row data.
+    
+    Tries stored plaintext payload first, then decrypts encrypted_envelope_json on the fly
+    using server crypto plugins so raw_logs and parameters are never null in exported datasets.
+    """
+    raw_payload_data = row.get("payload")
+    if not raw_payload_data and row.get("payload_json"):
+        try:
+            raw_payload_data = json.loads(row["payload_json"])
+        except Exception:
+            raw_payload_data = None
+
+    if isinstance(raw_payload_data, dict):
+        return raw_payload_data
+
+    # Attempt decrypting encrypted_envelope_json on the fly
+    envelope = row.get("encrypted_envelope_json")
+    if envelope:
+        if isinstance(envelope, str):
+            try:
+                envelope = json.loads(envelope)
+            except Exception:
+                envelope = None
+        if isinstance(envelope, dict):
+            scheme = envelope.get("scheme") or row.get("crypto_scheme") or "aes-256-gcm"
+            try:
+                from server.plugin_registry import registry
+                if not registry.schemes():
+                    registry.initialize()
+                plugin = registry.get(scheme)
+                if plugin and hasattr(plugin, "decrypt"):
+                    plaintext_bytes = plugin.decrypt(envelope)
+                    from shared.protocol import parse_json_bytes
+                    return parse_json_bytes(plaintext_bytes)
+            except Exception:
+                pass
+
+    return None
+
+
 def _extract_parameters(storage, row: dict[str, Any]) -> dict[str, Any]:
     """Extract model training feature parameters from a telemetry log record."""
     payload_id = row.get("id") or row.get("payload_id")
@@ -315,12 +356,7 @@ def _extract_parameters(storage, row: dict[str, Any]) -> dict[str, Any]:
             pass
 
     # 2. Extract on-the-fly from decrypted collector payload
-    payload_obj = row.get("payload")
-    if not payload_obj and row.get("payload_json"):
-        try:
-            payload_obj = json.loads(row["payload_json"])
-        except Exception:
-            payload_obj = None
+    payload_obj = _resolve_decrypted_payload(row)
 
     if isinstance(payload_obj, dict):
         features: dict[str, Any] = {}
@@ -413,14 +449,9 @@ def _build_excel_training_dataset(
             payload_id = row.get("id") or row.get("payload_id", "")
 
             # Raw logs
-            raw_payload_data = row.get("payload")
-            if not raw_payload_data and row.get("payload_json"):
-                try:
-                    raw_payload_data = json.loads(row["payload_json"])
-                except Exception:
-                    raw_payload_data = str(row["payload_json"])
-            elif not raw_payload_data and row.get("encrypted_envelope_json"):
-                raw_payload_data = str(row["encrypted_envelope_json"])
+            raw_payload_data = _resolve_decrypted_payload(row)
+            if raw_payload_data is None:
+                raw_payload_data = row.get("encrypted_envelope_json")
 
             raw_logs_str = json.dumps(raw_payload_data, default=str) if isinstance(raw_payload_data, (dict, list)) else str(raw_payload_data or "")
 
@@ -579,14 +610,9 @@ def _stream_csv_training_dataset(
             payload_id = row.get("id") or row.get("payload_id", "")
 
             # Raw logs
-            raw_payload_data = row.get("payload")
-            if not raw_payload_data and row.get("payload_json"):
-                try:
-                    raw_payload_data = json.loads(row["payload_json"])
-                except Exception:
-                    raw_payload_data = str(row["payload_json"])
-            elif not raw_payload_data and row.get("encrypted_envelope_json"):
-                raw_payload_data = str(row["encrypted_envelope_json"])
+            raw_payload_data = _resolve_decrypted_payload(row)
+            if raw_payload_data is None:
+                raw_payload_data = row.get("encrypted_envelope_json")
 
             raw_logs_str = json.dumps(raw_payload_data, default=str) if isinstance(raw_payload_data, (dict, list)) else str(raw_payload_data or "")
 
@@ -637,12 +663,9 @@ def _stream_json_training_dataset(
             hostname = row.get("hostname", "")
             payload_id = row.get("id") or row.get("payload_id", "")
 
-            raw_payload_data = row.get("payload")
-            if not raw_payload_data and row.get("payload_json"):
-                try:
-                    raw_payload_data = json.loads(row["payload_json"])
-                except Exception:
-                    raw_payload_data = str(row["payload_json"])
+            raw_payload_data = _resolve_decrypted_payload(row)
+            if raw_payload_data is None:
+                raw_payload_data = row.get("encrypted_envelope_json")
 
             parameters = _extract_parameters(storage, row)
 
@@ -677,7 +700,7 @@ async def export_training_dataset(
     username: str | None = Query(None, description="Target user (e.g. 'alice') or omit for all users"),
     days: int = Query(30, ge=1, le=365, description="Number of historical days (N) to include in dataset"),
     format: str = Query("xlsx", description="Format: 'xlsx' (Excel), 'csv', or 'json'"),
-    limit: int = Query(50000, ge=1, le=100000, description="Maximum number of log samples to export"),
+    limit: int = Query(100000, ge=1, description="Maximum number of log samples to export (default 100000, or higher for complete dataset)"),
     storage=Depends(get_storage),
     operator: OperatorPrincipal = Depends(require_operator("operator:read")),
 ):
@@ -699,7 +722,10 @@ async def export_training_dataset(
     else:
         export_format = format.lower()
 
-    bounded_limit = min(max(1, limit), 100000)
+    if export_format == "xlsx":
+        bounded_limit = min(limit, 50000)
+    else:
+        bounded_limit = max(1, limit)
     start_time = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
 
     filters: dict[str, Any] = {"start_time": start_time}
