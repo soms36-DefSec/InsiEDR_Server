@@ -55,8 +55,8 @@ export async function fetchApi<T>(url: string, options?: RequestInit): Promise<T
  * Fetches the aggregated fleet overview, risk severity counts, and latest risk events.
  * Maps to `GET /api/dashboard-summary`.
  */
-export async function fetchDashboardSummary(): Promise<DashboardSummary> {
-  return fetchApi<DashboardSummary>('/api/dashboard-summary');
+export async function fetchDashboardSummary(signal?: AbortSignal): Promise<DashboardSummary> {
+  return fetchApi<DashboardSummary>('/api/dashboard-summary', { signal });
 }
 
 /**
@@ -64,8 +64,8 @@ export async function fetchDashboardSummary(): Promise<DashboardSummary> {
  * and background task queue metrics.
  * Maps to `GET /api/health`.
  */
-export async function fetchHealth(): Promise<SystemHealth> {
-  return fetchApi<SystemHealth>('/api/health');
+export async function fetchHealth(signal?: AbortSignal): Promise<SystemHealth> {
+  return fetchApi<SystemHealth>('/api/health', { signal });
 }
 
 /**
@@ -110,16 +110,21 @@ export async function fetchTelemetry(
   limit = 25,
   offset = 0,
   collector?: string | null,
-  username?: string | null
+  username?: string | null,
+  filters: { search?: string; status?: string; start_time?: string; end_time?: string; signal?: AbortSignal } = {},
 ): Promise<TelemetryResponse> {
   const params = new URLSearchParams({
     limit: String(limit),
     offset: String(offset),
+    include_enrichment: 'false',
   });
   if (collector) params.set('collector', collector);
   if (username) params.set('username', username);
+  for (const key of ['search', 'status', 'start_time', 'end_time'] as const) {
+    if (filters[key]) params.set(key, filters[key]);
+  }
 
-  return fetchApi<TelemetryResponse>(`/api/telemetry?${params.toString()}`);
+  return fetchApi<TelemetryResponse>(`/api/telemetry?${params.toString()}`, { signal: filters.signal });
 }
 
 /**

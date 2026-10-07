@@ -22,7 +22,7 @@ async def liveness(request: Request):
 
 @router.get("/health/ready")
 @router.get("/v1/health/ready")
-async def readiness(
+def readiness(
     storage=Depends(get_storage),
     task_queue=Depends(get_task_queue),
 ):
@@ -56,7 +56,7 @@ async def readiness(
 
 @router.get("/health")
 @router.get("/v1/health")
-async def health(
+def health(
     request: Request,
     storage=Depends(get_storage),
     task_queue=Depends(get_task_queue),
@@ -112,7 +112,7 @@ async def health(
 
 @router.get("/v1/queue/metrics")
 @router.get("/queue/metrics")
-async def queue_metrics(
+def queue_metrics(
     task_queue=Depends(get_task_queue),
     operator: OperatorPrincipal = Depends(require_operator("operator:read")),
 ):

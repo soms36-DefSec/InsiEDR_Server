@@ -349,3 +349,21 @@ def test_export_collector_dataset_missing_collector(mock_collector_client):
     resp = mock_collector_client.get("/api/v1/export/collector-dataset.csv?collector=")
     assert resp.status_code == 400
     assert resp.json()["ok"] is False
+
+
+def test_nested_event_arrays_are_discrete_columns():
+    flat = flatten_collector_payload({'events': [{'pid': 42, 'meta': {'name': 'exe'}}, {'pid': 43}]})
+    assert flat == {'events_0_pid': 42, 'events_0_meta_name': 'exe', 'events_1_pid': 43}
+
+
+def test_csv_keeps_columns_first_seen_in_later_batch(monkeypatch):
+    from server.api import export
+    monkeypatch.setattr(export, 'CHUNK_BATCH_SIZE', 1)
+    storage = MockCollectorStorage()
+    storage.records[1]['payload_json']['new_sensor'] = {'signal': 99}
+    body = ''.join(export._stream_csv_collector_dataset(storage, 'logon', {}, 10))
+    reader = csv.DictReader(io.StringIO(body))
+    rows = list(reader)
+    assert len(rows) == 2
+    assert rows[0]['new_sensor_signal'] == ''
+    assert rows[1]['new_sensor_signal'] == '99'

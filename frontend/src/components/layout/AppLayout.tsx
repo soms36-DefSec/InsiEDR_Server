@@ -4,6 +4,7 @@ import { pluginRegistry } from '../../plugins/registry';
 import type { EDRPlugin, PluginContextData } from '../../plugins/registry';
 import { useRealTimeStream } from '../../hooks/useRealTimeStream';
 import { FleetStatusCards } from './FleetStatusCards';
+import { ErrorBoundary } from '../ui/ErrorBoundary';
 
 export const AppLayout: React.FC = () => {
   const [plugins, setPlugins] = useState<EDRPlugin[]>(() => pluginRegistry.getAll());
@@ -17,6 +18,7 @@ export const AppLayout: React.FC = () => {
     autoRefresh,
     toggleAutoRefresh,
     refreshAll,
+    error,
   } = useRealTimeStream();
 
   useEffect(() => {
@@ -36,8 +38,11 @@ export const AppLayout: React.FC = () => {
     health,
     logs,
     isConnected: connectionMode === 'sse',
+    autoRefresh,
+    connectionMode,
     onSelectCollector: handleSelectCollector,
     onNavigatePlugin: (id) => setActivePluginId(id),
+    onRefresh: refreshAll,
   };
 
   const ActiveComponent = activePlugin?.component;
@@ -59,6 +64,9 @@ export const AppLayout: React.FC = () => {
       {/* Main Content Canvas */}
       <main className="flex-1 overflow-y-auto px-6 sm:px-8 py-6">
         <div className="max-w-[1700px] mx-auto space-y-6">
+          {error && <div role="alert" className="rounded-lg border border-amber-200 bg-amber-50 p-3 text-sm text-amber-900">
+            Fleet refresh failed: {error}. Previously loaded metrics may be stale.
+          </div>}
           {/* View Title & Description + Fleet PC Status Cards */}
           <div className="flex flex-col xl:flex-row xl:items-center justify-between gap-4 pb-1">
             <div>
@@ -75,7 +83,7 @@ export const AppLayout: React.FC = () => {
 
           {/* Active Plugin View Content */}
           {ActiveComponent ? (
-            <ActiveComponent context={contextData} />
+            <ErrorBoundary key={activePluginId}><ActiveComponent context={contextData} /></ErrorBoundary>
           ) : (
             <div className="p-8 text-center text-slate-400 text-xs">
               No active security view loaded.

@@ -7,7 +7,8 @@
     "dev": "vite",
     "build": "tsc -b && vite build",
     "lint": "eslint .",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "test:browser": "node --test tests/dashboard.test.mjs"
   },
   "dependencies": {
     "react": "^19.2.8",
@@ -26,6 +27,7 @@
     "eslint-plugin-react-refresh": "^0.5.4",
     "globals": "^17.11.0",
     "lucide-react": "^1.42.0",
+    "playwright": "^1.63.0",
     "tailwind-merge": "^3.6.0",
     "tailwindcss": "^4.3.3",
     "typescript": "~6.0.2",

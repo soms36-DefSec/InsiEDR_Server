@@ -4,6 +4,7 @@ import hashlib
 import json
 import logging
 import os
+import threading
 from contextlib import contextmanager, closing
 from pathlib import Path
 from typing import Any
@@ -12,7 +13,7 @@ from server.storage.base import BaseStorage
 from server.storage.migration_runner import apply_migrations_dir
 
 import psycopg2
-from psycopg2.pool import ThreadedConnectionPool
+from psycopg2.pool import ThreadedConnectionPool, PoolError
 from psycopg2.extras import Json, execute_batch
 
 from server.config import config
@@ -134,7 +135,7 @@ class _SQLiteParamAdapter:
 
 
 class PostgresStorage(BaseStorage):
-    def __init__(self, dsn: str | None = None, minconn=2, maxconn=64, connection_factory=None) -> None:
+    def __init__(self, dsn: str | None = None, minconn=None, maxconn=None, connection_factory=None) -> None:
         self.connection_factory = connection_factory
         self._is_sqlite = False
         if self.connection_factory:
@@ -146,6 +147,7 @@ class PostgresStorage(BaseStorage):
                 test_conn = connection_factory()
                 if isinstance(test_conn, sqlite3.Connection):
                     self._is_sqlite = True
+                test_conn.close()
             except Exception:
                 pass
             return
@@ -154,7 +156,22 @@ class PostgresStorage(BaseStorage):
         if not self.dsn:
             raise RuntimeError("INSIEDR_SERVER_POSTGRES_URI environment variable or dsn is required for PostgresStorage")
         
-        self.pool = ThreadedConnectionPool(minconn, maxconn, dsn=self.dsn)
+        minconn = int(os.environ.get("INSIEDR_PG_POOL_MIN", "2")) if minconn is None else minconn
+        maxconn = int(os.environ.get("INSIEDR_PG_POOL_MAX", "32")) if maxconn is None else maxconn
+        if not 1 <= minconn <= maxconn:
+            raise ValueError("PostgreSQL pool requires 1 <= minconn <= maxconn")
+        self._pool_wait_seconds = float(os.environ.get("INSIEDR_PG_POOL_WAIT_SECONDS", "2"))
+        statement_ms = int(os.environ.get("INSIEDR_PG_STATEMENT_TIMEOUT_MS", "15000"))
+        lock_ms = int(os.environ.get("INSIEDR_PG_LOCK_TIMEOUT_MS", "3000"))
+        if self._pool_wait_seconds <= 0 or statement_ms <= 0 or lock_ms <= 0:
+            raise ValueError("PostgreSQL wait, statement and lock timeouts must be positive")
+        self._pool_slots = threading.BoundedSemaphore(maxconn)
+        self._pool_broken = False
+        self.pool = ThreadedConnectionPool(
+            minconn, maxconn, dsn=self.dsn,
+            connect_timeout=5,
+            options=f"-c statement_timeout={statement_ms} -c lock_timeout={lock_ms}",
+        )
 
     @contextmanager
     def connection(self):
@@ -166,26 +183,43 @@ class PostgresStorage(BaseStorage):
                 else:
                     yield raw_conn
             finally:
-                if hasattr(raw_conn, 'close'):
+                try:
+                    raw_conn.rollback()
+                finally:
                     raw_conn.close()
             return
             
-        conn = self.pool.getconn()
+        # psycopg2's pool raises immediately at capacity; bound both waiting and
+        # ownership so bursts cannot exhaust it or wait indefinitely.
+        if self._pool_broken or not self._pool_slots.acquire(timeout=self._pool_wait_seconds):
+            raise PoolError("PostgreSQL connection capacity unavailable; retry shortly")
+        conn = None
         try:
+            conn = self.pool.getconn()
             yield conn
-        except Exception:
-            if conn and not conn.closed:
-                try:
-                    conn.rollback()
-                except Exception:
-                    pass
-            raise
         finally:
-            if conn:
-                try:
-                    self.pool.putconn(conn, close=bool(conn.closed))
-                except Exception as put_err:
-                    logger.warning("Failed to put connection back to pool: %s", put_err)
+            try:
+                if conn is not None:
+                    discard = bool(conn.closed)
+                    if not discard:
+                        try:
+                            # Also closes read-only/aborted transactions on normal
+                            # exits and BaseException cancellation paths.
+                            conn.rollback()
+                        except Exception:
+                            discard = True
+                    try:
+                        self.pool.putconn(conn, close=discard)
+                    except Exception:
+                        self._pool_broken = True
+                        conn.close()
+                        logger.exception("PostgreSQL pool return failed; pool requires restart")
+            finally:
+                self._pool_slots.release()
+
+    def close(self) -> None:
+        if self.pool is not None:
+            self.pool.closeall()
 
     def _sql(self, query: str) -> str:
         """Translate %s → ? when running against SQLite (test mode only)."""
@@ -1018,6 +1052,10 @@ class PostgresStorage(BaseStorage):
                         "risk_score": row[12]
                     })
                 return results
+
+    def get_telemetry_page(self, **filters) -> dict[str, Any]:
+        from server.storage.telemetry_queries import telemetry_page
+        return telemetry_page(self, **filters)
 
     def get_distinct_collectors(self) -> list[str]:
         """Return distinct collector names present in collector_results merged with known collectors."""

@@ -14,6 +14,8 @@ from fastapi.exceptions import RequestValidationError
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from server.api.responses import api_error
+from psycopg2.pool import PoolError
+from psycopg2.errors import QueryCanceled, LockNotAvailable
 
 logger = logging.getLogger("insiedr.api.errors")
 
@@ -66,6 +68,14 @@ class ServiceUnavailableError(APIException):
 
 def register_error_handlers(app: Any) -> None:
     """Register uniform JSON error handlers on the FastAPI application."""
+
+    @app.exception_handler(PoolError)
+    @app.exception_handler(QueryCanceled)
+    @app.exception_handler(LockNotAvailable)
+    async def handle_database_capacity(request: Request, exc: Exception):
+        response = api_error(code="DATABASE_BUSY", message="Database busy; retry shortly", status_code=503)
+        response.headers["Retry-After"] = "2"
+        return response
 
     @app.exception_handler(APIException)
     async def handle_api_exception(request: Request, exc: APIException):

@@ -1,21 +1,7 @@
-/**
- * InsiEDR Virtualized Telemetry Table
- * ====================================
- *
- * Architectural Role:
- *   Ultra-high-performance log viewport designed for massive forensic streams.
- *   Uses DOM windowing to render only visible rows plus a small overscan buffer,
- *   maintaining a fixed DOM size (<10MB) and silky 60 FPS scrolling even with
- *   100,000+ raw telemetry events.
- *
- * Virtualization Mathematics:
- *   - `totalHeight`: `logs.length * ROW_HEIGHT`
- *   - `startIndex`: `Math.max(0, Math.floor(scrollTop / ROW_HEIGHT) - OVERSCAN)`
- *   - `endIndex`: `Math.min(logs.length, Math.ceil((scrollTop + height) / ROW_HEIGHT) + OVERSCAN)`
- *   - `offsetY`: `startIndex * ROW_HEIGHT` translated via GPU `transform`
+/** Windowed telemetry viewport: fixed 44px rows and six-row overscan.
+ * Performance targets are measured by the browser regression/load harness.
  */
-
-import React, { useRef, useState, useEffect } from 'react';
+import React, { useState, useEffect, useLayoutEffect } from 'react';
 import type { TelemetryLog } from '../../types/telemetry';
 import { Badge } from '../ui/Badge';
 import { formatDateTime, extractLogPreview } from '../../utils/formatters';
@@ -24,47 +10,53 @@ export interface VirtualizedLogTableProps {
   logs: TelemetryLog[];
   onSelectLog: (log: TelemetryLog) => void;
   isLoading?: boolean;
+  resetKey?: string;
 }
 
 const ROW_HEIGHT = 44;
 const OVERSCAN = 6;
 
-export const VirtualizedLogTable: React.FC<VirtualizedLogTableProps> = ({
+export const VirtualizedLogTable: React.FC<VirtualizedLogTableProps> = React.memo(({
   logs,
   onSelectLog,
   isLoading = false,
+  resetKey = '',
 }) => {
-  const containerRef = useRef<HTMLDivElement>(null);
+  const [viewport, setViewport] = useState<HTMLDivElement | null>(null);
   const [scrollTop, setScrollTop] = useState(0);
   const [containerHeight, setContainerHeight] = useState(520);
 
+  useLayoutEffect(() => {
+    if (viewport) viewport.scrollTop = 0;
+    setScrollTop(0);
+  }, [resetKey, viewport]);
+
   useEffect(() => {
-    const el = containerRef.current;
-    if (!el) return;
-
+    if (!viewport) return;
+    let frame = 0;
     const handleScroll = () => {
-      setScrollTop(el.scrollTop);
+      if (frame) return;
+      frame = requestAnimationFrame(() => {
+        frame = 0;
+        setScrollTop(viewport.scrollTop);
+      });
     };
-
-    const handleResize = () => {
-      setContainerHeight(el.clientHeight);
-    };
-
-    el.addEventListener('scroll', handleScroll, { passive: true });
-    window.addEventListener('resize', handleResize);
-    handleResize();
-
+    const observer = new ResizeObserver(() => setContainerHeight(viewport.clientHeight));
+    observer.observe(viewport);
+    viewport.addEventListener('scroll', handleScroll, { passive: true });
     return () => {
-      el.removeEventListener('scroll', handleScroll);
-      window.removeEventListener('resize', handleResize);
+      observer.disconnect();
+      viewport.removeEventListener('scroll', handleScroll);
+      cancelAnimationFrame(frame);
     };
-  }, []);
+  }, [viewport]);
 
   const totalHeight = logs.length * ROW_HEIGHT;
-  const startIndex = Math.max(0, Math.floor(scrollTop / ROW_HEIGHT) - OVERSCAN);
+  const effectiveScroll = Math.min(scrollTop, Math.max(0, totalHeight - containerHeight));
+  const startIndex = Math.max(0, Math.floor(effectiveScroll / ROW_HEIGHT) - OVERSCAN);
   const endIndex = Math.min(
     logs.length,
-    Math.ceil((scrollTop + containerHeight) / ROW_HEIGHT) + OVERSCAN
+    Math.ceil((effectiveScroll + containerHeight) / ROW_HEIGHT) + OVERSCAN
   );
 
   const visibleLogs = logs.slice(startIndex, endIndex);
@@ -88,9 +80,9 @@ export const VirtualizedLogTable: React.FC<VirtualizedLogTableProps> = ({
   }
 
   return (
-    <div className="border border-slate-200 rounded-lg overflow-hidden bg-white shadow-[0_1px_3px_rgba(0,0,0,0.06)]">
+    <div role="grid" aria-label="Telemetry logs" aria-rowcount={logs.length + 1} className="border border-slate-200 rounded-lg overflow-x-auto bg-white shadow-[0_1px_3px_rgba(0,0,0,0.06)]">
       {/* Fixed Header */}
-      <div className="bg-slate-50/80 border-b border-slate-200 grid grid-cols-12 px-6 py-3 text-xs font-medium text-slate-500 select-none">
+      <div role="row" className="min-w-[840px] bg-slate-50/80 border-b border-slate-200 grid grid-cols-12 px-6 py-3 text-xs font-medium text-slate-500 select-none">
         <div className="col-span-2">Timestamp</div>
         <div className="col-span-2">Hostname</div>
         <div className="col-span-1">User</div>
@@ -101,9 +93,10 @@ export const VirtualizedLogTable: React.FC<VirtualizedLogTableProps> = ({
 
       {/* Virtualized Scroll Viewport */}
       <div
-        ref={containerRef}
-        className="overflow-y-auto relative min-h-[320px] max-h-[580px]"
-        style={{ willChange: 'transform' }}
+        ref={setViewport}
+        data-testid="telemetry-viewport"
+        className="overflow-y-auto relative min-w-[840px] h-[min(520px,60vh)] min-h-[240px]"
+
       >
         <div style={{ height: `${totalHeight}px`, position: 'relative' }}>
           <div
@@ -122,7 +115,11 @@ export const VirtualizedLogTable: React.FC<VirtualizedLogTableProps> = ({
 
               return (
                 <div
-                  key={log.id || actualIndex}
+                  key={log.id ?? `${log.collected_at}:${log.hostname}:${log.collector}:${actualIndex}`}
+                  role="row"
+                  aria-rowindex={actualIndex + 2}
+                  tabIndex={0}
+                  onKeyDown={(event) => { if (event.key === 'Enter') onSelectLog(log); }}
                   onClick={() => onSelectLog(log)}
                   className="grid grid-cols-12 px-6 items-center text-xs border-b border-slate-100 hover:bg-slate-50 transition-colors cursor-pointer group"
                   style={{ height: `${ROW_HEIGHT}px` }}
@@ -157,6 +154,7 @@ export const VirtualizedLogTable: React.FC<VirtualizedLogTableProps> = ({
 
                   {/* Status */}
                   <div className="col-span-1 flex justify-end">
+                    <span className="sr-only">{log.status}</span>
                     <span
                       className={`inline-block w-2 h-2 rounded-full ${
                         log.status === 'success' ? 'bg-emerald-500' : 'bg-slate-400'
@@ -172,4 +170,4 @@ export const VirtualizedLogTable: React.FC<VirtualizedLogTableProps> = ({
       </div>
     </div>
   );
-};
+});

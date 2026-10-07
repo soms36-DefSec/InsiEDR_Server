@@ -138,6 +138,11 @@ class HybridStorage(BaseStorage):
     def get_pc_status(self, seconds_since_online: int = 300) -> Dict[str, Any]:
         return self.fleet.get_pc_status(seconds_since_online=seconds_since_online)
 
+    def get_telemetry_page(self, **filters) -> Dict[str, Any]:
+        # The durable ingestion store is authoritative for the live dashboard.
+        # Mixing lagging CH rows with PG counts produces stale/mismatched pages.
+        return self.pg.get_telemetry_page(**filters)
+
     def get_agent(self, agent_id: str) -> Dict[str, Any] | None:
         return self.fleet.get_agent(agent_id)
 

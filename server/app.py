@@ -76,6 +76,8 @@ def create_app(*, storage=None, apply_migrations: bool = True) -> FastAPI:
     async def lifespan(app: FastAPI):
         # Startup phase
         registry.initialize()
+        from server.api.events import broadcaster
+        broadcaster.start()
         nonlocal storage
         if storage is None and config.database_dsn:
             try:

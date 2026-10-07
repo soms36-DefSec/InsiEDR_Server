@@ -34,6 +34,8 @@ export interface PluginContextData {
   logs: TelemetryLog[];
   /** True when real-time SSE stream is actively connected */
   isConnected: boolean;
+  autoRefresh?: boolean;
+  connectionMode?: 'sse' | 'polling' | 'disconnected';
   /** Triggers deep-dive behavioral drilldown drawer for a specific identity */
   onOpenDrillDown?: (username: string, hostname?: string) => void;
   /** Filters the Telemetry Explorer to a specific collector domain */

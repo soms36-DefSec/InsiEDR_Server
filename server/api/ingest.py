@@ -312,7 +312,8 @@ async def process_encrypted_request(req) -> tuple[int, dict[str, Any]]:
 
         # Dispatch real-time agent status update to SSE stream
         try:
-            from server.api.events import dispatch_agent_event
+            from server.api.events import dispatch_agent_event, dispatch_telemetry_event
+            dispatch_telemetry_event(str(payload_id))
             dispatch_agent_event({
                 "agent_id": payload.get("agent_id"),
                 "hostname": payload.get("hostname"),

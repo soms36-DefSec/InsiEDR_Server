@@ -3,20 +3,31 @@ from __future__ import annotations
 from fastapi import APIRouter, Depends, Request
 from server.api.cache import api_cache
 from server.api.responses import api_error
-from server.api.deps import get_storage
+from server.api.deps import get_storage, require_operator, OperatorPrincipal
+from psycopg2.pool import PoolError
+from psycopg2.errors import QueryCanceled, LockNotAvailable
 
 router = APIRouter(prefix="/api", tags=["System & Observability"])
 bp = router  # Backward compatibility alias
 
 
+def _fleet_stats(storage):
+    # Dashboard refreshes must not repeat full-table aggregate counts for every
+    # SSE notification. Scope cache entries to this storage instance.
+    key = f"fleet_stats:{id(storage)}"
+    cached = api_cache.get(key)
+    if cached is not None:
+        return cached
+    result = storage.get_stats()
+    api_cache.set(key, result, ttl=5.0)
+    return result
+
+
 @router.get("/stats")
 @router.get("/v1/stats")
-async def get_stats(request: Request, storage=Depends(get_storage)):
+def get_stats(request: Request, storage=Depends(get_storage),
+              operator: OperatorPrincipal = Depends(require_operator("operator:read"))):
     """Returns aggregated fleet overview stats, protected by 5s in-memory TTL caching."""
-    cached_stats = api_cache.get("fleet_stats")
-    if cached_stats is not None:
-        return cached_stats
-
     if storage is None:
         return api_error(
             code="STORAGE_UNAVAILABLE",
@@ -25,14 +36,13 @@ async def get_stats(request: Request, storage=Depends(get_storage)):
             error="storage is not configured",
         )
 
-    stats = storage.get_stats()
-    api_cache.set("fleet_stats", stats, ttl=5.0)
-    return stats
+    return _fleet_stats(storage)
 
 
 @router.get("/dashboard-summary")
 @router.get("/v1/dashboard-summary")
-async def dashboard_summary(storage=Depends(get_storage)):
+def dashboard_summary(storage=Depends(get_storage),
+                      operator: OperatorPrincipal = Depends(require_operator("operator:read"))):
     """Fleet overview with a complete hostname snapshot in pc_status.endpoints.
 
     The separate agents array remains a bounded list of agent registrations;
@@ -49,7 +59,7 @@ async def dashboard_summary(storage=Depends(get_storage)):
     try:
         pc_status = storage.get_pc_status(seconds_since_online=300) if hasattr(storage, "get_pc_status") else {}
         agents = storage.list_agents(limit=500, offset=0) if hasattr(storage, "list_agents") else []
-        stats = storage.get_stats() if hasattr(storage, "get_stats") else {}
+        stats = _fleet_stats(storage) if hasattr(storage, "get_stats") else {}
         return {
             "ok": True,
             "pc_status": pc_status,
@@ -59,12 +69,9 @@ async def dashboard_summary(storage=Depends(get_storage)):
             "risk_events": [],
             "anomalies": [],
         }
-    except Exception as exc:
-        return api_error(
-            code="INTERNAL_ERROR",
-            message=str(exc),
-            status_code=500,
-            error=str(exc),
-        )
+    except (PoolError, QueryCanceled, LockNotAvailable):
+        raise  # Central handler returns a retryable 503, not a generic 500.
+    except Exception:
+        raise  # Central handler logs details and returns a non-sensitive error.
 
 

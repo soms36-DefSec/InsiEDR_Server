@@ -1246,7 +1246,8 @@ def flatten_collector_payload(payload: Any, prefix: str = "", sep: str = "_") ->
             elif all(isinstance(x, (int, float, str, bool)) for x in v):
                 flat[col_name] = ";".join(str(x) for x in v)
             else:
-                flat[col_name] = json.dumps(v, default=str)
+                for index, item in enumerate(v):
+                    flat.update(flatten_collector_payload({str(index): item}, prefix=col_name, sep=sep))
         elif isinstance(v, bool):
             flat[col_name] = v
         elif isinstance(v, (int, float)):
@@ -1302,102 +1303,56 @@ def _stream_csv_collector_dataset(
     call_filters = dict(filters)
     call_filters["collector"] = collector
 
-    # Fetch initial batch to discover feature columns
-    first_batch_size = min(CHUNK_BATCH_SIZE, limit)
-    first_rows = storage.list_collector_results(limit=first_batch_size, offset=0, **call_filters)
-
-    if not first_rows:
-        writer.writerow(base_columns)
-        yield buffer.getvalue()
-        return
-
-    # Discover feature columns from the first batch
-    discovered_keys = set()
-    flattened_first_batch = []
-    for r in first_rows:
-        raw_payload = r.get("payload") or r.get("payload_json") or {}
-        if isinstance(raw_payload, str):
-            try:
-                raw_payload = json.loads(raw_payload)
-            except Exception:
-                raw_payload = {}
-        flat = flatten_collector_payload(raw_payload)
-        flattened_first_batch.append((r, flat))
-        discovered_keys.update(flat.keys())
-
-    feature_columns = sorted(list(discovered_keys))
-    header = base_columns + feature_columns
-
-    writer.writerow(header)
-    yield buffer.getvalue()
-    buffer.seek(0)
-    buffer.truncate(0)
-
-    # Output first batch
-    for r, flat in flattened_first_batch:
-        ts = _format_timestamp(r.get("collected_at") or r.get("collector_collected_at") or r.get("received_at"))
-        row_vals = [
-            ts,
-            r.get("username") or "",
-            r.get("hostname") or "",
-            r.get("agent_id") or "",
-            r.get("status") or "success",
-        ]
-        for col in feature_columns:
-            val = flat.get(col, "")
-            row_vals.append(val if val is not None else "")
-        writer.writerow(row_vals)
-
-    yield buffer.getvalue()
-    buffer.seek(0)
-    buffer.truncate(0)
-
-    exported = len(first_rows)
-    offset = len(first_rows)
-
-    # Stream remaining batches if requested limit exceeds first batch
-    while exported < limit and len(first_rows) == first_batch_size:
-        batch_limit = min(CHUNK_BATCH_SIZE, limit - exported)
-        rows = storage.list_collector_results(limit=batch_limit, offset=offset, **call_filters)
-        if not rows:
-            break
-
-        for r in rows:
-            raw_payload = r.get("payload") or r.get("payload_json") or {}
-            if isinstance(raw_payload, str):
-                try:
-                    raw_payload = json.loads(raw_payload)
-                except Exception:
-                    raw_payload = {}
-            flat = flatten_collector_payload(raw_payload)
-
-            ts = _format_timestamp(r.get("collected_at") or r.get("collector_collected_at") or r.get("received_at"))
-            row_vals = [
-                ts,
-                r.get("username") or "",
-                r.get("hostname") or "",
-                r.get("agent_id") or "",
-                r.get("status") or "success",
-            ]
-            for col in feature_columns:
-                val = flat.get(col, "")
-                row_vals.append(val if val is not None else "")
-            writer.writerow(row_vals)
-
+    # Discover all columns while spooling rows to disk after 1 MiB. This avoids
+    # silently dropping fields introduced after the first batch and keeps RAM
+    # bounded independently of the number of exported records.
+    from tempfile import SpooledTemporaryFile
+    with SpooledTemporaryFile(max_size=1024 * 1024, mode="w+t", encoding="utf-8") as spool:
+        columns = set()
+        offset = 0
+        while offset < limit:
+            batch_limit = min(CHUNK_BATCH_SIZE, limit - offset)
+            rows = storage.list_collector_results(limit=batch_limit, offset=offset, **call_filters)
+            if not rows:
+                break
+            for record in rows:
+                payload = record.get("payload") or record.get("payload_json") or {}
+                if isinstance(payload, str):
+                    try:
+                        payload = json.loads(payload)
+                    except ValueError:
+                        payload = {}
+                flat = flatten_collector_payload(payload)
+                columns.update(flat)
+                if len(columns) > 10000:
+                    raise ValueError("Collector export exceeds 10000 distinct feature columns")
+                base = [_format_timestamp(record.get("collected_at") or record.get("collector_collected_at") or record.get("received_at")),
+                        record.get("username") or "", record.get("hostname") or "",
+                        record.get("agent_id") or "", record.get("status") or "success"]
+                spool.write(json.dumps([base, flat], default=str) + "\n")
+            offset += len(rows)
+            if len(rows) < batch_limit:
+                break
+        feature_columns = sorted(columns)
+        writer.writerow(base_columns + feature_columns)
         yield buffer.getvalue()
         buffer.seek(0)
         buffer.truncate(0)
-
-        count = len(rows)
-        exported += count
-        offset += count
-        if count < batch_limit:
-            break
+        spool.seek(0)
+        for index, line in enumerate(spool):
+            base, flat = json.loads(line)
+            writer.writerow(base + [flat.get(column, "") for column in feature_columns])
+            if (index + 1) % 100 == 0:
+                yield buffer.getvalue()
+                buffer.seek(0)
+                buffer.truncate(0)
+        if buffer.tell():
+            yield buffer.getvalue()
 
 
 @router.get("/v1/export/collectors")
 @router.get("/export/collectors")
-async def get_export_collectors(
+def get_export_collectors(
     storage=Depends(get_storage),
     operator: OperatorPrincipal = Depends(require_operator("operator:read")),
 ):
@@ -1420,7 +1375,7 @@ async def get_export_collectors(
 
 @router.get("/v1/export/collector-preview")
 @router.get("/export/collector-preview")
-async def preview_collector_dataset(
+def preview_collector_dataset(
     collector: str = Query(..., description="Target collector name (e.g. 'logon', 'file', 'process')"),
     start_date: str | None = Query(None, description="Start date (YYYY-MM-DD or ISO timestamp)"),
     end_date: str | None = Query(None, description="End date (YYYY-MM-DD or ISO timestamp)"),

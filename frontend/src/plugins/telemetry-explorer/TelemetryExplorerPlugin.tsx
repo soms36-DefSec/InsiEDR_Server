@@ -5,11 +5,11 @@
  * Architectural Role:
  *   High-throughput forensic telemetry exploration module. Enables analysts to
  *   query, multi-dimensionally filter, and inspect thousands of raw collector events
- *   with a windowed 60 FPS virtualized viewport (<10MB DOM overhead).
+ *   with a windowed viewport and bounded DOM row count.
  *
  * Filter Pipeline:
- *   1. Server-Side: Queries `/api/telemetry` with collector, username, and limit/offset pagination.
- *   2. Client-Side: Multi-dimensional instant filters across:
+ *   1. Server-Side: Applies all filters before limit/offset pagination.
+ *   2. Debounced multi-dimensional filters across:
  *      - Time Range Cutoff: 15m, 1h, 24h, 7d rolling windows.
  *      - Status: success, warning, error, tampered.
  *      - Collector Domain: logon, file, usb/device, process, network/http.
@@ -17,7 +17,8 @@
  *   3. Deep Inspection: Opens `LogInspectorDrawer` for structured key-value & raw JSON forensics.
  */
 
-import React, { useState, useEffect, useCallback, useMemo } from 'react';
+import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
+import { subscribeTelemetry } from '../../services/telemetryStream';
 import type { PluginProps } from '../registry';
 import { VirtualizedLogTable } from '../../components/telemetry/VirtualizedLogTable';
 import { LogInspectorDrawer } from '../../components/telemetry/LogInspectorDrawer';
@@ -54,6 +55,16 @@ export const TelemetryExplorerPlugin: React.FC<PluginProps> = ({ context }) => {
   const [activeCollector, setActiveCollector] = useState<string>('all');
   const [statusFilter, setStatusFilter] = useState<string>('all');
   const [timeRange, setTimeRange] = useState<string>('all');
+  const [debouncedSearch, setDebouncedSearch] = useState('');
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const request = useRef<AbortController | null>(null);
+  const queuedRefresh = useRef(false);
+  const scheduleRefresh = useRef<() => void>(() => {});
+
+  useEffect(() => {
+    const timer = window.setTimeout(() => setDebouncedSearch(searchTerm.trim()), 250);
+    return () => window.clearTimeout(timer);
+  }, [searchTerm]);
 
   // Pagination State
   const [currentPage, setCurrentPage] = useState<number>(1);
@@ -63,46 +74,73 @@ export const TelemetryExplorerPlugin: React.FC<PluginProps> = ({ context }) => {
   const [hasMore, setHasMore] = useState<boolean>(true);
 
   const loadLogs = useCallback(
-    async (pageToLoad = 1, currentSize = pageSize) => {
+    async (pageToLoad = 1, currentSize = pageSize, background = false) => {
+      if (background && request.current) { queuedRefresh.current = true; return; }
+      request.current?.abort();
+      const abort = new AbortController();
+      request.current = abort;
       setIsLoading(true);
+      const offset = (pageToLoad - 1) * currentSize;
+      const periods: Record<string, number> = { '15m': 900, '1h': 3600, '24h': 86400, '7d': 604800 };
       try {
-        const collectorParam = activeCollector !== 'all' ? activeCollector : null;
-        const searchParam = searchTerm.trim() ? searchTerm.trim() : null;
-        const newOffset = (pageToLoad - 1) * currentSize;
-
-        const res = await fetchTelemetry(
-          currentSize,
-          newOffset,
-          collectorParam,
-          searchParam
-        );
-        const fetched = res.logs || [];
+        const response = await fetchTelemetry(currentSize, offset,
+          activeCollector === 'all' ? null : activeCollector, null, {
+            search: debouncedSearch || undefined,
+            status: statusFilter === 'all' ? undefined : statusFilter,
+            start_time: periods[timeRange] ? new Date(Date.now() - periods[timeRange] * 1000).toISOString() : undefined,
+            signal: abort.signal,
+          });
+        if (abort.signal.aborted || request.current !== abort) return;
+        const fetched = response.logs || [];
+        const total = response.total ?? offset + fetched.length;
         setLogs(fetched);
         setCurrentPage(pageToLoad);
-        setHasMore(fetched.length === currentSize);
-        if (typeof res.total === 'number') {
-          setTotalCount(res.total);
-        } else {
-          setTotalCount(newOffset + fetched.length + (fetched.length === currentSize ? currentSize : 0));
-        }
-      } catch (err) {
-        console.error('Failed to load telemetry logs:', err);
+        setHasMore(offset + fetched.length < total);
+        setTotalCount(total);
+        setLoadError(null);
+      } catch (error) {
+        if (!abort.signal.aborted) setLoadError(error instanceof Error ? error.message : 'Could not load telemetry');
       } finally {
-        setIsLoading(false);
+        if (request.current === abort) {
+          request.current = null;
+          setIsLoading(false);
+          if (queuedRefresh.current) { queuedRefresh.current = false; scheduleRefresh.current(); }
+        }
       }
-    },
-    [activeCollector, searchTerm, pageSize]
+    }, [activeCollector, debouncedSearch, statusFilter, timeRange, pageSize]
   );
 
   useEffect(() => {
-    loadLogs(1, pageSize);
-  }, [loadLogs]);
+    void loadLogs(1, pageSize);
+    return () => { request.current?.abort(); request.current = null; queuedRefresh.current = false; };
+  }, [loadLogs, pageSize]);
+
+  useEffect(() => {
+    if (context.autoRefresh === false) return;
+    let timer: number | undefined;
+    const schedule = () => {
+      if (timer !== undefined) return;
+      timer = window.setTimeout(() => {
+        timer = undefined;
+        void loadLogs(currentPage, pageSize, true);
+      }, 50);
+    };
+    scheduleRefresh.current = schedule;
+    const unsubscribe = subscribeTelemetry(schedule);
+    const poll = window.setInterval(schedule, context.isConnected ? 30000 : 3000);
+    return () => {
+      unsubscribe();
+      window.clearInterval(poll);
+      window.clearTimeout(timer);
+      scheduleRefresh.current = () => {};
+    };
+  }, [context.autoRefresh, context.isConnected, currentPage, pageSize, loadLogs]);
 
   const totalPages = Math.max(1, Math.ceil((totalCount || logs.length) / pageSize));
 
   const handlePageSizeChange = (newSize: number) => {
     setPageSize(newSize);
-    loadLogs(1, newSize);
+
   };
 
   const handleGoToPage = (newPage: number) => {
@@ -135,49 +173,8 @@ export const TelemetryExplorerPlugin: React.FC<PluginProps> = ({ context }) => {
   const startItem = totalCount === 0 || logs.length === 0 ? 0 : (currentPage - 1) * pageSize + 1;
   const endItem = (currentPage - 1) * pageSize + logs.length;
 
-  // Client-side multi-dimensional filtering
-  const filteredLogs = useMemo(() => {
-    const now = Date.now();
-    let cutoff = 0;
-    if (timeRange === '15m') cutoff = now - 15 * 60 * 1000;
-    else if (timeRange === '1h') cutoff = now - 60 * 60 * 1000;
-    else if (timeRange === '24h') cutoff = now - 24 * 60 * 60 * 1000;
-    else if (timeRange === '7d') cutoff = now - 7 * 24 * 60 * 60 * 1000;
-
-    return logs.filter((log) => {
-      // Time Range Filter
-      if (cutoff > 0 && log.collected_at) {
-        const t = new Date(log.collected_at).getTime();
-        if (!isNaN(t) && t < cutoff) return false;
-      }
-
-      // Status Filter
-      if (statusFilter !== 'all') {
-        const normStatus = (log.status || '').toLowerCase();
-        if (statusFilter === 'error' && normStatus !== 'error' && normStatus !== 'tampered') return false;
-        if (statusFilter === 'warning' && normStatus !== 'warning') return false;
-        if (statusFilter === 'success' && normStatus !== 'success') return false;
-      }
-
-      // Collector Filter
-      if (activeCollector !== 'all') {
-        if (!log.collector || !log.collector.toLowerCase().includes(activeCollector.toLowerCase())) {
-          return false;
-        }
-      }
-
-      // Search Filter
-      if (searchTerm.trim()) {
-        const q = searchTerm.toLowerCase().trim();
-        const fullText = `${log.hostname} ${log.username} ${log.collector} ${
-          typeof log.payload === 'string' ? log.payload : JSON.stringify(log.payload || '')
-        }`.toLowerCase();
-        if (!fullText.includes(q)) return false;
-      }
-
-      return true;
-    });
-  }, [logs, timeRange, statusFilter, activeCollector, searchTerm]);
+  // Filters run before database pagination, so rows and totals share semantics.
+  const filteredLogs = logs;
 
   const handleClearAllFilters = () => {
     setSearchTerm('');
@@ -194,6 +191,12 @@ export const TelemetryExplorerPlugin: React.FC<PluginProps> = ({ context }) => {
 
   return (
     <div className="space-y-6">
+      {loadError && (
+        <div role="alert" className="rounded-lg border border-amber-200 bg-amber-50 p-3 text-sm text-amber-900">
+          {loadError}. Displaying the last successfully loaded page.
+          <button type="button" onClick={() => loadLogs(currentPage, pageSize)} className="ml-3 underline">Retry</button>
+        </div>
+      )}
       {/* Comprehensive Filter Toolbar */}
       <div className="bg-white border border-slate-200 rounded-lg p-5 shadow-[0_1px_3px_rgba(0,0,0,0.06)] space-y-4">
         <div className="flex flex-wrap items-center justify-between gap-3">
@@ -202,6 +205,7 @@ export const TelemetryExplorerPlugin: React.FC<PluginProps> = ({ context }) => {
             <Search className="w-3.5 h-3.5 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2" />
             <input
               type="text"
+              aria-label="Search telemetry"
               placeholder="Search user, hostname, IP, or payload attribute..."
               value={searchTerm}
               onChange={(e) => setSearchTerm(e.target.value)}
@@ -224,6 +228,7 @@ export const TelemetryExplorerPlugin: React.FC<PluginProps> = ({ context }) => {
               <Activity className="w-3.5 h-3.5 text-slate-400 shrink-0" />
               <span className="text-slate-500 font-medium">Collector:</span>
               <select
+                aria-label="Collector"
                 value={activeCollector}
                 onChange={(e) => setActiveCollector(e.target.value)}
                 className="bg-transparent font-medium text-slate-800 outline-none cursor-pointer"
@@ -242,6 +247,7 @@ export const TelemetryExplorerPlugin: React.FC<PluginProps> = ({ context }) => {
               <ShieldAlert className="w-3.5 h-3.5 text-slate-400 shrink-0" />
               <span className="text-slate-500 font-medium">Status:</span>
               <select
+                aria-label="Status"
                 value={statusFilter}
                 onChange={(e) => setStatusFilter(e.target.value)}
                 className="bg-transparent font-medium text-slate-800 outline-none cursor-pointer"
@@ -258,6 +264,7 @@ export const TelemetryExplorerPlugin: React.FC<PluginProps> = ({ context }) => {
               <Clock className="w-3.5 h-3.5 text-slate-400 shrink-0" />
               <span className="text-slate-500 font-medium">Time:</span>
               <select
+                aria-label="Time range"
                 value={timeRange}
                 onChange={(e) => setTimeRange(e.target.value)}
                 className="bg-transparent font-medium text-slate-800 outline-none cursor-pointer"
@@ -394,6 +401,7 @@ export const TelemetryExplorerPlugin: React.FC<PluginProps> = ({ context }) => {
       {/* Virtualized Table */}
       <VirtualizedLogTable
         logs={filteredLogs}
+        resetKey={`${activeCollector}:${debouncedSearch}:${statusFilter}:${timeRange}:${currentPage}:${pageSize}`}
         onSelectLog={(log) => setSelectedLog(log)}
         isLoading={isLoading}
       />

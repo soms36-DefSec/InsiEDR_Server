@@ -33,6 +33,7 @@ export const TopNavbar: React.FC<TopNavbarProps> = ({
   const [showTrainingModal, setShowTrainingModal] = useState(false);
 
   const summary = context.summary;
+  const databaseReady = context.health?.database === 'ok';
   const handleRefresh = async () => {
     setIsRefreshing(true);
     try {
@@ -105,10 +106,10 @@ export const TopNavbar: React.FC<TopNavbarProps> = ({
 
             <span className="w-px h-3.5 bg-slate-200" />
 
-            <div className="flex items-center gap-1.5 text-slate-600" title="Telemetry Ingestion Status">
-              <Database className="w-3.5 h-3.5 text-emerald-600" />
-              <span className="font-semibold uppercase text-[10px] text-emerald-700">
-                ACTIVE
+            <div className="flex items-center gap-1.5 text-slate-600" title="Database health">
+              <Database className={`w-3.5 h-3.5 ${databaseReady ? 'text-emerald-600' : 'text-amber-600'}`} />
+              <span className={`font-semibold uppercase text-[10px] ${databaseReady ? 'text-emerald-700' : 'text-amber-700'}`}>
+                {databaseReady ? 'DB READY' : context.health?.database === 'error' ? 'DB ERROR' : 'DB UNKNOWN'}
               </span>
             </div>
           </div>
@@ -117,7 +118,7 @@ export const TopNavbar: React.FC<TopNavbarProps> = ({
           <div className="flex items-center gap-2 px-2.5 py-1.5 rounded-md border border-slate-200 bg-slate-50 text-xs">
             <span
               className={`w-2 h-2 rounded-full ${
-                connectionMode === 'sse'
+                !autoRefresh ? 'bg-slate-400' : connectionMode === 'sse'
                   ? 'bg-emerald-600 animate-pulse-subtle'
                   : connectionMode === 'polling'
                   ? 'bg-amber-500'
@@ -125,7 +126,7 @@ export const TopNavbar: React.FC<TopNavbarProps> = ({
               }`}
             />
             <span className="text-slate-600 text-[11px] font-normal hidden sm:inline">
-              {connectionMode === 'sse'
+              {!autoRefresh ? 'Paused' : connectionMode === 'sse'
                 ? 'Stream Active'
                 : autoRefresh
                 ? 'Polling 3s'

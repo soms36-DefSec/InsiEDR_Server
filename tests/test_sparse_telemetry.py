@@ -194,7 +194,15 @@ def test_atomic_pg_duplicate_skips_clickhouse_and_state_reads_use_pg():
     ch.get_latest_collector_states.assert_not_called()
 
 
-def test_sparse_encrypted_ingestion_and_identical_scrubbed_retry(pg, client_for, encrypt):
+def test_sparse_encrypted_ingestion_and_identical_scrubbed_retry(pg, client_for, encrypt, monkeypatch):
+    from server.api import events
+    notified = []
+    def committed_event(payload_id):
+        # The notification must occur after both payload and collector commit.
+        with pg.connection() as conn:
+            assert conn.execute('SELECT COUNT(*) FROM collector_results').fetchone()[0] == 1
+        notified.append(payload_id)
+    monkeypatch.setattr(events, 'dispatch_telemetry_event', committed_event)
     now = datetime.now(timezone.utc).isoformat()
     hybrid = HybridStorage(pg)
     client = client_for(hybrid)
@@ -206,19 +214,24 @@ def test_sparse_encrypted_ingestion_and_identical_scrubbed_retry(pg, client_for,
         assert response.status_code == 202, response.text
         assert response.json() == expected_ack
     assert pg.get_feature_vector("sparse") == {"count": 0, "password": "[REDACTED]"}
+    assert notified == ['sparse']  # An identical retry emits no duplicate notification.
     with pg.connection() as conn:
         assert conn.execute("SELECT COUNT(*) FROM collector_results").fetchone()[0] == 1
     changed, changed_headers = encrypt(telemetry)
     assert client.post("/api/logs", json=changed, headers=changed_headers).status_code == 400
 
 
-def test_ingestion_storage_failure_is_not_accepted(client_for, encrypt):
+def test_ingestion_storage_failure_is_not_accepted(client_for, encrypt, monkeypatch):
+    from server.api import events
+    notify = MagicMock()
+    monkeypatch.setattr(events, 'dispatch_telemetry_event', notify)
     storage = MagicMock()
     storage.get_payload.return_value = None
     storage.store_raw_payload.side_effect = RuntimeError("disk unavailable")
     now = datetime.now(timezone.utc).isoformat()
     envelope, headers = encrypt(payload("p", [observation("process", {"count": 0}, now)]))
     assert client_for(storage).post("/api/logs", json=envelope, headers=headers).status_code == 503
+    notify.assert_not_called()
 
 
 def test_expired_offline_payload_keeps_existing_replay_policy(client_for, encrypt, monkeypatch):
