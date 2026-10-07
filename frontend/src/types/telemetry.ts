@@ -160,6 +160,18 @@ export interface PCStatus {
   total_pcs: number;
   online_pcs: number;
   offline_pcs: number;
+  /** Complete unique-hostname snapshot; independent of the paginated agent list. */
+  endpoints?: FleetEndpoint[];
+  /** Older servers used these counter names. */
+  total_count?: number;
+  online_count?: number;
+  offline_count?: number;
+}
+
+export interface FleetEndpoint {
+  hostname: string;
+  status: 'online' | 'offline';
+  last_seen_at: string | null;
 }
 
 /**

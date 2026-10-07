@@ -134,7 +134,7 @@ class _SQLiteParamAdapter:
 
 
 class PostgresStorage(BaseStorage):
-    def __init__(self, dsn: str | None = None, minconn=1, maxconn=32, connection_factory=None) -> None:
+    def __init__(self, dsn: str | None = None, minconn=2, maxconn=64, connection_factory=None) -> None:
         self.connection_factory = connection_factory
         self._is_sqlite = False
         if self.connection_factory:
@@ -174,12 +174,18 @@ class PostgresStorage(BaseStorage):
         try:
             yield conn
         except Exception:
-            if not conn.closed:
-                conn.rollback()
+            if conn and not conn.closed:
+                try:
+                    conn.rollback()
+                except Exception:
+                    pass
             raise
         finally:
-            if not conn.closed:
-                self.pool.putconn(conn)
+            if conn:
+                try:
+                    self.pool.putconn(conn, close=bool(conn.closed))
+                except Exception as put_err:
+                    logger.warning("Failed to put connection back to pool: %s", put_err)
 
     def _sql(self, query: str) -> str:
         """Translate %s → ? when running against SQLite (test mode only)."""
@@ -1512,35 +1518,9 @@ class PostgresStorage(BaseStorage):
                     conn.rollback()
                     return None
 
-    def get_pc_status(self, seconds_since_online: int = 15) -> dict[str, Any]:
-        """Returns unique PC count, online count, offline count based on last_seen_at"""
-        with self.connection() as conn:
-            with closing(conn.cursor()) as cursor:
-                try:
-                    # Get total unique PCs
-                    cursor.execute("SELECT COUNT(DISTINCT hostname) FROM agents WHERE hostname IS NOT NULL")
-                    total_pcs = cursor.fetchone()[0] or 0
-                    
-                    # Get online PCs
-                    cursor.execute(
-                        """
-                        SELECT COUNT(DISTINCT hostname) FROM agents 
-                        WHERE hostname IS NOT NULL 
-                        AND last_seen_at > CURRENT_TIMESTAMP - INTERVAL '1 second' * %s
-                        """,
-                        (seconds_since_online,)
-                    )
-                    online_pcs = cursor.fetchone()[0] or 0
-                    offline_pcs = max(0, total_pcs - online_pcs)
-                    
-                    return {
-                        "total_pcs": total_pcs,
-                        "online_pcs": online_pcs,
-                        "offline_pcs": offline_pcs
-                    }
-                except Exception:
-                    # Return defaults on error
-                    return {"total_pcs": 0, "online_pcs": 0, "offline_pcs": 0}
+    def get_pc_status(self, seconds_since_online: int = 300) -> dict[str, Any]:
+        """Use the fleet repository's shared five-minute presence snapshot."""
+        return self.fleet.get_pc_status(seconds_since_online=seconds_since_online)
 
     def get_user_collectors(self, username: str) -> list[dict[str, Any]]:
         """Returns collector results for a specific user with latest data"""

@@ -1,7 +1,8 @@
 import React, { useState } from 'react';
 import type { EDRPlugin, PluginContextData } from '../../plugins/registry';
+import { FleetStatusCards } from './FleetStatusCards';
 import { Button } from '../ui/Button';
-import { RefreshCw, Download, Monitor, ChevronDown, FileCode, Database, Sparkles } from 'lucide-react';
+import { RefreshCw, Download, ChevronDown, FileCode, Database, Sparkles } from 'lucide-react';
 import { triggerServerExport } from '../../services/api';
 import { ExportTrainingDatasetModal } from '../telemetry/ExportTrainingDatasetModal';
 
@@ -32,11 +33,6 @@ export const TopNavbar: React.FC<TopNavbarProps> = ({
   const [showTrainingModal, setShowTrainingModal] = useState(false);
 
   const summary = context.summary;
-  const pcStatus = summary?.pc_status;
-  const totalPCs = pcStatus ? (pcStatus.total_pcs ?? (pcStatus as any).total_count ?? 0) : 0;
-  const onlinePCs = pcStatus ? (pcStatus.online_pcs ?? (pcStatus as any).online_count ?? 0) : 0;
-  const offlinePCs = pcStatus ? (pcStatus.offline_pcs ?? (pcStatus as any).offline_count ?? 0) : 0;
-
   const handleRefresh = async () => {
     setIsRefreshing(true);
     try {
@@ -104,36 +100,8 @@ export const TopNavbar: React.FC<TopNavbarProps> = ({
         {/* Right Section: Fleet Status & Action Controls */}
         <div className="flex items-center gap-3 shrink-0">
           {/* Fleet Status Metrics: Total PCs, Online, Offline */}
-          <div className="hidden lg:flex items-center gap-2 text-xs">
-            {/* Total PCs Connected */}
-            <div
-              className="flex items-center gap-1.5 px-2.5 py-1 rounded-md bg-slate-50 border border-slate-200 text-slate-700 shadow-2xs"
-              title="Total Connected PCs"
-            >
-              <Monitor className="w-3.5 h-3.5 text-slate-500" />
-              <span className="text-slate-500 font-medium text-[11px]">Total PCs:</span>
-              <span className="font-bold text-slate-900">{totalPCs}</span>
-            </div>
-
-            {/* Online Count */}
-            <div
-              className="flex items-center gap-1.5 px-2.5 py-1 rounded-md bg-emerald-50/80 border border-emerald-200 text-emerald-800 shadow-2xs"
-              title="Online PCs"
-            >
-              <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse" />
-              <span className="text-emerald-700 font-medium text-[11px]">Online:</span>
-              <span className="font-bold text-emerald-800">{onlinePCs}</span>
-            </div>
-
-            {/* Offline Count */}
-            <div
-              className="flex items-center gap-1.5 px-2.5 py-1 rounded-md bg-slate-50 border border-slate-200 text-slate-600 shadow-2xs"
-              title="Offline PCs"
-            >
-              <span className="w-2 h-2 rounded-full bg-slate-400" />
-              <span className="text-slate-500 font-medium text-[11px]">Offline:</span>
-              <span className="font-bold text-slate-700">{offlinePCs}</span>
-            </div>
+          <div className="hidden xl:flex items-center gap-2 text-xs">
+            <FleetStatusCards summary={summary} compact />
 
             <span className="w-px h-3.5 bg-slate-200" />
 

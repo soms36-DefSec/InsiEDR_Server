@@ -33,7 +33,11 @@ async def get_stats(request: Request, storage=Depends(get_storage)):
 @router.get("/dashboard-summary")
 @router.get("/v1/dashboard-summary")
 async def dashboard_summary(storage=Depends(get_storage)):
-    """Lightweight aggregated fleet and log collection overview."""
+    """Fleet overview with a complete hostname snapshot in pc_status.endpoints.
+
+    The separate agents array remains a bounded list of agent registrations;
+    fleet card drill-downs use the same unique-host snapshot as their counts.
+    """
     if storage is None:
         return api_error(
             code="STORAGE_UNAVAILABLE",

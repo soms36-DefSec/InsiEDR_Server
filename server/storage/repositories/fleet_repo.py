@@ -9,6 +9,7 @@ from __future__ import annotations
 import json
 import logging
 from contextlib import closing
+from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional
 
 try:
@@ -91,32 +92,40 @@ class FleetRepository:
                 return [dict(zip(cols, row)) for row in cur.fetchall()]
 
     def get_pc_status(self, seconds_since_online: int = 300) -> Dict[str, Any]:
-        """Compute unique total, online, and offline PC counts."""
+        """Return counts and their complete hostname breakdown from one snapshot.
+
+        Multiple agent registrations for one hostname represent one PC; its
+        newest observation determines presence. Blank names never count.
+        """
+        cutoff = datetime.now(timezone.utc) - timedelta(seconds=seconds_since_online)
+        whitespace = " \t\r\n\f\v"
         with self.pg.connection() as conn:
             with closing(conn.cursor()) as cur:
-                try:
-                    cur.execute("SELECT COUNT(DISTINCT hostname) FROM agents WHERE hostname IS NOT NULL")
-                    total_pcs = cur.fetchone()[0] or 0
+                cur.execute(
+                    """
+                    SELECT hostname, MAX(last_seen_at) AS last_seen_at,
+                           CASE WHEN MAX(last_seen_at) > %s
+                                THEN 'online' ELSE 'offline' END AS status
+                    FROM (
+                        SELECT TRIM(hostname, %s) AS hostname, last_seen_at
+                        FROM agents
+                        WHERE hostname IS NOT NULL AND TRIM(hostname, %s) != ''
+                    ) AS named_agents
+                    GROUP BY hostname
+                    ORDER BY hostname
+                    """,
+                    (cutoff, whitespace, whitespace),
+                )
+                cols = [col[0] for col in cur.description or []]
+                endpoints = [dict(zip(cols, row)) for row in cur.fetchall()]
 
-                    cur.execute(
-                        """
-                        SELECT COUNT(DISTINCT hostname) FROM agents 
-                        WHERE hostname IS NOT NULL 
-                        AND last_seen_at > CURRENT_TIMESTAMP - INTERVAL '1 second' * %s
-                        """,
-                        (seconds_since_online,)
-                    )
-                    online_pcs = cur.fetchone()[0] or 0
-                    offline_pcs = max(0, total_pcs - online_pcs)
-
-                    return {
-                        "total_pcs": total_pcs,
-                        "online_pcs": online_pcs,
-                        "offline_pcs": offline_pcs,
-                    }
-                except Exception as exc:
-                    logger.warning("Error fetching pc status: %s", exc)
-                    return {"total_pcs": 0, "online_pcs": 0, "offline_pcs": 0}
+        online_pcs = sum(endpoint["status"] == "online" for endpoint in endpoints)
+        return {
+            "total_pcs": len(endpoints),
+            "online_pcs": online_pcs,
+            "offline_pcs": len(endpoints) - online_pcs,
+            "endpoints": endpoints,
+        }
 
     def upsert_agent_heartbeat(
         self,
