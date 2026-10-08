@@ -39,8 +39,14 @@ reports/
 .dist/
 dist/
 !server/dashboard/dist/
+server/dashboard/dist/assets/index-B1lRvZLv.css
+server/dashboard/dist/assets/index-CGSJOXTZ.js
 build/
-deploy/
+deploy/*
+!deploy/clickhouse/
+deploy/clickhouse/*
+!deploy/clickhouse/low-memory.xml
+!deploy/clickhouse/query-limits.xml
 
 # Logs
 *.log

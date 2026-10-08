@@ -111,7 +111,8 @@ export async function fetchTelemetry(
   offset = 0,
   collector?: string | null,
   username?: string | null,
-  filters: { search?: string; status?: string; start_time?: string; end_time?: string; signal?: AbortSignal } = {},
+  filters: { search?: string; status?: string; start_time?: string; end_time?: string; signal?: AbortSignal;
+    cursor?: string; include_total?: boolean; search_scope?: 'metadata' | 'payload' } = {},
 ): Promise<TelemetryResponse> {
   const params = new URLSearchParams({
     limit: String(limit),
@@ -120,7 +121,8 @@ export async function fetchTelemetry(
   });
   if (collector) params.set('collector', collector);
   if (username) params.set('username', username);
-  for (const key of ['search', 'status', 'start_time', 'end_time'] as const) {
+  if (filters.include_total !== undefined) params.set('include_total', String(filters.include_total));
+  for (const key of ['search', 'status', 'start_time', 'end_time', 'cursor', 'search_scope'] as const) {
     if (filters[key]) params.set(key, filters[key]);
   }
 

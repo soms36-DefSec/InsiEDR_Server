@@ -103,7 +103,8 @@ def create_app(*, storage=None, apply_migrations: bool = True) -> FastAPI:
                         )
                     except Exception as ch_err:
                         logging.getLogger("insiedr.app").warning("ClickHouse storage init failed, operating with PG fallback: %s", ch_err)
-                storage = HybridStorage(postgres_storage=pg_storage, clickhouse_storage=ch_storage)
+                storage = HybridStorage(postgres_storage=pg_storage, clickhouse_storage=ch_storage,
+                                        telemetry_read_backend=config.telemetry_read_backend)
             except Exception as e:
                 logging.getLogger("insiedr.app").warning("Failed to initialize database storage: %s", e)
 

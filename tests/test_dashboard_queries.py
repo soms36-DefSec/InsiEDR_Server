@@ -79,6 +79,44 @@ def test_timestamp_fallback_and_empty_result(database):
     assert page['logs'] == [] and page['total'] == 0
 
 
+def test_cursor_pages_survive_new_rows_and_cover_null_timestamps_without_count(database):
+    storage, conn = database
+    conn.execute('UPDATE collector_results SET collector_collected_at = NULL WHERE id IN (0, 1)')
+    statements = []
+    conn.set_trace_callback(statements.append)
+    page = storage.get_telemetry_page(limit=7, include_total=False, include_enrichment=False)
+    seen = [row['id'] for row in page['logs']]
+    conn.execute("INSERT INTO collector_results VALUES (999, '999', 'agent', 'file', '2026-10-08', 'new', 'success', '{}')")
+    while page['has_more']:
+        page = storage.get_telemetry_page(limit=7, cursor=page['next_cursor'],
+                                          include_total=False, include_enrichment=False)
+        assert page['total'] is None
+        seen.extend(row['id'] for row in page['logs'])
+    assert seen == list(range(119, -1, -1))
+    assert page['next_cursor'] is None
+    assert not any('COUNT(' in sql.upper() for sql in statements)
+
+
+def test_metadata_search_does_not_scan_payload_and_cursor_binds_filters(database):
+    storage, conn = database
+    statements = []
+    conn.set_trace_callback(statements.append)
+    assert storage.get_telemetry_page(search='needle', search_scope='metadata')['total'] == 0
+    assert not any('CAST(cr.payload_json' in sql for sql in statements)
+    first = storage.get_telemetry_page(limit=2, search_scope='metadata')
+    with pytest.raises(ValueError, match='cursor'):
+        storage.get_telemetry_page(cursor=first['next_cursor'], search_scope='payload')
+    second = storage.get_telemetry_page(limit=2, cursor=first['next_cursor'], search_scope='metadata')
+    assert second['total'] == 120
+    assert [row['id'] for row in second['logs']] == [117, 116]
+
+
+@pytest.mark.parametrize('token', ['!', 'W10=', 'bnVsbA=='])
+def test_malformed_cursor_rejected_before_query(database, token):
+    with pytest.raises(ValueError, match='cursor'):
+        database[0].get_telemetry_page(cursor=token)
+
+
 def test_legacy_enrichment_uses_latest_risk_without_duplicate_rows(database):
     storage, conn = database
     conn.execute("UPDATE collector_results SET payload_json = '{}' WHERE id = 3")
@@ -106,6 +144,7 @@ def api_client(storage):
 
 
 @pytest.mark.parametrize('query', ['limit=1001', 'offset=-1', 'start_time=nonsense',
+                                  'cursor=abc&offset=1', 'search_scope=invalid',
                                   'search=' + 'x' * 257,
                                   'start_time=2026-10-08&end_time=2026-10-07T00:00:00Z'])
 def test_api_rejects_invalid_or_unbounded_queries(query):
@@ -126,6 +165,16 @@ def test_api_normalizes_date_zones_and_preserves_route_aliases():
         kwargs = storage.get_telemetry_page.call_args.kwargs
         assert kwargs['start_time'].tzinfo is not None
         assert kwargs['search'] == 'HOST' and not kwargs['include_enrichment']
+
+
+def test_api_cursor_validation_and_count_opt_out():
+    storage = Mock()
+    storage.get_telemetry_page.return_value = {'logs': [], 'total': None, 'has_more': False}
+    response = api_client(storage).get('/api/telemetry?include_total=false&search_scope=metadata')
+    assert response.status_code == 200 and response.json()['total'] is None
+    assert storage.get_telemetry_page.call_args.kwargs['include_total'] is False
+    storage.get_telemetry_page.side_effect = ValueError('Invalid telemetry cursor')
+    assert api_client(storage).get('/api/telemetry?cursor=bad').status_code == 422
 
 
 @pytest.mark.parametrize('failure', [PoolError, QueryCanceled, LockNotAvailable])

@@ -150,6 +150,10 @@ class ServerConfig:
         return self._env_bool("INSIEDR_CLICKHOUSE_ENABLED", True)
 
     @property
+    def telemetry_read_backend(self) -> str:
+        return os.environ.get('INSIEDR_TELEMETRY_READ_BACKEND', 'postgres').strip().lower()
+
+    @property
     def clickhouse_secure(self) -> bool:
         return self._env_bool("INSIEDR_CLICKHOUSE_SECURE", False)
 

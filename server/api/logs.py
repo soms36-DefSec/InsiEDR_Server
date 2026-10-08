@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import anyio
 import inspect
+from typing import Literal
 from datetime import datetime, timezone
 from fastapi import APIRouter, Depends, Query, Request
 from fastapi.responses import JSONResponse
@@ -111,6 +112,9 @@ async def get_telemetry(
     start_time: datetime | None = None,
     end_time: datetime | None = None,
     include_enrichment: bool = True,
+    include_total: bool = True,
+    cursor: str | None = Query(None, max_length=1024),
+    search_scope: Literal['metadata', 'payload'] = 'payload',
     storage=Depends(get_storage),
     operator: OperatorPrincipal = Depends(require_operator("operator:read")),
 ):
@@ -118,6 +122,8 @@ async def get_telemetry(
         return JSONResponse({"ok": False, "error": "storage is not configured", "telemetry": []}, status_code=503)
 
     try:
+        if cursor and offset:
+            return JSONResponse({'ok': False, 'error': 'cursor and offset cannot be combined'}, status_code=422)
         # Interpret timezone-free API dates as UTC before comparing bounds.
         if start_time and start_time.tzinfo is None:
             start_time = start_time.replace(tzinfo=timezone.utc)
@@ -131,6 +137,7 @@ async def get_telemetry(
                 status=status, search=search,
                 start_time=start_time, end_time=end_time,
                 include_enrichment=include_enrichment,
+                cursor=cursor, include_total=include_total, search_scope=search_scope,
             ))
             return {"ok": True, **page}
         telemetry = await anyio.to_thread.run_sync(
@@ -139,6 +146,8 @@ async def get_telemetry(
         total = await anyio.to_thread.run_sync(
             lambda: getattr(storage, "count_collector_results", lambda **kw: len(telemetry))(collector=collector, username=username)
         )
+    except ValueError as exc:
+        return JSONResponse({'ok': False, 'error': str(exc)}, status_code=422)
     except AttributeError:
         return JSONResponse({"ok": False, "error": "storage method not implemented", "telemetry": []}, status_code=501)
     return {"ok": True, "logs": telemetry, "total": total, "offset": offset, "limit": limit}

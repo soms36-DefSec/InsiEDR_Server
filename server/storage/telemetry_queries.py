@@ -1,11 +1,19 @@
 """Bounded dashboard queries; filter the database before paginating results."""
 import json
 from contextlib import closing
+from server.storage.telemetry_cursor import filter_key, encode_cursor, decode_cursor
 
 
 def telemetry_page(storage, limit=100, offset=0, collector=None, username=None,
                    status=None, search=None, start_time=None, end_time=None,
-                   include_enrichment=True):
+                   include_enrichment=True, cursor=None, include_total=True,
+                   search_scope='payload'):
+    if search_scope not in ('metadata', 'payload'):
+        raise ValueError('Invalid search scope')
+    if cursor and offset:
+        raise ValueError('cursor and offset cannot be combined')
+    key = filter_key(collector=collector, username=username, status=status, search=search,
+                     start_time=start_time, end_time=end_time, search_scope=search_scope)
     clauses, params = [], []
 
     def contains(column, value):
@@ -50,27 +58,43 @@ def telemetry_page(storage, limit=100, offset=0, collector=None, username=None,
         clauses.append("LOWER(cr.status) IN (" + ",".join("%s" for _ in statuses) + ")")
         params.extend(statuses)
     if search:
-        clauses.append("(" + " OR ".join(contains(column, search) for column in (
-            "cr.hostname", "rp.username", "cr.collector", "CAST(cr.payload_json AS TEXT)",
-        )) + ")")
+        search_columns = ['cr.hostname', 'rp.username', 'cr.collector']
+        if search_scope == 'payload':
+            search_columns.append('CAST(cr.payload_json AS TEXT)')
+        clauses.append("(" + " OR ".join(contains(column, search) for column in search_columns) + ")")
     for bound, operator in ((start_time, ">="), (end_time, "<=")):
         if bound:
             clauses.append(f"(cr.collector_collected_at {operator} %s OR (cr.collector_collected_at IS NULL AND rp.received_at {operator} %s))")
             params.extend([bound, bound])
     where = " WHERE " + " AND ".join(clauses) if clauses else ""
+    count_where, count_params = where, list(params)
+    if cursor:
+        timestamp, row_id = decode_cursor(cursor, 'postgres', key)
+        if timestamp is None:
+            clauses.append('(cr.collector_collected_at IS NULL AND cr.id < %s)')
+            params.append(row_id)
+        else:
+            clauses.append('((cr.collector_collected_at, cr.id) < (%s, %s) OR cr.collector_collected_at IS NULL)')
+            params.extend([timestamp, row_id])
+        where = ' WHERE ' + ' AND '.join(clauses)
     source = "FROM collector_results cr LEFT JOIN raw_payloads rp ON cr.payload_id = rp.payload_id"
     with storage.connection() as conn, closing(conn.cursor()) as cur:
         cur.execute(
             "SELECT cr.id, cr.payload_id, cr.agent_id, cr.collector, "
             "COALESCE(cr.collector_collected_at, rp.received_at) AS collected_at, "
-            "cr.hostname, rp.username, cr.status, cr.payload_json AS payload, rp.received_at "
+            "cr.hostname, rp.username, cr.status, cr.payload_json AS payload, rp.received_at, "
+            "cr.collector_collected_at AS cursor_time "
             + source + where
             + " ORDER BY cr.collector_collected_at DESC NULLS LAST, cr.id DESC LIMIT %s OFFSET %s",
-            tuple(params + [limit, offset]),
+            tuple(params + [limit + 1, offset]),
         )
         columns = [column[0] for column in cur.description]
         logs = [dict(zip(columns, row)) for row in cur.fetchall()]
+        has_more = len(logs) > limit
+        logs = logs[:limit]
+        next_cursor = encode_cursor('postgres', key, logs[-1]['cursor_time'], logs[-1]['id']) if has_more else None
         for row in logs:
+            row.pop('cursor_time')
             if isinstance(row["payload"], str):
                 try:
                     row["payload"] = json.loads(row["payload"])
@@ -81,8 +105,10 @@ def telemetry_page(storage, limit=100, offset=0, collector=None, username=None,
         count_source = source if username or search else "FROM collector_results cr"
         if start_time or end_time:
             count_source = source
-        cur.execute("SELECT COUNT(*) " + count_source + where, tuple(params))
-        total = cur.fetchone()[0]
+        total = None
+        if include_total:
+            cur.execute("SELECT COUNT(*) " + count_source + count_where, tuple(count_params))
+            total = cur.fetchone()[0]
         if include_enrichment and logs:
             # Preserve the legacy API's enrichment fields, but fetch only this
             # page and choose one latest risk event so joins cannot duplicate rows.
@@ -112,4 +138,5 @@ def telemetry_page(storage, limit=100, offset=0, collector=None, username=None,
                     ("risk_level", "summary", "correlated_signals_json", "risk_score"))))
                 if not row["payload"]:
                     row["payload"] = features.get(row["payload_id"], {})
-    return {"logs": logs, "total": total, "offset": offset, "limit": limit}
+    return {"logs": logs, "total": total, "offset": offset, "limit": limit,
+            "has_more": has_more, "next_cursor": next_cursor, 'source': 'postgres'}

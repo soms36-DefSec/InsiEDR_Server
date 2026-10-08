@@ -4,8 +4,29 @@ tests/test_hybrid_storage.py
 Integration tests for HybridStorage coordinator routing and fallback logic.
 """
 from unittest.mock import MagicMock
+import pytest
+from psycopg2.pool import PoolError
 
 from server.storage.hybrid_storage import HybridStorage
+
+
+def test_telemetry_backend_is_explicit_and_never_falls_back_mid_page():
+    pg, ch = MagicMock(), MagicMock()
+    pg.get_telemetry_page.return_value = {'logs': [], 'source': 'postgres'}
+    ch.get_telemetry_page.return_value = {'logs': [], 'source': 'clickhouse'}
+    ch.is_connected.return_value = True
+    assert HybridStorage(pg, ch).get_telemetry_page()['source'] == 'postgres'
+    ch.get_telemetry_page.assert_not_called()
+    hybrid = HybridStorage(pg, ch, telemetry_read_backend='clickhouse')
+    pg.reset_mock()
+    assert hybrid.get_telemetry_page()['source'] == 'clickhouse'
+    ch.get_telemetry_page.side_effect = RuntimeError('query failed')
+    with pytest.raises(PoolError):
+        hybrid.get_telemetry_page(cursor='existing-chain')
+    ch.is_connected.return_value = False
+    with pytest.raises(PoolError):
+        hybrid.get_telemetry_page()
+    pg.get_telemetry_page.assert_not_called()
 
 
 class DummyPGStorage:

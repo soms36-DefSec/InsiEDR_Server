@@ -6,6 +6,7 @@ data
 __pycache__
 *.pyc
 .env
+.env.*
 .github
 docs
 dataset
@@ -15,6 +16,9 @@ frontend/node_modules
 **/node_modules
 frontend/dist
 server/dashboard/dist_new
+server/dashboard/dist
+reports
+tests
 .pytest_cache
 *.log
 

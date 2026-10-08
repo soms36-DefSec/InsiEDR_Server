@@ -8,12 +8,12 @@
  *   with a windowed viewport and bounded DOM row count.
  *
  * Filter Pipeline:
- *   1. Server-Side: Applies all filters before limit/offset pagination.
+ *   1. Server-Side: Applies filters before cursor pagination without exact counts.
  *   2. Debounced multi-dimensional filters across:
  *      - Time Range Cutoff: 15m, 1h, 24h, 7d rolling windows.
  *      - Status: success, warning, error, tampered.
  *      - Collector Domain: logon, file, usb/device, process, network/http.
- *      - Full-Text Search: Hostname, username, and raw JSON payload attributes.
+ *      - Metadata Search: Hostname, username, collector; optional raw JSON search.
  *   3. Deep Inspection: Opens `LogInspectorDrawer` for structured key-value & raw JSON forensics.
  */
 
@@ -41,7 +41,6 @@ import {
   ChevronLeft,
   ChevronRight,
   ChevronsLeft,
-  ChevronsRight,
 } from 'lucide-react';
 
 const KNOWN_COLLECTOR_LABELS: Record<string, string> = {
@@ -93,10 +92,14 @@ export const TelemetryExplorerPlugin: React.FC<PluginProps> = ({ context }) => {
   const [statusFilter, setStatusFilter] = useState<string>('all');
   const [timeRange, setTimeRange] = useState<string>('all');
   const [debouncedSearch, setDebouncedSearch] = useState('');
+  const [searchScope, setSearchScope] = useState<'metadata' | 'payload'>('metadata');
   const [loadError, setLoadError] = useState<string | null>(null);
   const request = useRef<AbortController | null>(null);
   const queuedRefresh = useRef(false);
   const scheduleRefresh = useRef<() => void>(() => {});
+  const pageCursors = useRef<(string | undefined)[]>([undefined]);
+  const queryStart = useRef<string | undefined>(undefined);
+  const [source, setSource] = useState('postgres');
 
   useEffect(() => {
     fetchAvailableCollectors()
@@ -116,7 +119,6 @@ export const TelemetryExplorerPlugin: React.FC<PluginProps> = ({ context }) => {
   // Pagination State
   const [currentPage, setCurrentPage] = useState<number>(1);
   const [pageSize, setPageSize] = useState<number>(50);
-  const [totalCount, setTotalCount] = useState<number>(0);
   const [isLoading, setIsLoading] = useState<boolean>(false);
   const [hasMore, setHasMore] = useState<boolean>(true);
 
@@ -127,23 +129,29 @@ export const TelemetryExplorerPlugin: React.FC<PluginProps> = ({ context }) => {
       const abort = new AbortController();
       request.current = abort;
       setIsLoading(true);
-      const offset = (pageToLoad - 1) * currentSize;
       const periods: Record<string, number> = { '15m': 900, '1h': 3600, '24h': 86400, '7d': 604800 };
+      if (pageToLoad === 1) {
+        pageCursors.current = [undefined];
+        queryStart.current = periods[timeRange] ? new Date(Date.now() - periods[timeRange] * 1000).toISOString() : undefined;
+      }
       try {
-        const response = await fetchTelemetry(currentSize, offset,
+        const response = await fetchTelemetry(currentSize, 0,
           activeCollector === 'all' ? null : activeCollector, null, {
             search: debouncedSearch || undefined,
             status: statusFilter === 'all' ? undefined : statusFilter,
-            start_time: periods[timeRange] ? new Date(Date.now() - periods[timeRange] * 1000).toISOString() : undefined,
+            start_time: queryStart.current,
+            cursor: pageCursors.current[pageToLoad - 1],
+            include_total: false,
+            search_scope: searchScope,
             signal: abort.signal,
           });
         if (abort.signal.aborted || request.current !== abort) return;
         const fetched = response.logs || [];
-        const total = response.total ?? offset + fetched.length;
         setLogs(fetched);
         setCurrentPage(pageToLoad);
-        setHasMore(offset + fetched.length < total);
-        setTotalCount(total);
+        pageCursors.current[pageToLoad] = response.next_cursor || undefined;
+        setHasMore(Boolean(response.has_more && response.next_cursor));
+        setSource(response.source || 'postgres');
         setLoadError(null);
       } catch (error) {
         if (!abort.signal.aborted) setLoadError(error instanceof Error ? error.message : 'Could not load telemetry');
@@ -154,7 +162,7 @@ export const TelemetryExplorerPlugin: React.FC<PluginProps> = ({ context }) => {
           if (queuedRefresh.current) { queuedRefresh.current = false; scheduleRefresh.current(); }
         }
       }
-    }, [activeCollector, debouncedSearch, statusFilter, timeRange, pageSize]
+    }, [activeCollector, debouncedSearch, statusFilter, timeRange, pageSize, searchScope]
   );
 
   useEffect(() => {
@@ -163,27 +171,32 @@ export const TelemetryExplorerPlugin: React.FC<PluginProps> = ({ context }) => {
   }, [loadLogs, pageSize]);
 
   useEffect(() => {
-    if (context.autoRefresh === false) return;
+    if (context.autoRefresh === false || currentPage !== 1 || selectedLog) return;
     let timer: number | undefined;
     const schedule = () => {
       if (timer !== undefined) return;
       timer = window.setTimeout(() => {
         timer = undefined;
-        void loadLogs(currentPage, pageSize, true);
-      }, 50);
+        if (document.visibilityState === 'visible') void loadLogs(1, pageSize, true);
+      }, 2000);
     };
     scheduleRefresh.current = schedule;
     const unsubscribe = subscribeTelemetry(schedule);
-    const poll = window.setInterval(schedule, context.isConnected ? 30000 : 3000);
+    // SSE carries invalidations, not complete rows. Coalesce them, and recover
+    // missed notifications at a bounded rate only while disconnected.
+    const poll = context.isConnected ? undefined : window.setInterval(schedule, 30000);
+    const onVisible = () => { if (document.visibilityState === 'visible') schedule(); };
+    document.addEventListener('visibilitychange', onVisible);
+    if (context.isConnected) schedule();
     return () => {
       unsubscribe();
       window.clearInterval(poll);
       window.clearTimeout(timer);
+      document.removeEventListener('visibilitychange', onVisible);
+      queuedRefresh.current = false;
       scheduleRefresh.current = () => {};
     };
-  }, [context.autoRefresh, context.isConnected, currentPage, pageSize, loadLogs]);
-
-  const totalPages = Math.max(1, Math.ceil((totalCount || logs.length) / pageSize));
+  }, [context.autoRefresh, context.isConnected, currentPage, pageSize, loadLogs, selectedLog]);
 
   const handlePageSizeChange = (newSize: number) => {
     setPageSize(newSize);
@@ -191,33 +204,11 @@ export const TelemetryExplorerPlugin: React.FC<PluginProps> = ({ context }) => {
   };
 
   const handleGoToPage = (newPage: number) => {
-    if (newPage < 1 || (totalCount > 0 && newPage > totalPages) || isLoading) return;
+    if (newPage < 1 || (newPage > 1 && !pageCursors.current[newPage - 1]) || isLoading) return;
     loadLogs(newPage, pageSize);
   };
 
-  const pageNumbers = useMemo(() => {
-    const pages: (number | string)[] = [];
-    if (totalPages <= 7) {
-      for (let i = 1; i <= totalPages; i++) pages.push(i);
-    } else {
-      pages.push(1);
-      if (currentPage > 3) {
-        pages.push('...');
-      }
-      const start = Math.max(2, currentPage - 1);
-      const end = Math.min(totalPages - 1, currentPage + 1);
-      for (let i = start; i <= end; i++) {
-        pages.push(i);
-      }
-      if (currentPage < totalPages - 2) {
-        pages.push('...');
-      }
-      pages.push(totalPages);
-    }
-    return pages;
-  }, [currentPage, totalPages]);
-
-  const startItem = totalCount === 0 || logs.length === 0 ? 0 : (currentPage - 1) * pageSize + 1;
+  const startItem = logs.length === 0 ? 0 : (currentPage - 1) * pageSize + 1;
   const endItem = (currentPage - 1) * pageSize + logs.length;
 
   // Filters run before database pagination, so rows and totals share semantics.
@@ -282,7 +273,7 @@ export const TelemetryExplorerPlugin: React.FC<PluginProps> = ({ context }) => {
             <input
               type="text"
               aria-label="Search telemetry"
-              placeholder="Search user, hostname, IP, or payload attribute..."
+              placeholder={searchScope === 'metadata' ? 'Search hostname, user, or collector...' : 'Search metadata and raw payload...'}
               value={searchTerm}
               onChange={(e) => setSearchTerm(e.target.value)}
               className="w-full pl-8 pr-8 h-[38px] text-xs bg-white border border-slate-200 rounded-md outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-500/20 text-slate-900 transition-colors shadow-2xs"
@@ -299,6 +290,12 @@ export const TelemetryExplorerPlugin: React.FC<PluginProps> = ({ context }) => {
 
           {/* Quick Filter Selectors */}
           <div className="flex items-center gap-2 flex-wrap">
+            <select aria-label="Search scope" value={searchScope}
+              onChange={(event) => setSearchScope(event.target.value as 'metadata' | 'payload')}
+              className="bg-white border border-slate-200 rounded-md px-3 h-[38px] text-xs">
+              <option value="metadata">Metadata search</option>
+              <option value="payload">Include payload (slower)</option>
+            </select>
             {/* Collector Dropdown */}
             <div className="flex items-center gap-1.5 bg-white border border-slate-200 rounded-md px-3 h-[38px] text-xs shadow-2xs">
               <Activity className="w-3.5 h-3.5 text-slate-400 shrink-0" />
@@ -480,7 +477,7 @@ export const TelemetryExplorerPlugin: React.FC<PluginProps> = ({ context }) => {
             </span>
             <span className="text-slate-400 font-normal">/</span>
             <span className="text-blue-600 font-mono font-bold">
-              {totalCount > 0 ? totalCount.toLocaleString() : (logs.length || 0)} total in database
+              {source === 'clickhouse' ? 'Analytics replica (may lag)' : 'Live telemetry'}
             </span>
           </div>
         </div>
@@ -517,11 +514,8 @@ export const TelemetryExplorerPlugin: React.FC<PluginProps> = ({ context }) => {
 
           <div className="text-slate-600 font-medium">
             Showing <b className="text-slate-900 font-mono">{startItem}</b> –{' '}
-            <b className="text-slate-900 font-mono">{endItem}</b> of{' '}
-            <b className="text-slate-900 font-mono">
-              {totalCount > 0 ? totalCount.toLocaleString() : (logs.length || 0)}
-            </b>{' '}
-            records
+            <b className="text-slate-900 font-mono">{endItem}</b>{' '}
+            records {hasMore ? '(more available)' : '(end of results)'}
           </div>
         </div>
 
@@ -554,31 +548,7 @@ export const TelemetryExplorerPlugin: React.FC<PluginProps> = ({ context }) => {
 
           {/* Page Numbers */}
           <div className="flex items-center gap-1 px-1">
-            {pageNumbers.map((p, idx) => {
-              if (p === '...') {
-                return (
-                  <span key={`dots-${idx}`} className="px-1.5 text-slate-400 select-none font-bold">
-                    …
-                  </span>
-                );
-              }
-              const pageNum = p as number;
-              const isActive = pageNum === currentPage;
-              return (
-                <button
-                  key={pageNum}
-                  onClick={() => handleGoToPage(pageNum)}
-                  disabled={isLoading}
-                  className={`min-w-8 h-8 px-2 rounded-md font-mono text-xs transition-colors cursor-pointer flex items-center justify-center ${
-                    isActive
-                      ? 'bg-blue-600 text-white font-semibold shadow-2xs'
-                      : 'text-slate-700 hover:bg-slate-100 hover:text-slate-900 border border-slate-200/70 font-medium'
-                  }`}
-                >
-                  {pageNum}
-                </button>
-              );
-            })}
+            <span aria-live="polite" className="px-2 font-mono">Page {currentPage}</span>
           </div>
 
           {/* Next Page */}
@@ -586,7 +556,7 @@ export const TelemetryExplorerPlugin: React.FC<PluginProps> = ({ context }) => {
             variant="secondary"
             size="sm"
             onClick={() => handleGoToPage(currentPage + 1)}
-            disabled={(currentPage >= totalPages && !hasMore) || isLoading}
+            disabled={!hasMore || isLoading}
             title="Next Page"
             className="px-2.5"
           >
@@ -594,17 +564,6 @@ export const TelemetryExplorerPlugin: React.FC<PluginProps> = ({ context }) => {
             <ChevronRight className="w-4 h-4 ml-0.5" />
           </Button>
 
-          {/* Last Page */}
-          <Button
-            variant="secondary"
-            size="sm"
-            onClick={() => handleGoToPage(totalPages)}
-            disabled={currentPage >= totalPages || isLoading}
-            title={`Last Page (Page ${totalPages})`}
-            className="px-2"
-          >
-            <ChevronsRight className="w-4 h-4" />
-          </Button>
         </div>
       </div>
 

@@ -89,8 +89,9 @@ test('dashboard: one SSE stream, coalesced updates, filters, stale responses, pa
       requests.push(url.searchParams);
       if (url.searchParams.get('search') === 'OLD') await new Promise(resolve => setTimeout(resolve, 650));
       if (fail) { await route.fulfill({ status: 503, json: { error: { message: 'Database busy' } } }); return; }
-      body = { ok: true, total: 50, logs: [{ id: version,
-        hostname: url.searchParams.get('search') || `LIVE-${version}`, username: 'alice',
+      const older = url.searchParams.has('cursor');
+      body = { ok: true, total: null, has_more: !older, next_cursor: older ? null : 'test-position', logs: [{ id: version,
+        hostname: older ? 'OLDER-PAGE' : url.searchParams.get('search') || `LIVE-${version}`, username: 'alice',
         collector: 'file-collector', collected_at: new Date().toISOString(), status: 'success', payload: { count: version } }] };
     } else if (url.pathname.endsWith('/dashboard-summary')) {
       body = { ok: true, pc_status: { total_pcs: 3, online_pcs: 1, offline_pcs: 2, endpoints: [
@@ -103,6 +104,18 @@ test('dashboard: one SSE stream, coalesced updates, filters, stale responses, pa
   });
   try {
     await page.goto(base);
+    await page.getByText('LIVE-0', { exact: true }).waitFor();
+    assert.equal(requests.at(-1).get('include_total'), 'false');
+    assert.equal(requests.at(-1).get('search_scope'), 'metadata');
+    await page.getByRole('button', { name: 'Next', exact: true }).click();
+    await page.getByText('OLDER-PAGE', { exact: true }).waitFor();
+    assert.equal(requests.at(-1).get('cursor'), 'test-position');
+    assert.equal(requests.at(-1).get('offset'), '0');
+    const browsing = requests.length;
+    await page.evaluate(() => { for (let i = 0; i < 1000; i++) window.emitTelemetry(); });
+    await page.waitForTimeout(2300);
+    assert.equal(requests.length, browsing, 'older pages must stay stable during SSE bursts');
+    await page.getByTitle('First Page (Page 1)').click();
     await page.getByText('LIVE-0', { exact: true }).waitFor();
     assert.equal(await page.evaluate(() => window.streams.filter(s => !s.closed).length), 1);
     assert.equal(await page.evaluate(() => window.streams.find(s => !s.closed).url), '/api/v1/stream/dashboard');

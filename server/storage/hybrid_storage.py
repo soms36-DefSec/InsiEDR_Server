@@ -44,9 +44,13 @@ class HybridStorage(BaseStorage):
         self,
         postgres_storage: Any,
         clickhouse_storage: Optional[Any] = None,
+        telemetry_read_backend: str = 'postgres',
     ) -> None:
         self.pg = postgres_storage
         self.ch = clickhouse_storage
+        if telemetry_read_backend not in ('postgres', 'clickhouse'):
+            raise ValueError('telemetry_read_backend must be postgres or clickhouse')
+        self.telemetry_read_backend = telemetry_read_backend
 
         # Domain Repositories
         self.fleet = FleetRepository(self.pg)
@@ -139,8 +143,19 @@ class HybridStorage(BaseStorage):
         return self.fleet.get_pc_status(seconds_since_online=seconds_since_online)
 
     def get_telemetry_page(self, **filters) -> Dict[str, Any]:
-        # The durable ingestion store is authoritative for the live dashboard.
-        # Mixing lagging CH rows with PG counts produces stale/mismatched pages.
+        # Analytics reads are explicitly opt-in: CH is eventually consistent.
+        # Never switch databases within a cursor chain or mix rows and counts.
+        if self.telemetry_read_backend == 'clickhouse':
+            from psycopg2.pool import PoolError
+            if not self.ch or not self.ch.is_connected():
+                raise PoolError('ClickHouse analytics is unavailable')
+            try:
+                return self.ch.get_telemetry_page(**filters)
+            except ValueError:
+                raise
+            except Exception as exc:
+                logger.warning('ClickHouse telemetry read failed: %s', exc)
+                raise PoolError('ClickHouse analytics is unavailable') from exc
         return self.pg.get_telemetry_page(**filters)
 
     def get_agent(self, agent_id: str) -> Dict[str, Any] | None:

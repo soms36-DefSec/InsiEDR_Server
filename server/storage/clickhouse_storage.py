@@ -198,8 +198,10 @@ class ClickHouseStorage:
 
     def _raw_batch_insert(self, table: str, rows: List[Dict[str, Any]]) -> None:
         """Low-level batch insert execution via clickhouse-connect."""
-        if not self.is_connected() or not rows:
+        if not rows:
             return
+        if not self.is_connected():
+            raise RuntimeError('ClickHouse is unavailable; batch has not been persisted')
 
         column_names = list(rows[0].keys())
         data_matrix = []
@@ -228,6 +230,12 @@ class ClickHouseStorage:
         """Synchronously flush all pending batches through the batcher."""
         if hasattr(self, "batcher") and self.batcher is not None:
             self.batcher.flush_all(raise_on_error=raise_on_error)
+
+    def get_telemetry_page(self, **filters) -> Dict[str, Any]:
+        from server.storage.clickhouse_telemetry_queries import telemetry_page
+        if not self.is_connected():
+            raise RuntimeError('ClickHouse is unavailable')
+        return telemetry_page(self, **filters)
 
     # --------------------------------------------------------------------------
     # Ingest & Storage APIs (Queued via Batcher)

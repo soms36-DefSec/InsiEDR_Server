@@ -248,7 +248,10 @@ export interface TelemetryLog {
 export interface TelemetryResponse {
   ok: boolean;
   logs: TelemetryLog[];
-  total?: number;
+  total?: number | null;
+  has_more?: boolean;
+  next_cursor?: string | null;
+  source?: 'postgres' | 'clickhouse';
   offset?: number;
   limit?: number;
   error?: string;

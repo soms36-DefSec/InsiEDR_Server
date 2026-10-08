@@ -1,3 +1,4 @@
+# syntax=docker/dockerfile:1
 # ─────────────────────────────────────────────────────────────────────────────
 # Stage 1 – Frontend build (Node 20 LTS)
 # Compiles the React + TypeScript dashboard into server/dashboard/dist/
@@ -17,9 +18,18 @@ COPY frontend/ ./
 RUN npm run build
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Stage 2 – Python runtime image
+# Stage 2 – Python dependency build (compilers stay out of the runtime)
 # ─────────────────────────────────────────────────────────────────────────────
-FROM python:3.10-slim
+FROM python:3.10-slim AS python-builder
+
+WORKDIR /build
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential libpq-dev \
+    && rm -rf /var/lib/apt/lists/*
+COPY requirements.txt requirements-postgres.txt ./
+RUN pip wheel --no-cache-dir --wheel-dir=/wheels -r requirements.txt -r requirements-postgres.txt
+
+FROM python:3.10-slim AS runtime
 
 WORKDIR /app
 
@@ -27,32 +37,38 @@ ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
     PYTHONPATH="/app"
 
-# Install system dependencies (libpq-dev for postgres, curl for healthchecks)
+# Only runtime libraries; healthchecks use Python's standard library.
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    build-essential \
-    libpq-dev \
-    curl \
+    libpq5 \
     && rm -rf /var/lib/apt/lists/*
 
 # Copy requirements files first to leverage Docker cache
 COPY requirements.txt requirements-postgres.txt ./
 
-# Install python dependencies
-RUN pip install --no-cache-dir -r requirements.txt -r requirements-postgres.txt gunicorn
+# Mount wheels for installation without retaining them in an image layer.
+RUN --mount=type=bind,from=python-builder,source=/wheels,target=/wheels \
+    pip install --no-cache-dir --no-index --find-links=/wheels -r requirements.txt -r requirements-postgres.txt
 
-# Copy the full application source
-COPY . .
+# Copy runtime source without local configuration or development artifacts.
+COPY server/ ./server/
+COPY shared/ ./shared/
+COPY scripts/ ./scripts/
 
-# Overwrite the dist folder with the freshly compiled frontend assets
-# (replaces any stale or missing pre-built files from the COPY above)
+# Add freshly compiled frontend assets; local dist is excluded by .dockerignore.
 COPY --from=frontend-builder /build/server/dashboard/dist/ ./server/dashboard/dist/
+
+RUN groupadd --gid 10001 insiedr \
+    && useradd --uid 10001 --gid insiedr --no-create-home insiedr \
+    && mkdir -p /app/data/dlq \
+    && chown -R insiedr:insiedr /app/data
+USER 10001:10001
 
 # Expose the port the app runs on
 EXPOSE 5000
 
 # Container Healthcheck (allowing sufficient time for DB migrations on cold start)
-HEALTHCHECK --interval=15s --timeout=10s --start-period=60s --retries=5 \
-    CMD curl -f http://localhost:5000/api/health || exit 1
+HEALTHCHECK --interval=30s --timeout=10s --start-period=180s --retries=5 \
+    CMD python -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:5000/api/health/ready', timeout=8)"
 
 # Run the app with uvicorn ASGI server
-CMD ["uvicorn", "server.app:app", "--host", "0.0.0.0", "--port", "5000", "--workers", "4"]
+CMD ["uvicorn", "server.app:app", "--host", "0.0.0.0", "--port", "5000", "--workers", "2", "--timeout-graceful-shutdown", "60"]

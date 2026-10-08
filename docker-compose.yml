@@ -1,61 +1,168 @@
+# Single Linux host: 12 cores, >=12 GB physical RAM, mechanical HDD.
+# See docs/DEPLOYMENT_12GB_HDD.md before upgrading an existing deployment.
+x-service-defaults: &service-defaults
+  restart: unless-stopped
+  security_opt:
+    - no-new-privileges:true
+  logging:
+    driver: json-file
+    options:
+      max-size: "20m"
+      max-file: "3"
+
 services:
   db:
+    <<: *service-defaults
     image: postgres:16-alpine
-    restart: always
-    command: ["postgres", "-c", "password_encryption=scram-sha-256"]
+    cpus: 2.0
+    mem_limit: 2048m
+    mem_reservation: 1024m
+    memswap_limit: 2048m
+    pids_limit: 256
+    shm_size: 256m
+    deploy:
+      resources:
+        limits: {cpus: "2.0", memory: 2048m, pids: 256}
+        reservations: {memory: 1024m}
+    command:
+      - postgres
+      - -c
+      - password_encryption=scram-sha-256
+      - -c
+      - shared_buffers=512MB
+      - -c
+      - effective_cache_size=1536MB
+      - -c
+      - work_mem=4MB
+      - -c
+      - maintenance_work_mem=128MB
+      - -c
+      - autovacuum_work_mem=64MB
+      - -c
+      - max_connections=40
+      - -c
+      - max_parallel_workers_per_gather=0
+      - -c
+      - checkpoint_timeout=15min
+      - -c
+      - checkpoint_completion_target=0.9
+      - -c
+      - min_wal_size=1GB
+      - -c
+      - max_wal_size=4GB
+      - -c
+      - wal_buffers=16MB
+      - -c
+      - wal_writer_delay=200ms
+      - -c
+      - commit_delay=0
+      - -c
+      - random_page_cost=4
+      - -c
+      - effective_io_concurrency=1
     environment:
       POSTGRES_USER: ${POSTGRES_USER:-insiedr}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-insiedr_pass}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
       POSTGRES_DB: ${POSTGRES_DB:-insiedr_db}
     volumes:
       - postgres_data:/var/lib/postgresql/data
+    networks: [data]
+    stop_grace_period: 120s
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-insiedr} -d ${POSTGRES_DB:-insiedr_db}"]
-      interval: 10s
-      timeout: 5s
+      test: ["CMD-SHELL", 'pg_isready -U "$${POSTGRES_USER}" -d "$${POSTGRES_DB}"']
+      interval: 30s
+      timeout: 10s
+      start_period: 180s
       retries: 5
 
   redis:
+    <<: *service-defaults
     image: redis:7-alpine
-    restart: always
+    cpus: 1.0
+    mem_limit: 1536m
+    mem_reservation: 512m
+    memswap_limit: 1536m
+    pids_limit: 128
+    deploy:
+      resources:
+        limits: {cpus: "1.0", memory: 1536m, pids: 128}
+        reservations: {memory: 512m}
     command: [
       "redis-server",
-      "--requirepass", "${REDIS_PASSWORD:-insiedr_redis_pass}",
-      "--save", "60", "1",
+      "--requirepass", "${REDIS_PASSWORD:?Set REDIS_PASSWORD in .env}",
+      "--save", "",
       "--appendonly", "yes",
+      "--appendfsync", "everysec",
+      "--no-appendfsync-on-rewrite", "no",
+      "--auto-aof-rewrite-percentage", "100",
+      "--auto-aof-rewrite-min-size", "256mb",
       "--loglevel", "warning",
-      "--maxmemory", "1gb",
+      "--maxmemory", "512mb",
       "--maxmemory-policy", "noeviction"
     ]
+    environment:
+      REDISCLI_AUTH: ${REDIS_PASSWORD:?Set REDIS_PASSWORD in .env}
     volumes:
       - redis_data:/data
+    networks: [data]
+    stop_grace_period: 120s
     healthcheck:
-      test: ["CMD", "redis-cli", "-a", "${REDIS_PASSWORD:-insiedr_redis_pass}", "ping"]
-      interval: 10s
-      timeout: 5s
+      test: ["CMD-SHELL", 'test "$$(redis-cli --raw ping)" = PONG']
+      interval: 30s
+      timeout: 10s
+      start_period: 180s
       retries: 5
 
   clickhouse:
+    <<: *service-defaults
     image: clickhouse/clickhouse-server:24.3-alpine
-    restart: always
+    cpus: 4.0
+    mem_limit: 3584m
+    mem_reservation: 1536m
+    memswap_limit: 3584m
+    pids_limit: 512
+    deploy:
+      resources:
+        limits: {cpus: "4.0", memory: 3584m, pids: 512}
+        reservations: {memory: 1536m}
     environment:
       CLICKHOUSE_DB: ${CLICKHOUSE_DB:-insiedr_analytics}
       CLICKHOUSE_USER: ${CLICKHOUSE_USER:-default}
-      CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD:-insiedr_ch_pass}
+      CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD:?Set CLICKHOUSE_PASSWORD in .env}
       CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT: 1
     volumes:
       - clickhouse_data:/var/lib/clickhouse
       - clickhouse_logs:/var/log/clickhouse-server
       - ./server/storage/clickhouse_schema.sql:/docker-entrypoint-initdb.d/01_schema.sql:ro
+      - ./deploy/clickhouse/low-memory.xml:/etc/clickhouse-server/config.d/low-memory.xml:ro
+      - ./deploy/clickhouse/query-limits.xml:/etc/clickhouse-server/users.d/query-limits.xml:ro
+    networks: [data]
+    stop_grace_period: 120s
     healthcheck:
-      test: ["CMD", "clickhouse-client", "--query", "SELECT 1"]
-      interval: 10s
-      timeout: 5s
+      test: ["CMD-SHELL", 'clickhouse-client --user "$${CLICKHOUSE_USER}" --password "$${CLICKHOUSE_PASSWORD}" --query "SELECT 1"']
+      interval: 30s
+      timeout: 10s
+      start_period: 240s
       retries: 5
 
   backend:
+    <<: *service-defaults
     build: .
-    restart: always
+    init: true
+    cpus: 3.0
+    mem_limit: 1792m
+    mem_reservation: 768m
+    memswap_limit: 1792m
+    pids_limit: 256
+    deploy:
+      resources:
+        limits: {cpus: "3.0", memory: 1792m, pids: 256}
+        reservations: {memory: 768m}
+    cap_drop: [ALL]
+    read_only: true
+    tmpfs:
+      - /tmp:size=64m,mode=1777
+    stop_grace_period: 90s
     depends_on:
       db:
         condition: service_healthy
@@ -66,32 +173,72 @@ services:
     env_file:
       - .env
     environment:
-      - DATABASE_DSN=postgresql://${POSTGRES_USER:-insiedr}:${POSTGRES_PASSWORD:-insiedr_pass}@db:5432/${POSTGRES_DB:-insiedr_db}
-      - REDIS_URL=redis://:${REDIS_PASSWORD:-insiedr_redis_pass}@redis:6379/0
-      - CLICKHOUSE_HOST=clickhouse
-      - CLICKHOUSE_PORT=8123
-      - CLICKHOUSE_USER=${CLICKHOUSE_USER:-default}
-      - CLICKHOUSE_PASSWORD=${CLICKHOUSE_PASSWORD:-insiedr_ch_pass}
-      - CLICKHOUSE_DB=${CLICKHOUSE_DB:-insiedr_analytics}
-      - INSIEDR_DLQ_ENABLED=true
-      - INSIEDR_DLQ_DIR=/app/data/dlq
-      - CLICKHOUSE_QUERY_TIMEOUT=30
-      - CLICKHOUSE_MAX_MEMORY=2000000000
-      - PYTHONPATH=/app
-      - SYSTEM_DEFAULT_PROFILE=${SYSTEM_DEFAULT_PROFILE:-DEFAULT}
-      - ENABLE_CORROBORATION_GUARD=true
+      # Prefixed variables override local-development values from env_file.
+      INSIEDR_DATABASE_DSN: postgresql://${POSTGRES_USER:-insiedr}:${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}@db:5432/${POSTGRES_DB:-insiedr_db}
+      INSIEDR_REDIS_URL: redis://:${REDIS_PASSWORD:?Set REDIS_PASSWORD in .env}@redis:6379/0
+      INSIEDR_REDIS_SSL: "false"
+      INSIEDR_PG_POOL_MIN: "2"
+      INSIEDR_PG_POOL_MAX: "12"
+      INSIEDR_CLICKHOUSE_ENABLED: "true"
+      INSIEDR_CLICKHOUSE_HOST: clickhouse
+      INSIEDR_CLICKHOUSE_PORT: "8123"
+      INSIEDR_CLICKHOUSE_USER: ${CLICKHOUSE_USER:-default}
+      INSIEDR_CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD:?Set CLICKHOUSE_PASSWORD in .env}
+      INSIEDR_CLICKHOUSE_DB: ${CLICKHOUSE_DB:-insiedr_analytics}
+      INSIEDR_CLICKHOUSE_SECURE: "false"
+      INSIEDR_CLICKHOUSE_QUERY_TIMEOUT: "30"
+      INSIEDR_CLICKHOUSE_MAX_MEMORY: "536870912"
+      INSIEDR_CH_BATCH_MAX_ROWS: "5000"
+      INSIEDR_CH_BATCH_MAX_BYTES: "8388608"
+      INSIEDR_CH_BATCH_FLUSH_INTERVAL: "5.0"
+      INSIEDR_DLQ_ENABLED: "true"
+      INSIEDR_DLQ_DIR: /app/data/dlq
+      OMP_NUM_THREADS: "1"
+      OPENBLAS_NUM_THREADS: "1"
+      MKL_NUM_THREADS: "1"
+      PYTHONPATH: /app
+      SYSTEM_DEFAULT_PROFILE: ${SYSTEM_DEFAULT_PROFILE:-DEFAULT}
+      ENABLE_CORROBORATION_GUARD: "true"
     volumes:
-      - ./data/dlq:/app/data/dlq
+      # Keep the existing host DLQ; prepare UID 10001 ownership before rollout.
+      - type: bind
+        source: ./data/dlq
+        target: /app/data/dlq
+        bind:
+          create_host_path: false
+    networks: [data, edge]
 
   nginx:
+    <<: *service-defaults
     image: nginx:alpine
-    restart: always
+    cpus: 0.5
+    mem_limit: 256m
+    mem_reservation: 64m
+    memswap_limit: 256m
+    pids_limit: 128
+    deploy:
+      resources:
+        limits: {cpus: "0.5", memory: 256m, pids: 128}
+        reservations: {memory: 64m}
     ports:
       - "80:80"
     volumes:
       - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+    networks: [edge]
     depends_on:
-      - backend
+      backend:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1/api/health/live"]
+      interval: 30s
+      timeout: 10s
+      start_period: 60s
+      retries: 5
+
+networks:
+  data:
+    internal: true
+  edge:
 
 volumes:
   postgres_data:

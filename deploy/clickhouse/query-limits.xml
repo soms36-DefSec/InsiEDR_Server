@@ -1,0 +1,16 @@
+<clickhouse>
+    <profiles>
+        <default>
+            <max_threads>2</max_threads>
+            <max_insert_threads>1</max_insert_threads>
+            <max_memory_usage>536870912</max_memory_usage>
+            <max_memory_usage_for_user>1610612736</max_memory_usage_for_user>
+            <max_execution_time>30</max_execution_time>
+            <!-- Fail oversized queries rather than spill large sorts to the HDD. -->
+            <max_bytes_before_external_group_by>0</max_bytes_before_external_group_by>
+            <max_bytes_before_external_sort>0</max_bytes_before_external_sort>
+            <!-- The application's outbox requires confirmed inserts. -->
+            <async_insert>0</async_insert>
+        </default>
+    </profiles>
+</clickhouse>
