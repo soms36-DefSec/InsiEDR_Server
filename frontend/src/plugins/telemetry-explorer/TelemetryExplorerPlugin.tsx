@@ -26,7 +26,7 @@ import { ExportTrainingDatasetModal } from '../../components/telemetry/ExportTra
 import { CollectorDatasetExportModal } from '../../components/telemetry/CollectorDatasetExportModal';
 import { Button } from '../../components/ui/Button';
 import type { TelemetryLog } from '../../types/telemetry';
-import { fetchTelemetry, exportTelemetryCSV, exportTelemetryJSON, triggerServerExport } from '../../services/api';
+import { fetchTelemetry, fetchAvailableCollectors, exportTelemetryCSV, exportTelemetryJSON, triggerServerExport } from '../../services/api';
 import {
   Search,
   X,
@@ -44,11 +44,48 @@ import {
   ChevronsRight,
 } from 'lucide-react';
 
+const KNOWN_COLLECTOR_LABELS: Record<string, string> = {
+  all: 'All Watchers & Collectors',
+  process: 'Process Watcher',
+  network: 'Network Connections',
+  logon: 'Logon & Authentication',
+  file: 'File Integrity (FIM)',
+  device: 'USB & Devices',
+  http: 'HTTP & Web Traffic',
+  'keystroke-collector': 'Keystroke Dynamics',
+  'clipboard-monitor': 'Clipboard Monitor',
+  driver_monitor: 'Driver Monitor',
+  'driver-monitor': 'Driver Monitor',
+  dns_monitor: 'DNS Queries',
+  'dns-monitor': 'DNS Queries',
+  lsass_monitor: 'LSASS Guard',
+  'lsass-monitor': 'LSASS Guard',
+  persistence_monitor: 'Persistence & Run Keys',
+  'persistence-monitor': 'Persistence & Run Keys',
+  registry: 'Registry Activity',
+  usn_monitor: 'USN Journal Monitor',
+  'usn-monitor': 'USN Journal Monitor',
+  wmi_activity: 'WMI Activity',
+  'wmi-activity': 'WMI Activity',
+  'decoy-monitor': 'Decoy Canary Monitor',
+  decoy_monitor: 'Decoy Canary Monitor',
+  'memory-scanner': 'Memory Scanner',
+  'short-Term_EDR_Feature': 'Short-Term Features',
+};
+
+const formatCollectorLabel = (key: string): string => {
+  if (KNOWN_COLLECTOR_LABELS[key]) return KNOWN_COLLECTOR_LABELS[key];
+  return key
+    .replace(/[-_]/g, ' ')
+    .replace(/\b\w/g, (c) => c.toUpperCase());
+};
+
 export const TelemetryExplorerPlugin: React.FC<PluginProps> = ({ context }) => {
   const [logs, setLogs] = useState<TelemetryLog[]>(context.logs || []);
   const [selectedLog, setSelectedLog] = useState<TelemetryLog | null>(null);
   const [showTrainingModal, setShowTrainingModal] = useState<boolean>(false);
   const [showCollectorExportModal, setShowCollectorExportModal] = useState<boolean>(false);
+  const [availableCollectors, setAvailableCollectors] = useState<string[]>([]);
 
   // Filters State
   const [searchTerm, setSearchTerm] = useState('');
@@ -60,6 +97,16 @@ export const TelemetryExplorerPlugin: React.FC<PluginProps> = ({ context }) => {
   const request = useRef<AbortController | null>(null);
   const queuedRefresh = useRef(false);
   const scheduleRefresh = useRef<() => void>(() => {});
+
+  useEffect(() => {
+    fetchAvailableCollectors()
+      .then((res) => {
+        if (res.ok && Array.isArray(res.collectors) && res.collectors.length > 0) {
+          setAvailableCollectors(res.collectors);
+        }
+      })
+      .catch(() => {});
+  }, []);
 
   useEffect(() => {
     const timer = window.setTimeout(() => setDebouncedSearch(searchTerm.trim()), 250);
@@ -176,6 +223,35 @@ export const TelemetryExplorerPlugin: React.FC<PluginProps> = ({ context }) => {
   // Filters run before database pagination, so rows and totals share semantics.
   const filteredLogs = logs;
 
+  const collectorOptions = useMemo(() => {
+    const defaultList = [
+      'all',
+      'process',
+      'network',
+      'logon',
+      'file',
+      'device',
+      'http',
+      'keystroke-collector',
+      'clipboard-monitor',
+      'driver_monitor',
+      'dns_monitor',
+      'lsass_monitor',
+      'persistence_monitor',
+      'registry',
+      'usn_monitor',
+      'wmi_activity',
+      'decoy-monitor',
+    ];
+    const combined = [...defaultList];
+    for (const c of availableCollectors) {
+      if (!combined.includes(c)) {
+        combined.push(c);
+      }
+    }
+    return combined;
+  }, [availableCollectors]);
+
   const handleClearAllFilters = () => {
     setSearchTerm('');
     setActiveCollector('all');
@@ -231,14 +307,13 @@ export const TelemetryExplorerPlugin: React.FC<PluginProps> = ({ context }) => {
                 aria-label="Collector"
                 value={activeCollector}
                 onChange={(e) => setActiveCollector(e.target.value)}
-                className="bg-transparent font-medium text-slate-800 outline-none cursor-pointer"
+                className="bg-transparent font-medium text-slate-800 outline-none cursor-pointer max-w-[220px]"
               >
-                <option value="all">All Watchers</option>
-                <option value="logon">Logon Watcher</option>
-                <option value="file">File Integrity</option>
-                <option value="device">USB & Devices</option>
-                <option value="http">HTTP & Web</option>
-                <option value="process">Process Watcher</option>
+                {collectorOptions.map((collectorKey) => (
+                  <option key={collectorKey} value={collectorKey}>
+                    {formatCollectorLabel(collectorKey)}
+                  </option>
+                ))}
               </select>
             </div>
 
@@ -337,65 +412,78 @@ export const TelemetryExplorerPlugin: React.FC<PluginProps> = ({ context }) => {
           </div>
         </div>
 
-        {/* Active Filter Badges & Counter */}
-        {hasActiveFilters && (
-          <div className="pt-2.5 border-t border-slate-100 flex items-center justify-between flex-wrap gap-2 text-xs">
-            <div className="flex items-center gap-2 flex-wrap">
-              <span className="text-slate-500 font-medium flex items-center gap-1">
-                <SlidersHorizontal className="w-3 h-3" />
-                Active Filters:
+        {/* Filter Badges & Live Record Counter */}
+        <div className="pt-2.5 border-t border-slate-100 flex items-center justify-between flex-wrap gap-2 text-xs">
+          <div className="flex items-center gap-2 flex-wrap">
+            {hasActiveFilters ? (
+              <>
+                <span className="text-slate-500 font-medium flex items-center gap-1">
+                  <SlidersHorizontal className="w-3 h-3" />
+                  Active Filters:
+                </span>
+
+                {searchTerm.trim() && (
+                  <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-slate-100 text-slate-700 border border-slate-200">
+                    Search: "{searchTerm}"
+                    <button onClick={() => setSearchTerm('')} className="hover:text-slate-900 cursor-pointer">
+                      <X className="w-2.5 h-2.5" />
+                    </button>
+                  </span>
+                )}
+
+                {activeCollector !== 'all' && (
+                  <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-blue-50 text-blue-700 border border-blue-200 font-medium">
+                    Collector: {formatCollectorLabel(activeCollector)}
+                    <button onClick={() => setActiveCollector('all')} className="hover:text-blue-900 cursor-pointer">
+                      <X className="w-2.5 h-2.5" />
+                    </button>
+                  </span>
+                )}
+
+                {statusFilter !== 'all' && (
+                  <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-amber-50 text-amber-800 border border-amber-200 font-medium">
+                    Status: {statusFilter.toUpperCase()}
+                    <button onClick={() => setStatusFilter('all')} className="hover:text-amber-950 cursor-pointer">
+                      <X className="w-2.5 h-2.5" />
+                    </button>
+                  </span>
+                )}
+
+                {timeRange !== 'all' && (
+                  <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-purple-50 text-purple-700 border border-purple-200 font-medium">
+                    Window: {timeRange}
+                    <button onClick={() => setTimeRange('all')} className="hover:text-purple-900 cursor-pointer">
+                      <X className="w-2.5 h-2.5" />
+                    </button>
+                  </span>
+                )}
+
+                <button
+                  onClick={handleClearAllFilters}
+                  className="text-blue-600 hover:text-blue-800 font-medium underline underline-offset-2 ml-1 cursor-pointer"
+                >
+                  Clear all
+                </button>
+              </>
+            ) : (
+              <span className="text-slate-500 font-medium flex items-center gap-1.5">
+                <Activity className="w-3.5 h-3.5 text-blue-500" />
+                <span>All Watchers & Collectors Active ({collectorOptions.length - 1} telemetry sources available)</span>
               </span>
-
-              {searchTerm.trim() && (
-                <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-slate-100 text-slate-700 border border-slate-200">
-                  Search: "{searchTerm}"
-                  <button onClick={() => setSearchTerm('')} className="hover:text-slate-900 cursor-pointer">
-                    <X className="w-2.5 h-2.5" />
-                  </button>
-                </span>
-              )}
-
-              {activeCollector !== 'all' && (
-                <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-blue-50 text-blue-700 border border-blue-200 font-medium">
-                  Collector: {activeCollector.toUpperCase()}
-                  <button onClick={() => setActiveCollector('all')} className="hover:text-blue-900 cursor-pointer">
-                    <X className="w-2.5 h-2.5" />
-                  </button>
-                </span>
-              )}
-
-              {statusFilter !== 'all' && (
-                <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-amber-50 text-amber-800 border border-amber-200 font-medium">
-                  Status: {statusFilter.toUpperCase()}
-                  <button onClick={() => setStatusFilter('all')} className="hover:text-amber-950 cursor-pointer">
-                    <X className="w-2.5 h-2.5" />
-                  </button>
-                </span>
-              )}
-
-              {timeRange !== 'all' && (
-                <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-slate-100 text-slate-700 border border-slate-200 font-medium">
-                  Window: {timeRange}
-                  <button onClick={() => setTimeRange('all')} className="hover:text-slate-900 cursor-pointer">
-                    <X className="w-2.5 h-2.5" />
-                  </button>
-                </span>
-              )}
-
-              <button
-                onClick={handleClearAllFilters}
-                className="text-blue-600 hover:text-blue-800 font-medium underline underline-offset-2 ml-1 cursor-pointer"
-              >
-                Clear all
-              </button>
-            </div>
-
-            <div className="text-slate-500 font-medium">
-              Showing <b className="text-slate-900 font-mono">{filteredLogs.length}</b> of{' '}
-              <span className="font-mono">{logs.length}</span> loaded records
-            </div>
+            )}
           </div>
-        )}
+
+          <div className="text-slate-600 font-medium flex items-center gap-1.5 bg-slate-50 border border-slate-200 px-2.5 py-1 rounded-md shadow-2xs">
+            <span className="text-slate-400 font-normal">Records:</span>
+            <span className="text-slate-900 font-mono font-semibold">
+              {filteredLogs.length} loaded
+            </span>
+            <span className="text-slate-400 font-normal">/</span>
+            <span className="text-blue-600 font-mono font-bold">
+              {totalCount > 0 ? totalCount.toLocaleString() : (logs.length || 0)} total in database
+            </span>
+          </div>
+        </div>
       </div>
 
       {/* Virtualized Table */}

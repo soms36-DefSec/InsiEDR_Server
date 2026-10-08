@@ -20,7 +20,7 @@ export default defineConfig({
   },
   build: {
     outDir: '../server/dashboard/dist',
-    emptyOutDir: true,
+    emptyOutDir: false,
   },
 });
 

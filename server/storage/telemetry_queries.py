@@ -15,7 +15,33 @@ def telemetry_page(storage, limit=100, offset=0, collector=None, username=None,
         return f"LOWER({column}) LIKE LOWER(%s) ESCAPE '\\'"
 
     if collector:
-        terms = {"device": ["device", "usb"], "http": ["http", "network", "browser"]}.get(collector, [collector])
+        collector_clean = collector.strip().lower()
+        alias_map = {
+            "device": ["device", "usb"],
+            "usb": ["usb", "device"],
+            "http": ["http", "browser"],
+            "network": ["network"],
+            "process": ["process"],
+            "file": ["file"],
+            "logon": ["logon"],
+            "keystroke": ["keystroke"],
+            "clipboard": ["clipboard"],
+            "dns": ["dns"],
+            "driver": ["driver"],
+            "lsass": ["lsass"],
+            "persistence": ["persistence"],
+            "registry": ["registry"],
+            "usn": ["usn"],
+            "wmi": ["wmi"],
+            "decoy": ["decoy"],
+            "memory": ["memory"],
+        }
+        base_key = collector_clean.replace("-monitor", "").replace("_monitor", "").replace("-collector", "").replace("_collector", "").replace("-watcher", "").replace("_watcher", "")
+        terms = alias_map.get(collector_clean, alias_map.get(base_key, [
+            collector_clean,
+            collector_clean.replace("_", "-"),
+            collector_clean.replace("-", "_")
+        ]))
         clauses.append("(" + " OR ".join(contains("cr.collector", term) for term in terms) + ")")
     if username:
         clauses.append(contains("rp.username", username))
