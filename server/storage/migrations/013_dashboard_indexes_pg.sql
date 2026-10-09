@@ -1,5 +1,5 @@
 -- Additive indexes. Normal CREATE INDEX takes locks: apply during a maintenance
--- window on existing large tables; this migration is not advertised as lock-free.
+-- window on existing large tables, this migration is not advertised as lock-free.
 SET LOCAL lock_timeout = '3s';
 CREATE INDEX IF NOT EXISTS idx_agents_hostname_seen
     ON agents (hostname, last_seen_at DESC);

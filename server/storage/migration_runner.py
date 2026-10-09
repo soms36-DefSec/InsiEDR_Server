@@ -11,13 +11,49 @@ def split_sql_statements(sql_text: str) -> list[str]:
     in_single = False
     in_double = False
     in_dollar = False
+    in_line_comment = False
+    in_block_comment = False
 
     i = 0
     while i < len(sql_text):
         char = sql_text[i]
-        
+
+        # Handle line comments (-- ...)
+        if not in_single and not in_double and not in_dollar and not in_block_comment:
+            if not in_line_comment and char == '-' and i + 1 < len(sql_text) and sql_text[i + 1] == '-':
+                in_line_comment = True
+                current.append('-')
+                current.append('-')
+                i += 2
+                continue
+            elif in_line_comment:
+                if char == '\n':
+                    in_line_comment = False
+                current.append(char)
+                i += 1
+                continue
+
+        # Handle block comments (/* ... */)
+        if not in_single and not in_double and not in_dollar and not in_line_comment:
+            if not in_block_comment and char == '/' and i + 1 < len(sql_text) and sql_text[i + 1] == '*':
+                in_block_comment = True
+                current.append('/')
+                current.append('*')
+                i += 2
+                continue
+            elif in_block_comment:
+                if char == '*' and i + 1 < len(sql_text) and sql_text[i + 1] == '/':
+                    in_block_comment = False
+                    current.append('*')
+                    current.append('/')
+                    i += 2
+                    continue
+                current.append(char)
+                i += 1
+                continue
+
         # Check for $$
-        if char == '$' and i + 1 < len(sql_text) and sql_text[i+1] == '$' and not in_single and not in_double:
+        if char == '$' and i + 1 < len(sql_text) and sql_text[i + 1] == '$' and not in_single and not in_double:
             in_dollar = not in_dollar
             current.append('$')
             current.append('$')
@@ -35,7 +71,7 @@ def split_sql_statements(sql_text: str) -> list[str]:
             current = []
             i += 1
             continue
-            
+
         current.append(char)
         i += 1
 
@@ -43,6 +79,7 @@ def split_sql_statements(sql_text: str) -> list[str]:
     if tail:
         statements.append(tail)
     return statements
+
 
 
 def run_sql_script(connection, sql_text: str, commit: bool = True) -> int:
