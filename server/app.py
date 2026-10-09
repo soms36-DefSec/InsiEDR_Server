@@ -80,33 +80,41 @@ def create_app(*, storage=None, apply_migrations: bool = True) -> FastAPI:
         broadcaster.start()
         nonlocal storage
         if storage is None and config.database_dsn:
-            try:
-                pg_storage = PostgresStorage(config.database_dsn)
-                ch_storage = None
-                if config.clickhouse_enabled:
-                    try:
-                        ch_storage = ClickHouseStorage(
-                            host=config.clickhouse_host,
-                            port=config.clickhouse_port,
-                            username=config.clickhouse_user,
-                            password=config.clickhouse_password,
-                            database=config.clickhouse_db,
-                            secure=config.clickhouse_secure,
-                            ca_cert=config.clickhouse_ca_cert,
-                            query_timeout=config.clickhouse_query_timeout,
-                            max_memory_usage=config.clickhouse_max_memory,
-                            dlq_enabled=config.dlq_enabled,
-                            dlq_dir=config.dlq_dir,
-                            batch_size=config.ch_batch_max_rows,
-                            flush_interval=config.ch_batch_flush_interval,
-                            max_buffer_bytes=config.ch_batch_max_bytes,
-                        )
-                    except Exception as ch_err:
-                        logging.getLogger("insiedr.app").warning("ClickHouse storage init failed, operating with PG fallback: %s", ch_err)
-                storage = HybridStorage(postgres_storage=pg_storage, clickhouse_storage=ch_storage,
-                                        telemetry_read_backend=config.telemetry_read_backend)
-            except Exception as e:
-                logging.getLogger("insiedr.app").warning("Failed to initialize database storage: %s", e)
+            max_attempts = 15
+            for attempt in range(1, max_attempts + 1):
+                try:
+                    pg_storage = PostgresStorage(config.database_dsn)
+                    ch_storage = None
+                    if config.clickhouse_enabled:
+                        try:
+                            ch_storage = ClickHouseStorage(
+                                host=config.clickhouse_host,
+                                port=config.clickhouse_port,
+                                username=config.clickhouse_user,
+                                password=config.clickhouse_password,
+                                database=config.clickhouse_db,
+                                secure=config.clickhouse_secure,
+                                ca_cert=config.clickhouse_ca_cert,
+                                query_timeout=config.clickhouse_query_timeout,
+                                max_memory_usage=config.clickhouse_max_memory,
+                                dlq_enabled=config.dlq_enabled,
+                                dlq_dir=config.dlq_dir,
+                                batch_size=config.ch_batch_max_rows,
+                                flush_interval=config.ch_batch_flush_interval,
+                                max_buffer_bytes=config.ch_batch_max_bytes,
+                            )
+                        except Exception as ch_err:
+                            logging.getLogger("insiedr.app").warning("ClickHouse storage init failed, operating with PG fallback: %s", ch_err)
+                    storage = HybridStorage(postgres_storage=pg_storage, clickhouse_storage=ch_storage,
+                                            telemetry_read_backend=config.telemetry_read_backend)
+                    break
+                except Exception as e:
+                    if attempt < max_attempts:
+                        logging.getLogger("insiedr.app").info("Database storage not ready yet (attempt %d/%d): %s. Retrying in 2s...", attempt, max_attempts, e)
+                        import time
+                        time.sleep(2)
+                    else:
+                        logging.getLogger("insiedr.app").warning("Failed to initialize database storage after %d attempts: %s", max_attempts, e)
 
         if storage is not None:
             app.state.storage = storage
