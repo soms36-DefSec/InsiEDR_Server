@@ -11,6 +11,27 @@ router = APIRouter(prefix="/api", tags=["System & Observability"])
 bp = router  # Backward compatibility alias
 
 
+@router.get('/operations/health')
+@router.get('/v1/operations/health')
+def operations_health(request: Request, storage=Depends(get_storage),
+                      operator: OperatorPrincipal = Depends(require_operator('operator:read'))):
+    from server.storage.operations import operations_snapshot
+    import time
+    import threading
+    # Serialize sampling and cache it per worker: monitoring should not itself
+    # repeatedly scan the outbox or a large DLQ during an incident.
+    lock = getattr(request.app.state, 'operations_lock', None)
+    if lock is None:
+        lock = request.app.state.operations_lock = threading.Lock()
+    with lock:
+        cached = getattr(request.app.state, 'operations_snapshot', None)
+        if cached is None or time.time() - cached['checked_at'] > 60:
+            cached = operations_snapshot(storage, request.app.state)
+            request.app.state.operations_snapshot = cached
+    from fastapi.encoders import jsonable_encoder
+    return JSONResponse(jsonable_encoder(cached), status_code=200 if cached['ok'] else 503)
+
+
 @router.get("/health/live")
 @router.get("/v1/health/live")
 async def liveness(request: Request):

@@ -1,5 +1,7 @@
 # InsiEDR Server: Central Intelligence & Threat Analytics Engine
 
+For the current replication guarantees, scheduled retention, monitoring, and rollout gates, see [Reliability rollout](docs/RELIABILITY_ROLLOUT.md). Capacity on the target HDD requires measured validation.
+
 [![Backend](https://img.shields.io/badge/Backend-FastAPI%20ASGI-009688.svg?style=flat&logo=fastapi)](https://fastapi.tiangolo.com)
 [![Frontend](https://img.shields.io/badge/Frontend-React%2019%20%2B%20TypeScript%20%2B%20Vite-61DAFB.svg?style=flat&logo=react)](https://react.dev)
 [![Python](https://img.shields.io/badge/Python-3.11+-3776AB.svg?style=flat&logo=python)](https://www.python.org)
@@ -149,9 +151,9 @@ Create custom visualizations, analyst playbooks, or SIEM connectors in React usi
 
 ## 🚀 Deployment Guide
 
-### Option A: Docker Compose (Production Ready)
+### Option A: Docker Compose
 
-The repository provides a turnkey multi-container deployment including PostgreSQL 16, Redis 7, ClickHouse 24.3, 3x FastAPI backend replicas, and an Nginx reverse proxy:
+The repository provides a turnkey multi-container deployment including PostgreSQL 16, Redis 7, ClickHouse 24.3, one FastAPI backend container with two Uvicorn workers, and an Nginx reverse proxy:
 
 ```bash
 # 1. Clone the repository

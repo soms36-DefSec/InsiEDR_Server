@@ -16,6 +16,10 @@ def telemetry_page(storage, limit=100, offset=0, collector=None, username=None,
         raise ValueError('Invalid search scope')
     if cursor and offset:
         raise ValueError('cursor and offset cannot be combined')
+    version2 = getattr(storage, 'collector_schema_version', 1) == 2
+    cursor_source = 'clickhouse-v2' if version2 else 'clickhouse'
+    username_column = 'cr.username' if version2 else 'rp.username'
+    received_column = 'cr.received_at' if version2 else 'rp.received_at'
     key = filter_key(collector=collector, username=username, status=status, search=search,
                      start_time=start_time, end_time=end_time, search_scope=search_scope)
     params, clauses = {}, []
@@ -36,12 +40,12 @@ def telemetry_page(storage, limit=100, offset=0, collector=None, username=None,
         terms = aliases.get(base, [base] if base in known else [clean, clean.replace('_', '-'), clean.replace('-', '_')])
         clauses.append('(' + ' OR '.join(contains('cr.collector', term) for term in terms) + ')')
     if username:
-        clauses.append(contains('rp.username', username))
+        clauses.append(contains(username_column, username))
     if status:
         params['statuses'] = ['error', 'failed', 'critical', 'tampered'] if status == 'error' else [status]
         clauses.append('lower(cr.status) IN %(statuses)s')
     if search:
-        columns = ['cr.hostname', 'rp.username', 'cr.collector']
+        columns = ['cr.hostname', username_column, 'cr.collector']
         if search_scope == 'payload':
             columns.append('cr.payload_json')
         clauses.append('(' + ' OR '.join(contains(column, search) for column in columns) + ')')
@@ -57,23 +61,25 @@ def telemetry_page(storage, limit=100, offset=0, collector=None, username=None,
         LEFT JOIN (SELECT payload_id, argMin(username, received_at) AS username,
         min(received_at) AS received_at FROM raw_payloads GROUP BY payload_id) rp
         ON cr.payload_id = rp.payload_id'''
+    if version2:
+        source = ' FROM (SELECT * FROM collector_events_v2 FINAL) cr'
     count_where = where
     if cursor:
-        timestamp, row_id = decode_cursor(cursor, 'clickhouse', key)
+        timestamp, row_id = decode_cursor(cursor, cursor_source, key)
         if timestamp is None:
             raise ValueError('ClickHouse cursors require a timestamp')
         params.update(cursor_time=timestamp, cursor_id=row_id)
         clauses.append("(cr.collector_collected_at, cr.id) < (parseDateTime64BestEffort(%(cursor_time)s, 3, 'UTC'), toUUID(%(cursor_id)s))")
         where = ' WHERE ' + ' AND '.join(clauses)
     params.update(limit=limit + 1, offset=offset)
-    result = storage._query('''SELECT cr.id, cr.payload_id, cr.agent_id, cr.collector,
-        cr.collector_collected_at AS collected_at, cr.hostname, rp.username,
-        cr.status, cr.payload_json AS payload, rp.received_at''' + source + where +
+    result = storage._query(f'''SELECT cr.id, cr.payload_id, cr.agent_id, cr.collector,
+        cr.collector_collected_at AS collected_at, cr.hostname, {username_column} AS username,
+        cr.status, cr.payload_json AS payload, {received_column} AS received_at''' + source + where +
         ' ORDER BY cr.collector_collected_at DESC, cr.id DESC LIMIT %(limit)s OFFSET %(offset)s', params)
     logs = [dict(zip(result.column_names, row)) for row in result.result_rows]
     has_more = len(logs) > limit
     logs = logs[:limit]
-    next_cursor = encode_cursor('clickhouse', key, logs[-1]['collected_at'], logs[-1]['id']) if has_more else None
+    next_cursor = encode_cursor(cursor_source, key, logs[-1]['collected_at'], logs[-1]['id']) if has_more else None
     for row in logs:
         row['id'] = str(row['id'])
         if isinstance(row['payload'], str):

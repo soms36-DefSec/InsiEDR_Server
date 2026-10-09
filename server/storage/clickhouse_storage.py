@@ -25,6 +25,9 @@ from __future__ import annotations
 import json
 import logging
 import os
+import hashlib
+import threading
+import re
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
@@ -51,8 +54,8 @@ def _format_dt(val: Any) -> Optional[datetime]:
             dt = datetime.fromisoformat(val.replace("Z", "+00:00"))
             return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
         except Exception:
-            return datetime.now(timezone.utc)
-    return datetime.now(timezone.utc)
+            return None
+    return None
 
 
 def _json_str(val: Any) -> str:
@@ -73,6 +76,8 @@ class ClickHouseStorage:
     telemetry, features, and model detection events.
     """
 
+    collector_schema_version: int = 1
+
     def __init__(
         self,
         host: str | None = None,
@@ -91,6 +96,7 @@ class ClickHouseStorage:
         dlq_enabled: bool = True,
         dlq_dir: str | Path = "data/dlq",
         client: Any = None,
+        collector_schema_version: int | None = None,
     ) -> None:
         self.host = host or os.environ.get("CLICKHOUSE_HOST", "localhost")
         self.port = port or int(os.environ.get("CLICKHOUSE_PORT", "8123"))
@@ -102,9 +108,14 @@ class ClickHouseStorage:
         self.ca_cert = ca_cert or os.environ.get("CLICKHOUSE_CA_CERT")
         self.query_timeout = query_timeout
         self.max_memory_usage = max_memory_usage
+        self.collector_schema_version = (int(os.environ.get('INSIEDR_CH_COLLECTOR_SCHEMA_VERSION', '1'))
+                                         if collector_schema_version is None else collector_schema_version)
+        if self.collector_schema_version not in (1, 2):
+            raise ValueError('ClickHouse collector schema version must be 1 or 2')
 
         self._client = client
         self._is_connected = False
+        self._client_lock = threading.RLock()
 
         if client is not None:
             self._is_connected = True
@@ -174,7 +185,12 @@ class ClickHouseStorage:
             "max_execution_time": self.query_timeout,
             "max_memory_usage": self.max_memory_usage,
         }
-        return self._client.query(query, parameters=parameters, settings=settings)
+        if self.collector_schema_version == 2:
+            # Route older count/export APIs through the same deduplicated source.
+            # This only rewrites a fixed internal table token, never parameters.
+            query = re.sub(r'\bFROM collector_results\b', 'FROM collector_events_v2 FINAL', query)
+        with self._client_lock:
+            return self._client.query(query, parameters=parameters, settings=settings)
 
     def ensure_schema(self) -> None:
         """Create ClickHouse database and telemetry tables if not already present."""
@@ -192,6 +208,12 @@ class ClickHouseStorage:
                     if stmt.upper().startswith("USE "):
                         continue
                     self._client.command(stmt, settings={"default_database": self.database})
+                # CREATE IF NOT EXISTS does not update settings on existing tables.
+                # Bounded block dedup complements, but does not replace, read dedup.
+                for table in ('raw_payloads', 'collector_results', 'collector_events_v2', 'normalized_features',
+                              'risk_events', 'model_outputs', 'anomalies'):
+                    self._client.command(
+                        f'ALTER TABLE {table} MODIFY SETTING non_replicated_deduplication_window = 10000')
                 logger.info("ClickHouse schema verified and up to date in '%s'.", self.database)
         except Exception as exc:
             logger.error("Failed ensuring ClickHouse schema: %s", exc)
@@ -208,11 +230,70 @@ class ClickHouseStorage:
         for row in rows:
             data_matrix.append([row.get(col) for col in column_names])
 
-        self._client.insert(
-            table=table,
-            data=data_matrix,
-            column_names=column_names,
-        )
+        # Stable content gives identical blocks the same retry token. This only
+        # deduplicates while the server retains its block log; readers must still
+        # tolerate at-least-once delivery after longer outages or regrouping.
+        token = hashlib.sha256(_json_str([table, rows]).encode()).hexdigest()
+        with self._client_lock:
+            self._client.insert(
+                table=table, data=data_matrix, column_names=column_names,
+                settings={'async_insert': 0, 'insert_deduplicate': 1,
+                          'insert_deduplication_token': token},
+            )
+
+    def replicate_outbox_batch(self, records, *, before_insert=lambda: None,
+                               max_bytes=8 * 1024 * 1024):
+        """Insert an isolated, bounded batch synchronously, without buffer/DLQ admission."""
+        storage = self
+        max_rows = self.batcher.batch_size
+        buffers, sizes = {}, {}
+
+        class Sink:
+            def flush(self, table):
+                rows = buffers.get(table, [])
+                if rows:
+                    before_insert()
+                    storage._raw_batch_insert(table, rows)
+                    buffers[table], sizes[table] = [], 0
+
+            def add(self, table, row):
+                size = ClickHouseBatcher._estimate_row_bytes(row)
+                if size > max_bytes:
+                    raise ValueError('One ClickHouse row exceeds replication byte limit')
+                # Bound the aggregate serialized buffers, not just each table.
+                if sum(sizes.values()) + size > max_bytes:
+                    for name in list(buffers):
+                        self.flush(name)
+                buffers.setdefault(table, []).append(row)
+                sizes[table] = sizes.get(table, 0) + size
+                if len(buffers[table]) >= max_rows:
+                    self.flush(table)
+
+            def add_many(self, table, rows):
+                for row in rows:
+                    self.add(table, row)
+
+        sink = Sink()
+        allowed = {'collector_results', 'normalized_features', 'risk_events', 'model_outputs', 'anomalies'}
+        for record in records:
+            before_insert()
+            value = record['record_json']
+            if not isinstance(value, dict):
+                raise ValueError('Outbox record must be an object')
+            if record['target_table'] == 'raw_payloads':
+                payload = value.get('payload') or {}
+                if payload.get('_plaintext_stripped'):
+                    continue  # Deliberately excluded by the stored privacy policy.
+                if not payload.get('payload_id'):
+                    raise ValueError('Outbox payload has no stable identity')
+                self.store_raw_payload(value.get('envelope') or {}, payload,
+                                       _sink=sink, received_at=record['created_at'])
+            elif record['target_table'] in allowed:
+                sink.add(record['target_table'], value)
+            else:
+                raise ValueError('Unsupported outbox target')
+        for table in list(buffers):
+            sink.flush(table)
 
     def close(self) -> None:
         """Cleanly flush batches and close client."""
@@ -241,14 +322,16 @@ class ClickHouseStorage:
     # Ingest & Storage APIs (Queued via Batcher)
     # --------------------------------------------------------------------------
 
-    def store_raw_payload(self, envelope: Dict[str, Any], decrypted_payload: Dict[str, Any]) -> None:
+    def store_raw_payload(self, envelope: Dict[str, Any], decrypted_payload: Dict[str, Any],
+                          *, _sink=None, received_at=None) -> None:
         """Queue raw payload, collector results, and normalized features for ClickHouse batching."""
         payload_id = decrypted_payload.get("payload_id")
         agent_id = decrypted_payload.get("agent_id")
         if not payload_id or not self.is_connected():
-            return
+            raise RuntimeError('ClickHouse unavailable or payload identity missing')
 
-        now_dt = datetime.now(timezone.utc)
+        sink = _sink if _sink is not None else self.batcher
+        now_dt = _format_dt(received_at) or datetime.now(timezone.utc)
         collected_dt = _format_dt(decrypted_payload.get("collected_at")) or now_dt
         envelope_created_dt = _format_dt(envelope.get("created_at")) or now_dt
 
@@ -270,7 +353,7 @@ class ClickHouseStorage:
             "validation_status": "accepted",
             "duplicate_attempt_count": 0,
         }
-        self.batcher.add("raw_payloads", raw_row)
+        sink.add("raw_payloads", raw_row)
 
         # 2. Collector Results & Normalized Features
         collector_rows = []
@@ -300,6 +383,9 @@ class ClickHouseStorage:
                 "error_message": error.get("message"),
                 "source_quality": source_quality,
             }
+            if getattr(self, "collector_schema_version", 1) == 2:
+                col_row.update(username=str(decrypted_payload.get('username') or ''),
+                               received_at=now_dt, version=int(now_dt.timestamp() * 1000000))
             collector_rows.append(col_row)
 
             # Check for tamper alert
@@ -344,11 +430,11 @@ class ClickHouseStorage:
                     feature_rows.append(feat_row)
 
         if collector_rows:
-            self.batcher.add_many("collector_results", collector_rows)
+            sink.add_many('collector_events_v2' if self.collector_schema_version == 2 else 'collector_results', collector_rows)
         if feature_rows:
-            self.batcher.add_many("normalized_features", feature_rows)
+            sink.add_many("normalized_features", feature_rows)
         if risk_rows:
-            self.batcher.add_many("risk_events", risk_rows)
+            sink.add_many("risk_events", risk_rows)
 
     @staticmethod
     def _derive_source_quality(collector_result: dict[str, Any]) -> str:
@@ -546,7 +632,8 @@ class ClickHouseStorage:
                 where_clauses.append("collector ILIKE %(collector)s")
                 params["collector"] = f"%{collector}%"
         if username:
-            where_clauses.append("payload_id IN (SELECT payload_id FROM raw_payloads WHERE username ILIKE %(username)s)")
+            where_clauses.append("username ILIKE %(username)s" if self.collector_schema_version == 2 else
+                                 "payload_id IN (SELECT payload_id FROM raw_payloads WHERE username ILIKE %(username)s)")
             params["username"] = f"%{username}%"
         if start_time:
             where_clauses.append("collector_collected_at >= %(start_time)s")
@@ -609,7 +696,8 @@ class ClickHouseStorage:
         if not self.is_connected():
             return []
         try:
-            res = self._query("SELECT DISTINCT username FROM raw_payloads WHERE username != ''")
+            table = 'collector_events_v2 FINAL' if self.collector_schema_version == 2 else 'raw_payloads'
+            res = self._query(f"SELECT DISTINCT username FROM {table} WHERE username != ''")
             return sorted([str(r[0]).strip() for r in res.result_rows if r[0]])
         except Exception as exc:
             logger.warning("ClickHouse get_distinct_usernames failed: %s", exc)
@@ -635,7 +723,8 @@ class ClickHouseStorage:
                 where_clauses.append("collector ILIKE %(collector)s")
                 params["collector"] = f"%{collector}%"
         if username:
-            where_clauses.append("payload_id IN (SELECT payload_id FROM raw_payloads WHERE username ILIKE %(username)s)")
+            where_clauses.append("username ILIKE %(username)s" if self.collector_schema_version == 2 else
+                                 "payload_id IN (SELECT payload_id FROM raw_payloads WHERE username ILIKE %(username)s)")
             params["username"] = f"%{username}%"
         if start_time:
             where_clauses.append("collector_collected_at >= %(start_time)s")

@@ -1,5 +1,7 @@
 # Deployment audit: 12 cores, 12 GB RAM, 512 GB HDD
 
+Update 9 October 2026: [Reliability rollout](RELIABILITY_ROLLOUT.md) supersedes the outbox, batching, maintenance scheduling and monitoring descriptions below. This document retains the original resource-budget audit.
+
 Audited 2026-10-08. The checked-in Compose file is a conservative starting point for a single Linux host, not a measured capacity guarantee. No deployment or data cleanup was performed.
 
 ## Resource allocation budget matrix

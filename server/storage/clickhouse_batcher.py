@@ -14,9 +14,9 @@ This module implements `ClickHouseBatcher`:
   - Flushes batches to ClickHouse when:
       1. Batch size threshold is reached (default: 500 rows per table), OR
       2. Time interval expires (default: 1.0 second), OR
-      3. Server shutdown is initiated (guaranteed zero data loss).
+      3. Server shutdown is initiated (best-effort drain).
   - Exponential backoff retry logic on network or server compaction hiccups.
-  - Zero Data-Loss Dead-Letter Queue (DLQ): If ClickHouse is permanently
+  - Dead-Letter Queue (DLQ): If ClickHouse is permanently
     unreachable after all retries, the failed batch is spooled to an on-disk
     JSONL file in `data/dlq/` with restrictive permissions.
   - DLQ Replay: Provides `replay_dlq()` to re-insert spooled records once
@@ -39,7 +39,7 @@ logger = logging.getLogger("insiedr.clickhouse.batcher")
 class ClickHouseBatcher:
     """
     Thread-safe asynchronous micro-batch buffer with bounded memory and on-disk
-    Dead-Letter Queue (DLQ) for guaranteed telemetry durability.
+    Dead-Letter Queue (DLQ); callers must distinguish enqueue from persistence.
     """
 
     def __init__(
@@ -72,12 +72,8 @@ class ClickHouseBatcher:
         self._worker_thread: Optional[threading.Thread] = None
         self._last_flush_time = time.time()
 
-        # Set when no background flush is in-progress; cleared while _flush_loop
-        # is actively inserting rows outside the lock.  flush_all() waits on this
-        # event so it cannot declare success while a concurrent background insert
-        # is still running on a snapshot it already dequeued.
-        self._in_flight_event = threading.Event()
-        self._in_flight_event.set()  # Initially no background flush is running
+        self._flush_lock = threading.Lock()
+        self._delivery_error = None
 
         # Telemetry metrics
         self.total_queued = 0
@@ -184,82 +180,57 @@ class ClickHouseBatcher:
                 self._cond.notify_all()
 
         # Spool evicted rows directly to DLQ outside the buffer lock
+        if spool_overflow:
+            with self._lock:
+                self._delivery_error = RuntimeError('Rows overflowed into DLQ or were rejected')
+        if spool_overflow and not self.dlq_enabled:
+            raise BufferError('ClickHouse buffer capacity exceeded; DLQ is disabled')
         if spool_overflow and self.dlq_enabled:
             logger.warning("Buffer capacity reached for table '%s'; durably spilling %d rows to DLQ",
                            table, len(spool_overflow))
             self._spool_to_dlq(table, spool_overflow, RuntimeError("Buffer memory capacity reached; durable overflow spool"))
 
     def flush_all(self, raise_on_error: bool = False) -> None:
-        """Synchronously flush all pending buffers across all tables.
+        """Serialize snapshot AND insert; strict callers see prior delivery failures.
 
-        Waits for any concurrent background flush to complete before snapshotting
-        the buffer, so this method cannot return while background inserts are
-        still in progress.  This is required for the outbox reconciler to safely
-        mark entries as completed.
-
-        If raise_on_error is True and any table flush fails after retries,
-        raises RuntimeError to ensure callers (such as the outbox reconciler)
-        do not falsely mark replication completed.
+        This is a buffer drain, not a per-outbox-record acknowledgement protocol.
         """
-        # Wait for any in-progress background flush to finish before we snapshot.
-        # This prevents flush_all from seeing an empty buffer while the background
-        # thread is still mid-insert on rows it already dequeued.
-        self._in_flight_event.wait(timeout=max(self.flush_interval * 3, 10.0))
-
-        with self._lock:
-            snapshot = {table: list(rows) for table, rows in self._buffers.items() if rows}
-            for table in snapshot:
-                self._buffers[table].clear()
-                self._table_bytes[table] = 0
-            self._last_flush_time = time.time()
-
-        flush_errors: list[Exception] = []
-        for table, rows in snapshot.items():
-            err = self._flush_table_with_retry(table, rows)
-            if err is not None:
-                flush_errors.append(err)
-
-        if flush_errors and raise_on_error:
-            raise RuntimeError(f"ClickHouse batch flush failed for {len(flush_errors)} table(s): {flush_errors[0]}")
-
-    def _flush_loop(self) -> None:
-        """Continuous background loop triggering flushes on interval or threshold."""
-        while True:
-            with self._cond:
-                self._cond.wait(timeout=self.flush_interval)
-                if not self._running:
-                    break
-
-                now = time.time()
-                should_flush = (now - self._last_flush_time >= self.flush_interval) or any(
-                    len(rows) >= self.batch_size for rows in self._buffers.values()
-                )
-
-                if not should_flush:
-                    continue
-
+        if not self._flush_lock.acquire(timeout=max(self.flush_interval * 3, 10.0)):
+            raise TimeoutError('ClickHouse flush is still in progress')
+        try:
+            with self._lock:
                 snapshot = {table: list(rows) for table, rows in self._buffers.items() if rows}
                 for table in snapshot:
                     self._buffers[table].clear()
                     self._table_bytes[table] = 0
-                self._last_flush_time = now
+                self._last_flush_time = time.time()
+            for table, rows in snapshot.items():
+                try:
+                    err = self._flush_table_with_retry(table, rows)
+                except Exception as exc:
+                    err = exc
+                if err is not None:
+                    with self._lock:
+                        self._delivery_error = err
+            with self._lock:
+                error = self._delivery_error
+            if raise_on_error and error is not None:
+                raise RuntimeError('ClickHouse buffer has unconfirmed deliveries') from error
+        finally:
+            self._flush_lock.release()
 
-            # Signal that a background flush is in progress.
-            self._in_flight_event.clear()
+    def _flush_loop(self) -> None:
+        while True:
+            with self._cond:
+                ready = any(len(rows) >= self.batch_size for rows in self._buffers.values())
+                if not ready:
+                    self._cond.wait(timeout=self.flush_interval)
+                if not self._running:
+                    return
             try:
-                for table, rows in snapshot.items():
-                    try:
-                        self._flush_table_with_retry(table, rows)
-                    except Exception as loop_err:
-                        # _flush_table_with_retry itself only raises if DLQ write fails.
-                        # Catch here so a DLQ disk-full error cannot kill the worker thread.
-                        logger.critical(
-                            "ClickHouse flush worker caught unexpected error for table '%s': %s",
-                            table, loop_err, exc_info=True,
-                        )
-            finally:
-                # Always signal completion so flush_all() waiters are unblocked.
-                self._in_flight_event.set()
+                self.flush_all()
+            except Exception:
+                logger.exception('ClickHouse background flush failed')
 
     def _flush_table_with_retry(self, table: str, rows: List[Dict[str, Any]]) -> Optional[Exception]:
         """Attempt to insert rows into ClickHouse with exponential backoff and DLQ spooling.
@@ -319,6 +290,8 @@ class ClickHouseBatcher:
                 f.write(json.dumps(meta, default=str) + "\n")
                 for row in rows:
                     f.write(json.dumps(row, default=str) + "\n")
+                f.flush()
+                os.fsync(f.fileno())
 
             try:
                 os.chmod(temp_file, 0o600)
@@ -327,6 +300,12 @@ class ClickHouseBatcher:
 
             # Atomic publication: rename .tmp to .jsonl
             temp_file.replace(final_file)
+            if os.name != 'nt':
+                directory_fd = os.open(self.dlq_dir, os.O_RDONLY)
+                try:
+                    os.fsync(directory_fd)
+                finally:
+                    os.close(directory_fd)
             self.total_spooled_to_dlq += len(rows)
             logger.error("Spooling %d rows to DLQ '%s' due to ClickHouse error: %s", len(rows), final_file.name, error)
         except Exception as dlq_err:
@@ -396,6 +375,7 @@ class ClickHouseBatcher:
             replaying_path = file_path.with_suffix(".replaying")
             try:
                 file_path.rename(replaying_path)
+                os.utime(replaying_path, None)
             except OSError:
                 # Another worker or thread claimed this file
                 continue
@@ -403,6 +383,7 @@ class ClickHouseBatcher:
             try:
                 target_table = None
                 rows: List[Dict[str, Any]] = []
+                expected_rows = None
 
                 with open(replaying_path, "r", encoding="utf-8") as f:
                     for line_idx, line in enumerate(f):
@@ -413,17 +394,24 @@ class ClickHouseBatcher:
                             record = json.loads(line_str)
                         except json.JSONDecodeError as dec_err:
                             logger.error("Corrupted JSON line %d in DLQ file '%s': %s", line_idx, file_path.name, dec_err)
-                            continue
+                            raise ValueError("Corrupt DLQ record; preserving entire file") from dec_err
 
                         # Check for versioned metadata in line 0
                         if line_idx == 0 and isinstance(record, dict) and "_metadata" in record:
                             meta = record["_metadata"]
                             if isinstance(meta, dict) and "table" in meta:
                                 target_table = meta["table"]
+                                expected_rows = meta.get('row_count')
                                 continue
+                            raise ValueError('Invalid DLQ metadata; preserving entire file')
 
                         if isinstance(record, dict):
                             rows.append(record)
+                        else:
+                            raise ValueError('Invalid DLQ row; preserving entire file')
+
+                if expected_rows is not None and expected_rows != len(rows):
+                    raise ValueError('Incomplete DLQ file; preserving remaining records')
 
                 if not target_table:
                     target_table = self._parse_dlq_filename_table(file_path.stem, fallback_table=table)

@@ -227,7 +227,7 @@ def test_clickhouse_batcher_bounded_buffer_overflow(tmp_path: Path):
 
 
 def test_dlq_corrupted_line_handling(tmp_path: Path):
-    """Verify that partially corrupt DLQ files do not crash replay and valid rows recover."""
+    """Preserve corrupt DLQ files in full instead of deleting unrecoverable rows."""
     recovered_rows = []
 
     def recovery_insert(table, rows):
@@ -249,8 +249,6 @@ def test_dlq_corrupted_line_handling(tmp_path: Path):
     )
 
     count = batcher.replay_dlq()
-    assert count == 2
-    assert [r["id"] for r in recovered_rows] == ["valid_1", "valid_2"]
-    # File was processed and cleaned up
-    assert not corrupt_file.exists()
-
+    assert count == 0
+    assert recovered_rows == []
+    assert corrupt_file.exists()

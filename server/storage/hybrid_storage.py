@@ -71,10 +71,7 @@ class HybridStorage(BaseStorage):
     def ensure_migrations(self) -> None:
         """Apply PostgreSQL schema migrations and ClickHouse table schemas."""
         if hasattr(self.pg, "ensure_migrations"):
-            try:
-                self.pg.ensure_migrations()
-            except Exception as exc:
-                logger.warning("PostgreSQL migration warning: %s", exc)
+            self.pg.ensure_migrations()
 
         if self.ch and hasattr(self.ch, "ensure_schema"):
             try:

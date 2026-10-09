@@ -1,5 +1,7 @@
 # Telemetry audit and implemented improvements
 
+Update 9 October 2026: see [Reliability rollout](RELIABILITY_ROLLOUT.md) for the subsequent single telemetry delivery path, fenced outbox claims and scheduled retention. Findings below describe the earlier audit baseline.
+
 Audited 8 October 2026 against the working server and Rust agent repositories.
 Target: 12 cores, 12 GB physical RAM, one 512 GB mechanical HDD. Findings are
 from source inspection and functional tests, not a production disk trace.

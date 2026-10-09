@@ -7,6 +7,28 @@ CREATE DATABASE IF NOT EXISTS insiedr_analytics;
 
 USE insiedr_analytics;
 
+-- Opt-in collector schema. Populate and validate before selecting schema v2.
+CREATE TABLE IF NOT EXISTS collector_events_v2 (
+    id UUID,
+    payload_id String,
+    agent_id String,
+    collector LowCardinality(String),
+    collector_collected_at DateTime64(3, 'UTC'),
+    hostname LowCardinality(String),
+    status LowCardinality(String),
+    payload_json String CODEC(ZSTD(1)),
+    error_type LowCardinality(Nullable(String)),
+    error_message Nullable(String),
+    source_quality LowCardinality(String),
+    username LowCardinality(String),
+    received_at DateTime64(3, 'UTC'),
+    version UInt64
+) ENGINE = ReplacingMergeTree(version)
+PARTITION BY toYYYYMM(collector_collected_at)
+ORDER BY (collector_collected_at, id)
+TTL collector_collected_at + INTERVAL 90 DAY
+SETTINGS non_replicated_deduplication_window = 10000;
+
 -- 1. Raw Payloads: High-cardinality envelope and transmission metadata
 CREATE TABLE IF NOT EXISTS raw_payloads (
     payload_id              String,

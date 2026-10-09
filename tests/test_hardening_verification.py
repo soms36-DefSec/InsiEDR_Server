@@ -373,35 +373,13 @@ def test_task_acknowledgement_protocol():
 
 
 def test_transactional_outbox_and_reconciler():
-    """Verify PostgreSQL-to-ClickHouse transactional outbox and catchup reconciler."""
-    storage = HardenedMockStorage()
-
-    # Enqueue two outbox items
-    storage.enqueue_clickhouse_outbox("raw_payloads", {"payload": {"test": 1}})
-    storage.enqueue_clickhouse_outbox("raw_payloads", {"payload": {"test": 2}})
-
-    assert len(storage.get_pending_clickhouse_outbox()) == 2
-
-    # Mock ClickHouse storage adapter
-    class MockClickHouse:
-        def __init__(self):
-            self.stored = []
-
-        def is_connected(self):
-            return True
-
-        def store_raw_payload(self, envelope, payload):
-            self.stored.append((envelope, payload))
-
-    ch_mock = MockClickHouse()
-    reconciler = ReplicationReconciler(postgres_storage=storage, clickhouse_storage=ch_mock, batch_size=10)
-
-    # Execute one reconciliation cycle
-    processed_count = reconciler.reconcile_once()
-    assert processed_count == 2
-    assert len(ch_mock.stored) == 2
-    # Verify records marked completed
-    assert len(storage.get_pending_clickhouse_outbox()) == 0
+    from unittest.mock import Mock
+    from tests.test_replication_reliability import outbox, record
+    repo, ch = outbox([record(1), record(2)]), Mock()
+    reconciler = ReplicationReconciler(None, ch, outbox=repo)
+    assert reconciler.reconcile_once() == 2
+    repo.complete.assert_called_once_with(repo.claim.call_args.args[0], [1, 2])
+    ch.flush_all.assert_not_called()
 
 
 def test_dynamic_crypto_adapter_registration():
@@ -471,29 +449,14 @@ def test_strict_buffer_limits_oversized_incoming_batch(tmp_path):
 
 
 def test_reconciler_unconfirmed_flush_does_not_acknowledge():
-    """Verify reconciler does not mark outbox rows completed if ClickHouse flush fails."""
-    storage = HardenedMockStorage()
-    storage.enqueue_clickhouse_outbox("raw_payloads", {"payload": {"test": 123}})
-    assert len(storage.get_pending_clickhouse_outbox()) == 1
-
-    class FailingFlushClickHouse:
-        def is_connected(self):
-            return True
-
-        def store_raw_payload(self, envelope, payload):
-            pass  # Buffer admission succeeds
-
-        def flush_all(self):
-            raise RuntimeError("ClickHouse disk full or network outage")
-
-    ch_failing = FailingFlushClickHouse()
-    reconciler = ReplicationReconciler(postgres_storage=storage, clickhouse_storage=ch_failing)
-
-    # Reconcile attempt
-    count = reconciler.reconcile_once()
-    assert count == 0
-    # Outbox rows MUST remain pending in PostgreSQL for future retry
-    assert len(storage.get_pending_clickhouse_outbox()) == 1
+    from unittest.mock import Mock
+    from tests.test_replication_reliability import outbox, record
+    repo, ch = outbox([record()]), Mock()
+    ch.replicate_outbox_batch.side_effect = RuntimeError('ClickHouse unavailable')
+    with pytest.raises(RuntimeError, match='unavailable'):
+        ReplicationReconciler(None, ch, outbox=repo).reconcile_once()
+    repo.complete.assert_not_called()
+    repo.release.assert_called_once()
 
 
 def test_migration_011_schema_and_query_parity():
@@ -701,54 +664,16 @@ def test_agent_shared_secret_suffix_impersonation_rejected(monkeypatch):
 
 
 def test_reconciler_flush_failure_raises_and_prevents_completion():
-    """Verify failed ClickHouse flush raises on error and does NOT mark outbox completed."""
     from server.storage.clickhouse_batcher import ClickHouseBatcher
-
     def failing_insert(table, rows):
-        raise RuntimeError("ClickHouse connection reset by peer")
-
-    batcher = ClickHouseBatcher(insert_fn=failing_insert, batch_size=10, max_retries=1, dlq_enabled=False)
-    batcher.add("raw_payloads", {"payload_id": "p-123"})
-
-    # 1. flush_all(raise_on_error=True) must raise RuntimeError
-    with pytest.raises(RuntimeError, match="ClickHouse batch flush failed"):
+        raise RuntimeError('ClickHouse connection reset by peer')
+    batcher = ClickHouseBatcher(failing_insert, max_retries=1, dlq_enabled=False)
+    batcher.add('raw_payloads', {'payload_id': 'p-123'})
+    with pytest.raises(RuntimeError, match='unconfirmed'):
         batcher.flush_all(raise_on_error=True)
-
-    # 2. Reconciler with failing flush retains records in outbox
-    class FailingCHStorage:
-        def is_connected(self):
-            return True
-        def store_raw_payload(self, env, pay):
-            pass
-        def flush_all(self, raise_on_error=False):
-            if raise_on_error:
-                raise RuntimeError("ClickHouse flush forced failure")
-
-    class MockPGWithOutbox:
-        def __init__(self):
-            self.outbox = [{"outbox_id": 99, "target_table": "raw_payloads", "record_json": {}}]
-            self.completed_ids = []
-            self.attempt_counts = {}
-
-        def get_pending_clickhouse_outbox(self, limit=100):
-            return list(self.outbox)
-
-        def mark_clickhouse_outbox_completed(self, ids):
-            self.completed_ids.extend(ids)
-
-        def increment_clickhouse_outbox_attempts(self, ids, err):
-            for i in ids:
-                self.attempt_counts[i] = self.attempt_counts.get(i, 0) + 1
-
-    pg = MockPGWithOutbox()
-    ch = FailingCHStorage()
-    reconciler = ReplicationReconciler(postgres_storage=pg, clickhouse_storage=ch)
-
-    reconciled_count = reconciler.reconcile_once()
-    assert reconciled_count == 0
-    # Crucial assertion: failed flush must NEVER mark outbox completed
-    assert len(pg.completed_ids) == 0
-    assert pg.attempt_counts.get(99, 0) >= 1
+    # A later empty drain must not erase an earlier delivery failure.
+    with pytest.raises(RuntimeError, match='unconfirmed'):
+        batcher.flush_all(raise_on_error=True)
 
 
 def test_direct_clickhouse_write_deduplication_and_idempotency():

@@ -327,6 +327,67 @@ class PostgresStorage(BaseStorage):
             except Exception as e:
                 logger.warning("Default partition verification note: %s", e)
 
+    def ensure_retention_indexes(self, check_only: bool = False) -> dict[str, str]:
+        """Verify or concurrently build retention indexes on PostgreSQL.
+
+        Uses autocommit mode so CREATE INDEX CONCURRENTLY can execute outside
+        transaction blocks. Cleans up broken indexes (indisvalid=false) before rebuilding.
+        """
+        if self._is_sqlite or not self.dsn:
+            return {}
+
+        target_indexes = {
+            "idx_features_retention": ("normalized_features", "created_at"),
+            "idx_models_retention": ("model_outputs", "created_at"),
+            "idx_risk_retention": ("risk_events", "created_at"),
+            "idx_anomalies_retention": ("anomalies", "created_at"),
+        }
+        status_report: dict[str, str] = {}
+
+        conn = psycopg2.connect(self.dsn)
+        conn.autocommit = True
+        try:
+            with conn.cursor() as cur:
+                for idx_name, (tbl_name, col_name) in target_indexes.items():
+                    # Check if target table exists
+                    cur.execute("SELECT to_regclass(%s)", (tbl_name,))
+                    if not cur.fetchone()[0]:
+                        status_report[idx_name] = f"table_{tbl_name}_missing"
+                        continue
+
+                    # Check if index exists and its validity
+                    cur.execute("""
+                        SELECT i.indisvalid
+                        FROM pg_index i
+                        JOIN pg_class c ON c.oid = i.indexrelid
+                        WHERE c.relname = %s
+                    """, (idx_name,))
+                    row = cur.fetchone()
+
+                    if row is not None:
+                        is_valid = bool(row[0])
+                        if is_valid:
+                            status_report[idx_name] = "valid"
+                            continue
+                        elif not check_only:
+                            logger.warning("Dropping invalid concurrent index '%s' before retry", idx_name)
+                            cur.execute(f"DROP INDEX CONCURRENTLY IF EXISTS {idx_name}")
+                        else:
+                            status_report[idx_name] = "invalid"
+                            continue
+
+                    if check_only:
+                        status_report[idx_name] = "missing"
+                        continue
+
+                    # Concurrently create index without locking tables
+                    logger.info("Creating retention index concurrently: %s ON %s (%s)", idx_name, tbl_name, col_name)
+                    cur.execute(f"CREATE INDEX CONCURRENTLY IF NOT EXISTS {idx_name} ON {tbl_name} ({col_name})")
+                    status_report[idx_name] = "created"
+        finally:
+            conn.close()
+        return status_report
+
     def _upsert_agent(self, cursor, decrypted_payload: dict[str, Any]) -> None:
         agent_id = decrypted_payload["agent_id"]
         hostname = decrypted_payload.get("hostname")
@@ -542,7 +603,7 @@ class PostgresStorage(BaseStorage):
                             cursor.execute("RELEASE SAVEPOINT insiedr_outbox_sp")
                     except Exception as ob_err:
                         err_str = str(ob_err).lower()
-                        if "clickhouse_outbox" in err_str and ("does not exist" in err_str or "no such table" in err_str):
+                        if is_sqlite and "clickhouse_outbox" in err_str and ("does not exist" in err_str or "no such table" in err_str):
                             # Table missing (partial migration) — roll back savepoint only,
                             # preserving the already-executed main data inserts.
                             if not is_sqlite:
@@ -756,11 +817,8 @@ class PostgresStorage(BaseStorage):
     def get_pending_clickhouse_outbox(self, limit: int = 100) -> list[dict[str, Any]]:
         """Fetch oldest pending outbox records for replication catchup.
 
-        Uses ``FOR UPDATE SKIP LOCKED`` on PostgreSQL so that multiple concurrent
-        reconciler workers each claim an exclusive, non-overlapping batch.  The
-        caller is responsible for committing (or rolling back) the surrounding
-        connection so the row-level locks are released after processing.
-        SQLite does not support this syntax; the plain query is used there.
+        Read-only compatibility API. This does NOT claim records for delivery;
+        replication must use OutboxRepository.claim and token-fenced completion.
         """
         with self.connection() as conn:
             with closing(conn.cursor()) as cur:
@@ -794,32 +852,12 @@ class PostgresStorage(BaseStorage):
                     logger.debug("Failed querying clickhouse_outbox: %s", exc)
                     return []
 
-    def mark_clickhouse_outbox_completed(self, outbox_ids: list[int]) -> None:
-        """Mark outbox records as successfully replicated to ClickHouse."""
-        if not outbox_ids:
-            return
-        with self.connection() as conn:
-            with closing(conn.cursor()) as cur:
-                try:
-                    cur.execute(
-                        """
-                        UPDATE clickhouse_outbox
-                        SET status = 'completed', processed_at = CURRENT_TIMESTAMP
-                        WHERE outbox_id = ANY(%s)
-                        """,
-                        (outbox_ids,),
-                    )
-                    conn.commit()
-                except Exception:
-                    for oid in outbox_ids:
-                        try:
-                            cur.execute(
-                                "UPDATE clickhouse_outbox SET status = 'completed', processed_at = CURRENT_TIMESTAMP WHERE outbox_id = %s",
-                                (oid,)
-                            )
-                        except Exception:
-                            pass
-                    conn.commit()
+    def mark_clickhouse_outbox_completed(self, outbox_ids, claim_token=None) -> int:
+        """Compatibility entry point: completion always requires a fenced claim."""
+        if not claim_token:
+            raise ValueError('Outbox completion requires a claim token')
+        from server.storage.outbox import OutboxRepository
+        return OutboxRepository(self).complete(claim_token, outbox_ids)
 
     def increment_clickhouse_outbox_attempts(self, outbox_ids: list[int], error_msg: str) -> None:
         """Increment attempt count and update last_error on failed outbox reconciliation."""
@@ -842,65 +880,15 @@ class PostgresStorage(BaseStorage):
                 conn.commit()
 
     def mark_outbox_completed_by_payload_id(self, payload_id: str) -> None:
-        """Mark outbox record completed when direct ClickHouse ingestion succeeded."""
-        if not payload_id:
-            return
-        with self.connection() as conn:
-            with closing(conn.cursor()) as cur:
-                try:
-                    cur.execute(
-                        """
-                        UPDATE clickhouse_outbox
-                        SET status = 'completed', processed_at = CURRENT_TIMESTAMP
-                        WHERE target_table = 'raw_payloads'
-                          AND status = 'pending'
-                          AND record_json->'payload'->>'payload_id' = %s
-                        """,
-                        (str(payload_id),),
-                    )
-                    conn.commit()
-                except Exception as exc:
-                    logger.debug("Failed updating outbox by payload_id: %s", exc)
+        raise RuntimeError('Payload identity alone cannot acknowledge replication; use a fenced outbox claim')
 
-    def purge_completed_clickhouse_outbox(self, retention_days: int | None = None) -> int:
-        """Delete completed outbox entries older than retention_days.
-
-        Prevents unbounded table growth and limits the window during which
-        decrypted payload data (or its metadata stub) sits in the outbox.
-        Returns the number of rows deleted, or 0 on error / unsupported backend.
-
-        Uses an interval expression compatible with PostgreSQL.  SQLite is
-        skipped because the outbox migration is PostgreSQL-only.
-        """
+    def purge_completed_clickhouse_outbox(self, retention_days=None) -> int:
+        """Purge one bounded batch; never delete unreplicated records."""
         if self._is_sqlite:
-            return 0  # Outbox is PostgreSQL-only in production
-
-        days = retention_days if retention_days is not None else config.payload_retention_days
-        days = max(1, int(days))
-
-        with self.connection() as conn:
-            with closing(conn.cursor()) as cur:
-                try:
-                    cur.execute(
-                        """
-                        DELETE FROM clickhouse_outbox
-                        WHERE status = 'completed'
-                          AND processed_at < NOW() - INTERVAL '%s days'
-                        """,
-                        (days,),
-                    )
-                    deleted = cur.rowcount or 0
-                    conn.commit()
-                    if deleted:
-                        logger.info("Purged %d completed clickhouse_outbox entries older than %d days", deleted, days)
-                    return deleted
-                except Exception as exc:
-                    logger.debug("clickhouse_outbox purge non-fatal: %s", exc)
-                    try:
-                        conn.rollback()
-                    except Exception:
-                        pass
-                    return 0
+            return 0
+        from server.storage.outbox import OutboxRepository
+        hours = 24 if retention_days is None else max(1, int(retention_days) * 24)
+        return OutboxRepository(self).purge(retention_hours=hours)
 
     def update_agent_task_result(
         self,

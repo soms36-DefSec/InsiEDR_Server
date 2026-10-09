@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import os
 import logging
+import threading
 from contextlib import asynccontextmanager
 from concurrent.futures import ThreadPoolExecutor
 
@@ -121,10 +122,7 @@ def create_app(*, storage=None, apply_migrations: bool = True) -> FastAPI:
             app.extensions["insiedr_storage"] = storage
             ensure_migrations = getattr(storage, "ensure_migrations", None)
             if apply_migrations and callable(ensure_migrations):
-                try:
-                    ensure_migrations()
-                except Exception as e:
-                    logging.getLogger("insiedr.app").warning("Migration warning: %s", e)
+                ensure_migrations()  # Never serve against an incomplete durable schema.
 
 
         # Task queue worker
@@ -148,8 +146,12 @@ def create_app(*, storage=None, apply_migrations: bool = True) -> FastAPI:
                 reconciler = ReplicationReconciler(
                     postgres_storage=getattr(storage, "pg", storage),
                     clickhouse_storage=getattr(storage, "ch", None),
-                    poll_interval=1.0,
-                    batch_size=100,
+                    poll_interval=float(os.environ.get('INSIEDR_OUTBOX_POLL_SECONDS', '5')),
+                    batch_size=int(os.environ.get('INSIEDR_OUTBOX_BATCH_MIN', '128')),
+                    max_batch_size=int(os.environ.get('INSIEDR_OUTBOX_BATCH_MAX', '1024')),
+                    max_batch_bytes=int(os.environ.get('INSIEDR_OUTBOX_BATCH_BYTES', '8388608')),
+                    lease_seconds=int(os.environ.get('INSIEDR_OUTBOX_LEASE_SECONDS', '120')),
+                    outbox_retention_hours=int(os.environ.get('INSIEDR_OUTBOX_RETENTION_HOURS', '24')),
                 )
                 reconciler.start()
                 app.state.reconciler = reconciler
@@ -158,10 +160,32 @@ def create_app(*, storage=None, apply_migrations: bool = True) -> FastAPI:
             except Exception as exc:
                 logging.getLogger("insiedr.app").warning("Could not start ReplicationReconciler: %s", exc)
 
+        if (storage is not None and os.environ.get('INSIEDR_MAINTENANCE_ENABLED', 'false').lower()
+                in ('true', '1', 'yes')):
+            from server.storage.maintenance import MaintenanceWorker
+            pg = getattr(storage, 'pg', storage)
+            if not getattr(pg, '_is_sqlite', False):
+                maintenance = MaintenanceWorker(
+                    pg, interval_seconds=int(os.environ.get('INSIEDR_MAINTENANCE_INTERVAL_SECONDS', '3600')),
+                    batch_size=int(os.environ.get('INSIEDR_RETENTION_BATCH_ROWS', '5000')),
+                    max_run_seconds=int(os.environ.get('INSIEDR_MAINTENANCE_RUN_SECONDS', '120')))
+                maintenance.start()
+                app.state.maintenance_worker = maintenance
+
+        pg = getattr(storage, 'pg', storage)
+        if isinstance(pg, PostgresStorage) and not pg._is_sqlite:
+            from server.storage.operations import OperationsMonitor
+            app.state.operations_monitor = OperationsMonitor(storage, app.state)
+            app.state.operations_monitor.start()
+
         yield
 
         # Shutdown phase
         app.state.shutting_down = True
+        if hasattr(app.state, 'operations_monitor'):
+            app.state.operations_monitor.stop()
+        if hasattr(app.state, 'maintenance_worker'):
+            app.state.maintenance_worker.stop(timeout=20)
         if hasattr(app.state, "reconciler") and app.state.reconciler:
             try:
                 app.state.reconciler.stop(timeout=5.0)
@@ -197,6 +221,7 @@ def create_app(*, storage=None, apply_migrations: bool = True) -> FastAPI:
 
     # Attach storage eagerly if provided (e.g. mock in tests)
     app.state.storage = storage
+    app.state.operations_lock = threading.Lock()
     app.state.task_queue = None
     app.state.ml_executor = None
 

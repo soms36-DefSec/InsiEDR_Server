@@ -154,7 +154,8 @@ def test_hybrid_storage_with_clickhouse():
         ],
     }
     hybrid.store_raw_payload(envelope={"scheme": "aes_gcm"}, decrypted_payload=payload)
-    assert ch.store_raw_payload.called
+    ch.store_raw_payload.assert_not_called()
+    assert len(pg.stored_payloads) == 1
 
 
 def test_hybrid_storage_fallback_without_clickhouse():
