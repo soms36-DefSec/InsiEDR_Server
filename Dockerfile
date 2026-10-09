@@ -45,9 +45,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # Copy requirements files first to leverage Docker cache
 COPY requirements.txt requirements-postgres.txt ./
 
-# Mount wheels for installation without retaining them in an image layer.
-RUN --mount=type=bind,from=python-builder,source=/wheels,target=/wheels \
-    pip install --no-cache-dir --no-index --find-links=/wheels -r requirements.txt -r requirements-postgres.txt
+# Copy pre-compiled wheels from builder and install
+COPY --from=python-builder /wheels /wheels
+RUN pip install --no-cache-dir --no-index --find-links=/wheels -r requirements.txt -r requirements-postgres.txt \
+    && rm -rf /wheels
 
 # Copy runtime source without local configuration or development artifacts.
 COPY server/ ./server/
