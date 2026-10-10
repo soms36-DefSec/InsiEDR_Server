@@ -150,15 +150,20 @@ def authenticate_agent_request(request: Request) -> AgentPrincipal:
         or request.headers.get("X-InsiEDR-Agent-Id")
     )
 
-    if config.auth_enforced:
+    if config.agent_auth_enforced:
         if not token:
             raise AuthenticationError("Missing agent authentication credentials", status_code=401)
 
-        if not config.agent_tokens_configured:
+        if not config.agent_tokens_configured and not config.agent_bearer_token:
             raise AuthenticationError("Agent authentication is not configured on server", status_code=401)
 
         agent_tokens = config.agent_tokens
-        bound_agent_id = agent_tokens.get(token)
+        bound_agent_id = agent_tokens.get(token) if agent_tokens else None
+
+        if not bound_agent_id and not config.agent_tokens_configured and config.agent_bearer_token:
+            if hmac.compare_digest(token.encode("utf-8"), config.agent_bearer_token.encode("utf-8")):
+                bound_agent_id = header_agent_id
+
         if not bound_agent_id:
             raise AuthenticationError("Invalid agent authentication credentials", status_code=401)
 
@@ -195,7 +200,7 @@ def verify_agent_identity(claimed_agent_id: str, principal: AgentPrincipal) -> N
     Ensure the caller cannot spoof another agent's ID when credentials are bound.
     A supplied header or body ID is never accepted as identity proof on its own.
     """
-    if not config.auth_enforced:
+    if not config.agent_auth_enforced:
         return
     if not principal.is_authenticated:
         raise AuthenticationError("Agent authentication required", status_code=401)

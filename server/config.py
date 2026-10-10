@@ -121,6 +121,26 @@ class ServerConfig:
             return raw.lower() in ("1", "true", "yes", "on")
         return bool(self.operator_api_key or self.agent_bearer_token or self.agent_tokens or self.operator_roles)
 
+    @property
+    def operator_auth_enforced(self) -> bool:
+        """Whether operator/analyst dashboard authentication is enforced."""
+        if self.is_production:
+            return True
+        raw = os.environ.get("INSIEDR_AUTH_ENFORCED")
+        if raw is not None:
+            return raw.lower() in ("1", "true", "yes", "on")
+        return bool(self.operator_api_key or self.operator_roles)
+
+    @property
+    def agent_auth_enforced(self) -> bool:
+        """Whether agent ingestion token authentication is enforced."""
+        if self.is_production:
+            return True
+        raw = os.environ.get("INSIEDR_AUTH_ENFORCED")
+        if raw is not None:
+            return raw.lower() in ("1", "true", "yes", "on")
+        return bool(self.agent_tokens or self.agent_bearer_token)
+
     def validate_production_readiness(self) -> None:
         """
         Hard fail-safe validation when running in production.
