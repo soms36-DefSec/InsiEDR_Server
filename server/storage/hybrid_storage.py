@@ -159,7 +159,9 @@ class HybridStorage(BaseStorage):
         if self.telemetry_read_backend == 'clickhouse' or (self.ch and self.ch.is_connected()):
             if self.ch and self.ch.is_connected():
                 try:
-                    return self.ch.get_telemetry_explorer(**filters)
+                    res = self.ch.get_telemetry_explorer(**filters)
+                    if res and res.get('events'):
+                        return res
                 except ValueError:
                     raise
                 except Exception as exc:
@@ -181,7 +183,9 @@ class HybridStorage(BaseStorage):
         if self.telemetry_read_backend == 'clickhouse' or (self.ch and self.ch.is_connected()):
             if self.ch and self.ch.is_connected():
                 try:
-                    return self.ch.get_telemetry_histogram(**filters)
+                    res = self.ch.get_telemetry_histogram(**filters)
+                    if res and res.get('total_events', 0) > 0:
+                        return res
                 except Exception as exc:
                     logger.warning('ClickHouse telemetry histogram failed: %s', exc)
         return self.pg.get_telemetry_histogram(**filters)
