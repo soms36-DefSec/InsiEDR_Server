@@ -291,24 +291,28 @@ def telemetry_explorer(storage, limit=50, cursor=None, collector=None, username=
                 fb_clauses.append(fb_c)
             fb_where = (' WHERE ' + ' AND '.join(fb_clauses)) if fb_clauses else ''
             version2 = getattr(storage, 'collector_schema_version', 1) == 2
-            username_col = 'cr.username' if version2 else 'rp.username'
-            source = (' FROM (SELECT DISTINCT id, payload_id, agent_id, collector, collector_collected_at, hostname, status, payload_json FROM collector_results) cr '
-                      'LEFT JOIN (SELECT payload_id, argMin(username, received_at) AS username FROM raw_payloads GROUP BY payload_id) rp '
-                      'ON cr.payload_id = rp.payload_id')
             if version2:
                 source = ' FROM (SELECT * FROM collector_events_v2 FINAL) cr '
+                username_col = 'cr.username'
+            else:
+                source = ' FROM collector_results cr '
+                username_col = "''"
 
             fb_sql = (
-                f"SELECT cr.id AS event_id, cr.collector_collected_at AS timestamp, cr.agent_id, cr.collector AS collector_name, "
+                f"SELECT cr.id AS event_id, cr.payload_id, cr.collector_collected_at AS timestamp, cr.agent_id, cr.collector AS collector_name, "
                 f"cr.hostname, {username_col} AS username, cr.status, cr.payload_json "
                 + source + fb_where + " "
                 + "ORDER BY cr.collector_collected_at DESC, cr.id DESC LIMIT %(limit)s"
             )
             res = storage._query(fb_sql, fb_params)
             if res and hasattr(res, 'result_rows'):
+                pids = []
                 for row in res.result_rows:
                     d = dict(zip(res.column_names, row))
                     eid = str(d.get('event_id', ''))
+                    pid = str(d.get('payload_id') or '')
+                    if pid:
+                        pids.append(pid)
                     ts = d.get('timestamp')
                     ts_str = ts.isoformat() if hasattr(ts, 'isoformat') else str(ts or '')
                     cname = str(d.get('collector_name') or '')
@@ -317,6 +321,7 @@ def telemetry_explorer(storage, limit=50, cursor=None, collector=None, username=
                     events.append({
                         'event_id': eid,
                         'id': eid,
+                        'payload_id': pid,
                         'timestamp': ts_str,
                         'collected_at': ts_str,
                         'agent_id': str(d.get('agent_id') or ''),
@@ -327,6 +332,20 @@ def telemetry_explorer(storage, limit=50, cursor=None, collector=None, username=
                         'status': str(d.get('status') or 'success'),
                         'summary_preview': preview,
                     })
+                # Secondary fast lookup for usernames on returned limit rows only
+                if pids and not version2:
+                    try:
+                        rp_res = storage._query(
+                            "SELECT payload_id, argMin(username, received_at) AS username FROM raw_payloads WHERE payload_id IN %(pids)s GROUP BY payload_id",
+                            {'pids': list(dict.fromkeys(pids))}
+                        )
+                        if rp_res and hasattr(rp_res, 'result_rows'):
+                            user_map = {r[0]: str(r[1] or '') for r in rp_res.result_rows}
+                            for ev in events:
+                                if ev.get('payload_id') in user_map:
+                                    ev['username'] = user_map[ev['payload_id']]
+                    except Exception:
+                        pass
         except Exception:
             pass
 
@@ -386,23 +405,25 @@ def telemetry_event_detail(storage, event_id: str) -> dict[str, Any] | None:
     if not row_data:
         try:
             version2 = getattr(storage, 'collector_schema_version', 1) == 2
-            username_col = 'cr.username' if version2 else 'rp.username'
-            source = (' FROM (SELECT * FROM collector_results WHERE id = toUUID(%(event_id)s)) cr '
-                      'LEFT JOIN (SELECT payload_id, username FROM raw_payloads) rp ON cr.payload_id = rp.payload_id')
             if version2:
-                source = ' FROM (SELECT * FROM collector_events_v2 FINAL WHERE id = toUUID(%(event_id)s)) cr'
+                source = ' FROM collector_events_v2 FINAL WHERE id = toUUID(%(event_id)s) '
+                username_col = 'username'
+            else:
+                source = ' FROM collector_results WHERE id = toUUID(%(event_id)s) '
+                username_col = "''"
             sql = (
-                f"SELECT cr.id AS event_id, cr.payload_id, cr.agent_id, cr.collector AS collector_name, "
-                f"cr.collector_collected_at AS timestamp, cr.hostname, {username_col} AS username, cr.status, "
-                f"cr.payload_json AS raw_payload_json" + source + " LIMIT 1"
+                f"SELECT id AS event_id, payload_id, agent_id, collector AS collector_name, "
+                f"collector_collected_at AS timestamp, hostname, {username_col} AS username, status, "
+                f"payload_json AS raw_payload_json" + source + "LIMIT 1"
             )
             res = storage._query(sql, params)
             if res and res.result_rows:
                 d = dict(zip(res.column_names, res.result_rows[0]))
                 raw_payload = d.get('raw_payload_json') or '{}'
+                pid = str(d.get('payload_id') or '')
                 row_data = {
                     'event_id': str(d.get('event_id')),
-                    'payload_id': str(d.get('payload_id') or ''),
+                    'payload_id': pid,
                     'agent_id': str(d.get('agent_id') or ''),
                     'collector_name': str(d.get('collector_name') or ''),
                     'timestamp': d.get('timestamp'),
@@ -412,6 +433,13 @@ def telemetry_event_detail(storage, event_id: str) -> dict[str, Any] | None:
                     'summary_preview': extract_summary_preview(str(d.get('collector_name') or ''), raw_payload),
                     'raw_payload_json': raw_payload,
                 }
+                if pid and not version2:
+                    try:
+                        rp = storage._query("SELECT username FROM raw_payloads WHERE payload_id = %(pid)s LIMIT 1", {'pid': pid})
+                        if rp and rp.result_rows:
+                            row_data['username'] = str(rp.result_rows[0][0] or '')
+                    except Exception:
+                        pass
         except Exception:
             return None
 

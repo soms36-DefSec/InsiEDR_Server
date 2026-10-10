@@ -108,8 +108,11 @@ def create_app(*, storage=None, apply_migrations: bool = True) -> FastAPI:
                             )
                         except Exception as ch_err:
                             logging.getLogger("insiedr.app").warning("ClickHouse storage init failed, operating with PG fallback: %s", ch_err)
+                    read_backend = config.telemetry_read_backend
+                    if (ch_storage is None or not getattr(ch_storage, "is_connected", lambda: False)()) and "INSIEDR_TELEMETRY_READ_BACKEND" not in os.environ:
+                        read_backend = "postgres"
                     storage = HybridStorage(postgres_storage=pg_storage, clickhouse_storage=ch_storage,
-                                            telemetry_read_backend=config.telemetry_read_backend)
+                                            telemetry_read_backend=read_backend)
                     break
                 except Exception as e:
                     if attempt < max_attempts:

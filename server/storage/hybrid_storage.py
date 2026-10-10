@@ -163,10 +163,7 @@ class HybridStorage(BaseStorage):
                 except ValueError:
                     raise
                 except Exception as exc:
-                    logger.warning('ClickHouse telemetry explorer read failed: %s', exc)
-                    if self.telemetry_read_backend == 'clickhouse':
-                        from psycopg2.pool import PoolError
-                        raise PoolError('ClickHouse analytics is unavailable') from exc
+                    logger.warning('ClickHouse telemetry explorer read failed: %s, falling back to PostgreSQL', exc)
         return self.pg.get_telemetry_explorer(**filters)
 
     def get_telemetry_event_detail(self, event_id: str) -> Optional[Dict[str, Any]]:
