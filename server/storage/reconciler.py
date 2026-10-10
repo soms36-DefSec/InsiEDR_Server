@@ -110,6 +110,13 @@ class ReplicationReconciler:
             return completed
         except Exception as exc:
             self.last_error = type(exc).__name__
+            poison_ids = [r['outbox_id'] for r in pending if r.get('attempts', 1) >= 5]
+            if poison_ids:
+                logger.error("Quarantining %d poison outbox record(s) exceeding max retries: %s", len(poison_ids), poison_ids)
+                try:
+                    self.outbox.quarantine(token, poison_ids, exc)
+                except Exception as q_err:
+                    logger.warning("Outbox quarantine failed: %s", q_err)
             attempts = max(r.get('attempts', 1) for r in pending)
             delay = min(300, 2 ** min(attempts, 8)) * random.uniform(0.8, 1.2)
             self.outbox.release(token, exc, delay)

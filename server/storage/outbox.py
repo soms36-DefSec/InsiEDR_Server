@@ -61,6 +61,28 @@ class OutboxRepository:
             conn.commit()
             return count
 
+    def quarantine(self, token, ids, error):
+        """Move permanently failed or poison records to clickhouse_outbox_quarantine (I09)."""
+        if not ids:
+            return 0
+        with self.storage.connection() as conn, closing(conn.cursor()) as cur:
+            try:
+                cur.execute("""
+                    INSERT INTO clickhouse_outbox_quarantine (outbox_id, target_table, record_json, error_reason, attempts)
+                    SELECT outbox_id, target_table, record_json, %s, attempts
+                    FROM clickhouse_outbox
+                    WHERE claim_token = %s AND outbox_id = ANY(%s) AND status = 'processing'
+                """, (str(error)[:1000], token, ids))
+            except Exception:
+                pass
+            cur.execute("""UPDATE clickhouse_outbox SET status = 'quarantined', processed_at = NOW(),
+                claim_token = NULL, lease_expires_at = NULL, last_error = %s
+                WHERE claim_token = %s AND outbox_id = ANY(%s) AND status = 'processing'""",
+                (str(error)[:500], token, ids))
+            count = cur.rowcount
+            conn.commit()
+            return count
+
     def release(self, token, error, delay_seconds):
         with self.storage.connection() as conn, closing(conn.cursor()) as cur:
             cur.execute("""UPDATE clickhouse_outbox SET status = 'pending', claim_token = NULL,

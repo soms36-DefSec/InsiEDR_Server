@@ -103,6 +103,28 @@ export function formatDateTime(dateStr: string | null | undefined): string {
   });
 }
 
+function formatPreviewValue(val: unknown): string {
+  if (val === null || val === undefined) return '';
+  if (Array.isArray(val)) {
+    if (val.length === 0) return '[]';
+    const first = val[0];
+    if (typeof first === 'object' && first !== null) {
+      const names = (val as Array<Record<string, unknown>>)
+        .slice(0, 3)
+        .map((item) => String(item?.name || item?.process_name || item?.command || item?.path || item?.id || 'item'))
+        .filter(Boolean)
+        .join(', ');
+      return `${val.length} items (${names}${val.length > 3 ? '...' : ''})`;
+    }
+    return val.slice(0, 3).map(String).join(', ') + (val.length > 3 ? '...' : '');
+  }
+  if (typeof val === 'object') {
+    const subKeys = Object.keys(val as Record<string, unknown>);
+    return `{${subKeys.slice(0, 2).join(', ')}${subKeys.length > 2 ? '...' : ''}}`;
+  }
+  return String(val);
+}
+
 /**
  * Extracts a concise human-readable preview of up to 3 telemetry key/value attributes.
  * Safely unwraps nested agent envelope structures without throwing on malformed JSON.
@@ -121,11 +143,12 @@ export function extractLogPreview(log: TelemetryLog): string {
     if (keys.length === 0) return 'Heartbeat telemetry';
     const preview = keys
       .slice(0, 3)
-      .map((k) => `${k}: ${String(p[k])}`)
+      .map((k) => `${k}: ${formatPreviewValue(p[k])}`)
       .join(' · ');
     return keys.length > 3 ? `${preview} (+${keys.length - 3} more)` : preview;
   } catch {
     return String(log.payload || 'Telemetry');
   }
 }
+
 

@@ -94,16 +94,53 @@ class ServerConfig:
         return roles_map
 
     @property
+    def environment(self) -> str:
+        """Process execution environment: 'development', 'staging', 'test', or 'production'."""
+        return (
+            os.environ.get("INSIEDR_ENVIRONMENT")
+            or os.environ.get("ENVIRONMENT")
+            or os.environ.get("ENV", "development")
+        ).strip().lower()
+
+    @property
+    def is_production(self) -> bool:
+        return self.environment in ("production", "prod", "live")
+
+    @property
     def auth_enforced(self) -> bool:
         """
         Whether strict authentication is enforced.
-        Defaults to True if operator_api_key or agent_bearer_token is set,
+        Always True in production to eliminate permissive bypasses (audit finding I01).
+        In non-production, defaults to True if credentials are configured,
         or if explicitly set via INSIEDR_AUTH_ENFORCED.
         """
+        if self.is_production:
+            return True
         raw = os.environ.get("INSIEDR_AUTH_ENFORCED")
         if raw is not None:
             return raw.lower() in ("1", "true", "yes", "on")
         return bool(self.operator_api_key or self.agent_bearer_token or self.agent_tokens or self.operator_roles)
+
+    def validate_production_readiness(self) -> None:
+        """
+        Hard fail-safe validation when running in production.
+        Prevents starting with permissive auth, missing keys, or insecure defaults (audit finding I01).
+        """
+        if not self.is_production:
+            return
+
+        errors = []
+        if not (self.operator_api_key or self.operator_roles):
+            errors.append("INSIEDR_OPERATOR_API_KEY or INSIEDR_OPERATOR_ROLES must be set in production")
+        if not (self.agent_bearer_token or self.agent_tokens):
+            errors.append("INSIEDR_AGENT_BEARER_TOKEN or INSIEDR_AGENT_TOKENS must be set in production")
+        if not self.secret_key:
+            errors.append("INSIEDR_SECRET_KEY must be configured in production")
+
+        if errors:
+            raise RuntimeError(
+                "Production readiness validation failed:\n - " + "\n - ".join(errors)
+            )
 
     @property
     def max_request_bytes(self) -> int:
@@ -151,7 +188,8 @@ class ServerConfig:
 
     @property
     def telemetry_read_backend(self) -> str:
-        return os.environ.get('INSIEDR_TELEMETRY_READ_BACKEND', 'postgres').strip().lower()
+        default_backend = "clickhouse" if self.clickhouse_enabled else "postgres"
+        return os.environ.get('INSIEDR_TELEMETRY_READ_BACKEND', default_backend).strip().lower()
 
     @property
     def clickhouse_secure(self) -> bool:

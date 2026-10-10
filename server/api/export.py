@@ -345,17 +345,7 @@ def _resolve_decrypted_payload(row: dict[str, Any]) -> dict[str, Any] | None:
 
 def _extract_parameters(storage, row: dict[str, Any]) -> dict[str, Any]:
     """Extract model training feature parameters from a telemetry log record."""
-    payload_id = row.get("id") or row.get("payload_id")
-    # 1. Check if pre-calculated feature vector is stored
-    if payload_id and hasattr(storage, "get_feature_vector") and callable(storage.get_feature_vector):
-        try:
-            stored_features = storage.get_feature_vector(payload_id)
-            if stored_features and isinstance(stored_features, dict):
-                return stored_features
-        except Exception:
-            pass
-
-    # 2. Extract on-the-fly from decrypted collector payload
+    # 1. First extract on-the-fly from decrypted collector payload (Zero DB queries!)
     payload_obj = _resolve_decrypted_payload(row)
 
     if isinstance(payload_obj, dict):
@@ -376,7 +366,22 @@ def _extract_parameters(storage, row: dict[str, Any]) -> dict[str, Any]:
                             features.setdefault(nested_key, nested_value)
                 else:
                     features.setdefault(key, value)
-        return features
+        if features:
+            return features
+
+    # 2. Check if row already has pre-attached features
+    if isinstance(row.get("features"), dict) and row["features"]:
+        return row["features"]
+
+    # 3. Last resort fallback to storage.get_feature_vector
+    payload_id = row.get("id") or row.get("payload_id")
+    if payload_id and hasattr(storage, "get_feature_vector") and callable(storage.get_feature_vector):
+        try:
+            stored_features = storage.get_feature_vector(payload_id)
+            if stored_features and isinstance(stored_features, dict):
+                return stored_features
+        except Exception:
+            pass
 
     return {}
 

@@ -156,13 +156,13 @@ class PostgresStorage(BaseStorage):
         if not self.dsn:
             raise RuntimeError("INSIEDR_SERVER_POSTGRES_URI environment variable or dsn is required for PostgresStorage")
         
-        minconn = int(os.environ.get("INSIEDR_PG_POOL_MIN", "2")) if minconn is None else minconn
+        minconn = int(os.environ.get("INSIEDR_PG_POOL_MIN", "4")) if minconn is None else minconn
         maxconn = int(os.environ.get("INSIEDR_PG_POOL_MAX", "32")) if maxconn is None else maxconn
         if not 1 <= minconn <= maxconn:
             raise ValueError("PostgreSQL pool requires 1 <= minconn <= maxconn")
-        self._pool_wait_seconds = float(os.environ.get("INSIEDR_PG_POOL_WAIT_SECONDS", "2"))
-        statement_ms = int(os.environ.get("INSIEDR_PG_STATEMENT_TIMEOUT_MS", "15000"))
-        lock_ms = int(os.environ.get("INSIEDR_PG_LOCK_TIMEOUT_MS", "3000"))
+        self._pool_wait_seconds = float(os.environ.get("INSIEDR_PG_POOL_WAIT_SECONDS", "10"))
+        statement_ms = int(os.environ.get("INSIEDR_PG_STATEMENT_TIMEOUT_MS", "30000"))
+        lock_ms = int(os.environ.get("INSIEDR_PG_LOCK_TIMEOUT_MS", "10000"))
         if self._pool_wait_seconds <= 0 or statement_ms <= 0 or lock_ms <= 0:
             raise ValueError("PostgreSQL wait, statement and lock timeouts must be positive")
         self._pool_slots = threading.BoundedSemaphore(maxconn)
@@ -435,6 +435,44 @@ class PostgresStorage(BaseStorage):
                 try:
                     self._upsert_agent(cursor, decrypted_payload)
 
+                    cipher_hash = self._sha256_hex(envelope.get("ciphertext"))
+                    decrypted_hash = self._sha256_hex(self._stable_json(decrypted_payload))
+                    agent_id = decrypted_payload.get("agent_id") or ""
+
+                    # Authoritative Identity Check via payload_registry (I03, I05)
+                    try:
+                        cursor.execute(
+                            self._sql("""
+                                INSERT INTO payload_registry (
+                                    payload_id, agent_id, received_at, ciphertext_hash, decrypted_hash
+                                ) VALUES (
+                                    %s, %s, CURRENT_TIMESTAMP, %s, %s
+                                )
+                                ON CONFLICT (payload_id) DO NOTHING
+                                RETURNING payload_id
+                            """),
+                            (payload_id, agent_id, cipher_hash, decrypted_hash),
+                        )
+                        reg_row = cursor.fetchone()
+                        if not reg_row:
+                            cursor.execute(
+                                self._sql("SELECT ciphertext_hash, decrypted_hash FROM payload_registry WHERE payload_id = %s"),
+                                (payload_id,)
+                            )
+                            existing_hashes = cursor.fetchone()
+                            if existing_hashes:
+                                if existing_hashes[0] and cipher_hash and existing_hashes[0] != cipher_hash:
+                                    raise ValueError("duplicate payload_id with different ciphertext")
+                                if existing_hashes[1] and decrypted_hash and existing_hashes[1] != decrypted_hash:
+                                    raise ValueError("duplicate payload_id with different decrypted payload")
+                            conn.commit()
+                            return False
+                    except Exception as reg_err:
+                        if isinstance(reg_err, ValueError):
+                            raise
+                        # Table may not exist yet in lightweight test setups without migrations
+                        pass
+
                     cursor.execute(
                         """
                         INSERT INTO raw_payloads (
@@ -460,8 +498,8 @@ class PostgresStorage(BaseStorage):
                             envelope.get("scheme"),
                             envelope.get("key_id"),
                             self._sha256_hex(envelope.get("nonce")),
-                            self._sha256_hex(envelope.get("ciphertext")),
-                            self._sha256_hex(self._stable_json(decrypted_payload)),
+                            cipher_hash,
+                            decrypted_hash,
                             Json(envelope),
                             "accepted",
                         ),

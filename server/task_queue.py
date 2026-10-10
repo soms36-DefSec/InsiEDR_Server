@@ -140,6 +140,81 @@ class PgTaskQueue:
         else:
             self._update_status(task_id, "failed", error=error)
 
+    def reap_stale(self, stale_seconds: float = 600.0) -> int:
+        """
+        Crash-recovery reaper for PostgreSQL / SQLite.
+
+        Scans the task_queue table for tasks stuck in 'running' status with locked_at
+        older than `stale_seconds` (e.g. server crashed while processing a claimed task).
+        Resets tasks to 'retry' (or 'failed' if attempts >= max_attempts) so they are
+        not stranded indefinitely.
+        """
+        try:
+            with self._storage.connection() as conn:
+                with closing(conn.cursor()) as cur:
+                    is_sqlite = getattr(self._storage, "_is_sqlite", False)
+                    if is_sqlite:
+                        cur.execute(
+                            """
+                            UPDATE task_queue
+                            SET status = CASE
+                                    WHEN attempts < max_attempts THEN 'retry'
+                                    ELSE 'failed'
+                                END,
+                                locked_at = NULL,
+                                locked_by = NULL,
+                                scheduled_at = CURRENT_TIMESTAMP,
+                                error_message = CASE
+                                    WHEN attempts < max_attempts THEN 'Recovered by stale reaper (worker crashed or timed out)'
+                                    ELSE 'Exhausted attempts after worker crash/timeout'
+                                END
+                            WHERE status = 'running'
+                              AND locked_at < datetime('now', '-' || ? || ' seconds')
+                            """,
+                            (int(stale_seconds),),
+                        )
+                        reaped = cur.rowcount if hasattr(cur, "rowcount") and cur.rowcount >= 0 else 0
+                    else:
+                        cur.execute(
+                            """
+                            WITH stale_tasks AS (
+                                SELECT id, attempts, max_attempts
+                                FROM task_queue
+                                WHERE status = 'running'
+                                  AND locked_at < CURRENT_TIMESTAMP - (%s * INTERVAL '1 second')
+                                FOR UPDATE SKIP LOCKED
+                            )
+                            UPDATE task_queue t
+                            SET status = CASE
+                                    WHEN s.attempts < s.max_attempts THEN 'retry'
+                                    ELSE 'failed'
+                                END,
+                                locked_at = NULL,
+                                locked_by = NULL,
+                                scheduled_at = CURRENT_TIMESTAMP,
+                                error_message = CASE
+                                    WHEN s.attempts < s.max_attempts THEN 'Recovered by stale reaper (worker crashed or timed out)'
+                                    ELSE 'Exhausted attempts after worker crash/timeout'
+                                END
+                            FROM stale_tasks s
+                            WHERE t.id = s.id
+                            RETURNING t.id
+                            """,
+                            (int(stale_seconds),),
+                        )
+                        rows = cur.fetchall()
+                        reaped = len(rows) if rows else 0
+                    conn.commit()
+                    if reaped > 0:
+                        log.warning(
+                            "PgTaskQueue: reaped %s stale task(s) stuck in 'running' > %ds",
+                            reaped, stale_seconds,
+                        )
+                    return reaped
+        except Exception as exc:
+            log.error("PgTaskQueue: failed to reap stale tasks: %s", exc)
+            return 0
+
     # ------------------------------------------------------------------
     # Internal helpers
     # ------------------------------------------------------------------
@@ -221,7 +296,26 @@ class RedisTaskQueue:
             return #matured
         """)
 
-        # Lua script: atomically reap tasks stuck in the running hash for > stale_seconds.
+        # Lua script: atomically complete a task by removing it from both running hash and processing list
+        self._complete_script = self._client.register_script("""
+            local running_raw = redis.call('HGET', KEYS[1], ARGV[1])
+            redis.call('HDEL', KEYS[1], ARGV[1])
+            if KEYS[2] then
+                if running_raw then
+                    redis.call('LREM', KEYS[2], 0, running_raw)
+                end
+                local proc = redis.call('LRANGE', KEYS[2], 0, -1)
+                for _, raw in ipairs(proc) do
+                    local ok, task = pcall(cjson.decode, raw)
+                    if ok and type(task) == 'table' and task['id'] == ARGV[1] then
+                        redis.call('LREM', KEYS[2], 0, raw)
+                    end
+                end
+            end
+            return 1
+        """)
+
+        # Lua script: atomically reap tasks stuck in the running hash or processing list for > stale_seconds.
         # Handles the crash-recovery gap: if the server hard-crashes while processing a
         # task (after BLPOP, before complete()/fail()), the task is re-queued here.
         # Each task in the running hash carries a 'claimed_at' epoch float set by claim_next().
@@ -235,6 +329,17 @@ class RedisTaskQueue:
                 local ok, task = pcall(cjson.decode, raw)
                 if ok and task['claimed_at'] and tonumber(task['claimed_at']) < stale_cutoff then
                     redis.call('HDEL', KEYS[1], task_id)
+                    -- Also remove from processing list if present to prevent double reap
+                    if KEYS[3] then
+                        redis.call('LREM', KEYS[3], 0, raw)
+                        local proc = redis.call('LRANGE', KEYS[3], 0, -1)
+                        for _, p_raw in ipairs(proc) do
+                            local p_ok, p_task = pcall(cjson.decode, p_raw)
+                            if p_ok and type(p_task) == 'table' and p_task['id'] == task_id then
+                                redis.call('LREM', KEYS[3], 0, p_raw)
+                            end
+                        end
+                    end
                     redis.call('RPUSH', KEYS[2], raw)
                     reaped = reaped + 1
                 end
@@ -244,21 +349,27 @@ class RedisTaskQueue:
                 for _, raw in ipairs(proc) do
                     local ok, task = pcall(cjson.decode, raw)
                     local task_time = nil
+                    local task_id = nil
                     if ok and type(task) == 'table' then
                         task_time = tonumber(task['claimed_at']) or tonumber(task['enqueued_at'])
+                        task_id = task['id']
                     end
                     -- Only reap if the task has exceeded the stale cutoff; never steal active in-flight claims
                     if task_time and task_time < stale_cutoff then
-                        redis.call('LREM', KEYS[3], 1, raw)
-                        redis.call('RPUSH', KEYS[2], raw)
-                        reaped = reaped + 1
+                        redis.call('LREM', KEYS[3], 0, raw)
+                        -- Avoid double re-queueing if it was already in running (reaped above)
+                        if not (task_id and redis.call('HEXISTS', KEYS[1], task_id) == 1) then
+                            redis.call('RPUSH', KEYS[2], raw)
+                            reaped = reaped + 1
+                        end
                     end
                 end
             end
             return reaped
         """)
 
-        log.info("RedisTaskQueue connected to %s", redis_url)
+        from shared.crypto_utils import redact_url_credentials
+        log.info("RedisTaskQueue connected to %s", redact_url_credentials(redis_url))
 
     # ------------------------------------------------------------------
     # Public API (mirrors PgTaskQueue)
@@ -337,22 +448,29 @@ class RedisTaskQueue:
             return None
 
     def complete(self, task_id: str) -> None:  # type: ignore[override]
-        """Remove the task from the in-flight tracking hash."""
+        """Remove the task from both the in-flight tracking hash and processing list."""
         try:
-            self._client.hdel(_REDIS_KEY_RUNNING, task_id)
+            if hasattr(self, "_complete_script") and callable(self._complete_script):
+                self._complete_script(
+                    keys=[_REDIS_KEY_RUNNING, _REDIS_KEY_PROCESSING],
+                    args=[task_id],
+                )
+            else:
+                self._client.hdel(_REDIS_KEY_RUNNING, task_id)
         except Exception as exc:
             log.error("RedisTaskQueue: failed to mark task %s complete: %s", task_id, exc)
 
     def fail(self, task_id: str, task: dict[str, Any], error: str) -> None:  # type: ignore[override]
         """
-        Atomically transition task from running hash. If retries remain, schedule onto
-        the retry sorted set with exponential back-off; otherwise drop the task and log.
-        Uses a transactional pipeline so HDEL and ZADD execute atomically without crash windows.
+        Atomically transition task from running hash and processing list. If retries remain,
+        schedule onto the retry sorted set with exponential back-off; otherwise drop the task and log.
+        Uses a transactional pipeline so HDEL, LREM, and ZADD execute atomically without crash windows.
         """
         attempts = task.get("attempts", 1)
         max_attempts = task.get("max_attempts", 3)
         pipe = self._client.pipeline(transaction=True)
         pipe.hdel(_REDIS_KEY_RUNNING, task_id)
+        pipe.lrem(_REDIS_KEY_PROCESSING, 0, json.dumps(task))
 
         if attempts < max_attempts:
             delay_seconds = 10 * (4 ** (attempts - 1))

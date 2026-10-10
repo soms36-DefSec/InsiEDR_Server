@@ -872,4 +872,159 @@ def test_rust_to_python_interop_envelope_decryption():
     assert data.get("score") == 100
 
 
+def test_production_auth_readiness_validation(monkeypatch):
+    """Verify that production environment enforces fail-closed authentication and startup validation (I01)."""
+    from server.config import ServerConfig
+    from server.app import create_app
+
+    cfg = ServerConfig()
+    monkeypatch.setenv("INSIEDR_ENVIRONMENT", "production")
+    monkeypatch.delenv("INSIEDR_OPERATOR_API_KEY", raising=False)
+    monkeypatch.delenv("OPERATOR_API_KEY", raising=False)
+    monkeypatch.delenv("INSIEDR_OPERATOR_ROLES", raising=False)
+    monkeypatch.delenv("INSIEDR_AGENT_BEARER_TOKEN", raising=False)
+    monkeypatch.delenv("INSIEDR_AGENT_TOKENS", raising=False)
+    monkeypatch.delenv("INSIEDR_SECRET_KEY", raising=False)
+    monkeypatch.delenv("SECRET_KEY", raising=False)
+
+    # 1. auth_enforced must be strictly True in production
+    assert cfg.auth_enforced is True
+
+    # 2. create_app must refuse to start without operator/agent credentials
+    with pytest.raises(RuntimeError) as exc_info:
+        create_app(storage=None, apply_migrations=False)
+    assert "Production readiness validation failed" in str(exc_info.value)
+
+    # 3. Supplying valid production credentials allows startup
+    monkeypatch.setenv("INSIEDR_OPERATOR_API_KEY", "prod-op-token-123")
+    monkeypatch.setenv("INSIEDR_AGENT_BEARER_TOKEN", "prod-agent-token-456")
+    monkeypatch.setenv("INSIEDR_SECRET_KEY", "prod-secret-key-super-secure")
+    app = create_app(storage=None, apply_migrations=False)
+    assert app is not None
+
+
+def test_redis_task_queue_complete_and_fail_clean_processing():
+    """Verify RedisTaskQueue complete() and fail() clean entries from processing list (I07)."""
+    from server.task_queue import RedisTaskQueue, _REDIS_KEY_RUNNING, _REDIS_KEY_PROCESSING, _REDIS_KEY_RETRY
+
+    class MockPipeline:
+        def __init__(self):
+            self.calls = []
+
+        def lrem(self, key, count, val):
+            self.calls.append(("lrem", key, count, val))
+
+        def rpush(self, key, val):
+            self.calls.append(("rpush", key, val))
+
+        def hset(self, key, hkey, val):
+            self.calls.append(("hset", key, hkey, val))
+
+        def hdel(self, key, hkey):
+            self.calls.append(("hdel", key, hkey))
+
+        def zadd(self, key, mapping):
+            self.calls.append(("zadd", key, mapping))
+
+        def execute(self):
+            return True
+
+    class MockRedis:
+        def __init__(self):
+            self.pipe = MockPipeline()
+            self.script_calls = []
+
+        def register_script(self, script):
+            def _runner(*args, **kwargs):
+                self.script_calls.append((args, kwargs))
+                return 1
+            return _runner
+
+        def pipeline(self, transaction=True):
+            return self.pipe
+
+    mock = MockRedis()
+    queue = RedisTaskQueue.__new__(RedisTaskQueue)
+    queue._client = mock
+    queue._complete_script = mock.register_script("mock")
+
+    # Complete cleans via complete_script
+    queue.complete("task-abc")
+    assert len(mock.script_calls) >= 1
+    args, kwargs = mock.script_calls[-1]
+    assert _REDIS_KEY_RUNNING in kwargs.get("keys", [])
+    assert _REDIS_KEY_PROCESSING in kwargs.get("keys", [])
+
+    # Fail cleans via pipeline LREM + HDEL
+    queue.fail("task-abc", {"id": "task-abc", "attempts": 1, "max_attempts": 3}, error="fail")
+    assert any(c[0] == "hdel" and c[1] == _REDIS_KEY_RUNNING for c in mock.pipe.calls)
+    assert any(c[0] == "lrem" and c[1] == _REDIS_KEY_PROCESSING for c in mock.pipe.calls)
+
+
+def test_pg_task_queue_reap_stale_sqlite():
+    """Verify PgTaskQueue reap_stale recovers abandoned running tasks into retry or failed (I08)."""
+    import sqlite3
+    from contextlib import contextmanager, closing
+    from server.task_queue import PgTaskQueue
+
+    raw_conn = sqlite3.connect(":memory:")
+
+    class MockStorage:
+        _is_sqlite = True
+
+        @contextmanager
+        def connection(self):
+            yield raw_conn
+
+    storage = MockStorage()
+
+    # Set up SQLite task_queue table
+    with storage.connection() as conn:
+        with closing(conn.cursor()) as cur:
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS task_queue (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    task_type TEXT NOT NULL,
+                    payload_json TEXT NOT NULL,
+                    status TEXT NOT NULL DEFAULT 'pending',
+                    attempts INTEGER NOT NULL DEFAULT 0,
+                    max_attempts INTEGER NOT NULL DEFAULT 3,
+                    locked_at TIMESTAMP,
+                    locked_by TEXT,
+                    scheduled_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    completed_at TIMESTAMP,
+                    error_message TEXT
+                )
+            """)
+            # Insert a stale running task (attempts = 1, max_attempts = 3)
+            cur.execute("""
+                INSERT INTO task_queue (task_type, payload_json, status, attempts, max_attempts, locked_at)
+                VALUES ('webhook_alert', '{}', 'running', 1, 3, datetime('now', '-700 seconds'))
+            """)
+            # Insert a stale running task that exceeded max_attempts (attempts = 3, max_attempts = 3)
+            cur.execute("""
+                INSERT INTO task_queue (task_type, payload_json, status, attempts, max_attempts, locked_at)
+                VALUES ('webhook_alert', '{}', 'running', 3, 3, datetime('now', '-700 seconds'))
+            """)
+            conn.commit()
+
+    pg_queue = PgTaskQueue(storage)
+    reaped = pg_queue.reap_stale(stale_seconds=600.0)
+    assert reaped == 2
+
+    # Verify task statuses
+    with storage.connection() as conn:
+        with closing(conn.cursor()) as cur:
+            cur.execute("SELECT id, status, locked_at FROM task_queue ORDER BY id")
+            rows = cur.fetchall()
+            # First task: should be 'retry' with locked_at = None
+            assert rows[0][1] == "retry"
+            assert rows[0][2] is None
+            # Second task: should be 'failed' because attempts >= max_attempts
+            assert rows[1][1] == "failed"
+            assert rows[1][2] is None
+
+
+
+
 

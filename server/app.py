@@ -73,6 +73,8 @@ class DummyAppContext:
 
 
 def create_app(*, storage=None, apply_migrations: bool = True) -> FastAPI:
+    config.validate_production_readiness()
+
     @asynccontextmanager
     async def lifespan(app: FastAPI):
         # Startup phase
