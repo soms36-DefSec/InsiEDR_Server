@@ -84,7 +84,7 @@ export interface TelemetryExplorerPluginProps extends PluginProps {
   useExplorerApi?: boolean;
 }
 
-export const TelemetryExplorerPlugin: React.FC<TelemetryExplorerPluginProps> = ({ context, useExplorerApi = false }) => {
+export const TelemetryExplorerPlugin: React.FC<TelemetryExplorerPluginProps> = ({ context, useExplorerApi = true }) => {
   const [logs, setLogs] = useState<TelemetryLog[]>(context.logs || []);
   const [selectedLog, setSelectedLog] = useState<TelemetryLog | null>(null);
   const [showTrainingModal, setShowTrainingModal] = useState<boolean>(false);

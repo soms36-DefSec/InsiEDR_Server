@@ -63,10 +63,17 @@ def telemetry_page(storage, limit=100, offset=0, collector=None, username=None,
         if search_scope == 'payload':
             search_columns.append('CAST(cr.payload_json AS TEXT)')
         clauses.append("(" + " OR ".join(contains(column, search) for column in search_columns) + ")")
-    for bound, operator in ((start_time, ">="), (end_time, "<=")):
-        if bound:
-            clauses.append(f"(cr.collector_collected_at {operator} %s OR (cr.collector_collected_at IS NULL AND rp.received_at {operator} %s))")
-            params.extend([bound, bound])
+    join_rp = bool(username or search or start_time or end_time)
+    if join_rp:
+        for bound, operator in ((start_time, ">="), (end_time, "<=")):
+            if bound:
+                clauses.append(f"(cr.collector_collected_at {operator} %s OR (cr.collector_collected_at IS NULL AND rp.received_at {operator} %s))")
+                params.extend([bound, bound])
+    else:
+        for bound, operator in ((start_time, ">="), (end_time, "<=")):
+            if bound:
+                clauses.append(f"cr.collector_collected_at {operator} %s")
+                params.append(bound)
     where = " WHERE " + " AND ".join(clauses) if clauses else ""
     count_where, count_params = where, list(params)
     if cursor:
@@ -78,13 +85,16 @@ def telemetry_page(storage, limit=100, offset=0, collector=None, username=None,
             clauses.append('((cr.collector_collected_at, cr.id) < (%s, %s) OR cr.collector_collected_at IS NULL)')
             params.extend([timestamp, row_id])
         where = ' WHERE ' + ' AND '.join(clauses)
-    source = "FROM collector_results cr LEFT JOIN raw_payloads rp ON cr.payload_id = rp.payload_id"
+    source = "FROM collector_results cr LEFT JOIN raw_payloads rp ON cr.payload_id = rp.payload_id" if join_rp else "FROM collector_results cr"
+    collected_at_expr = "COALESCE(cr.collector_collected_at, rp.received_at) AS collected_at" if join_rp else "cr.collector_collected_at AS collected_at"
+    username_expr = "rp.username" if join_rp else "'' AS username"
+    received_at_expr = "rp.received_at" if join_rp else "cr.collector_collected_at AS received_at"
     with storage.connection() as conn, closing(conn.cursor()) as cur:
         cur.execute(
-            "SELECT cr.id, cr.payload_id, cr.agent_id, cr.collector, "
-            "COALESCE(cr.collector_collected_at, rp.received_at) AS collected_at, "
-            "cr.hostname, rp.username, cr.status, cr.payload_json AS payload, rp.received_at, "
-            "cr.collector_collected_at AS cursor_time "
+            f"SELECT cr.id, cr.payload_id, cr.agent_id, cr.collector, "
+            f"{collected_at_expr}, "
+            f"cr.hostname, {username_expr}, cr.status, cr.payload_json AS payload, {received_at_expr}, "
+            f"cr.collector_collected_at AS cursor_time "
             + source + where
             + " ORDER BY cr.collector_collected_at DESC NULLS LAST, cr.id DESC LIMIT %s OFFSET %s",
             tuple(params + [limit + 1, offset]),
@@ -191,10 +201,17 @@ def telemetry_explorer(storage, limit=50, cursor=None, collector=None, username=
         search_cols = ['cr.hostname', 'rp.username', 'cr.collector']
         clauses.append("(" + " OR ".join(contains(col, search) for col in search_cols) + ")")
 
-    for bound, operator in ((start_time, ">="), (end_time, "<=")):
-        if bound:
-            clauses.append(f"(cr.collector_collected_at {operator} %s OR (cr.collector_collected_at IS NULL AND rp.received_at {operator} %s))")
-            params.extend([bound, bound])
+    join_rp = bool(username or search or start_time or end_time)
+    if join_rp:
+        for bound, operator in ((start_time, ">="), (end_time, "<=")):
+            if bound:
+                clauses.append(f"(cr.collector_collected_at {operator} %s OR (cr.collector_collected_at IS NULL AND rp.received_at {operator} %s))")
+                params.extend([bound, bound])
+    else:
+        for bound, operator in ((start_time, ">="), (end_time, "<=")):
+            if bound:
+                clauses.append(f"cr.collector_collected_at {operator} %s")
+                params.append(bound)
 
     if cursor:
         timestamp, row_id = decode_cursor(cursor, 'postgres', key)
@@ -206,15 +223,17 @@ def telemetry_explorer(storage, limit=50, cursor=None, collector=None, username=
             params.extend([timestamp, row_id])
 
     where = " WHERE " + " AND ".join(clauses) if clauses else ""
-    source = "FROM collector_results cr LEFT JOIN raw_payloads rp ON cr.payload_id = rp.payload_id"
+    source = "FROM collector_results cr LEFT JOIN raw_payloads rp ON cr.payload_id = rp.payload_id" if join_rp else "FROM collector_results cr"
+    collected_at_expr = "COALESCE(cr.collector_collected_at, rp.received_at) AS collected_at" if join_rp else "cr.collector_collected_at AS collected_at"
+    username_expr = "rp.username" if join_rp else "'' AS username"
 
     events = []
     with storage.connection() as conn, closing(conn.cursor()) as cur:
         sql = (
-            "SELECT cr.id AS event_id, cr.agent_id, cr.collector AS collector_name, "
-            "COALESCE(cr.collector_collected_at, rp.received_at) AS collected_at, "
-            "cr.hostname, rp.username, cr.status, cr.payload_json AS payload, "
-            "cr.collector_collected_at AS cursor_time "
+            f"SELECT cr.id AS event_id, cr.agent_id, cr.collector AS collector_name, "
+            f"{collected_at_expr}, "
+            f"cr.hostname, {username_expr}, cr.status, cr.payload_json AS payload, "
+            f"cr.collector_collected_at AS cursor_time "
             + source + where
             + " ORDER BY cr.collector_collected_at DESC NULLS LAST, cr.id DESC LIMIT %s"
         )
