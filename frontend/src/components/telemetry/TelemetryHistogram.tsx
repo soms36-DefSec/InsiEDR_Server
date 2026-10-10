@@ -32,6 +32,7 @@ export const TelemetryHistogram: React.FC<TelemetryHistogramProps> = ({
   const [totalEvents, setTotalEvents] = useState<number>(0);
   const [interval, setInterval] = useState<string>('1m');
   const [isLoading, setIsLoading] = useState<boolean>(false);
+  const [histogramError, setHistogramError] = useState<string | null>(null);
   const [hoveredBucket, setHoveredBucket] = useState<{ bucket: TelemetryHistogramBucket; x: number; y: number } | null>(null);
 
   useEffect(() => {
@@ -51,10 +52,14 @@ export const TelemetryHistogram: React.FC<TelemetryHistogramProps> = ({
           setBuckets(res.histogram || []);
           setTotalEvents(res.total_events || 0);
           setInterval(res.interval || '1m');
+          setHistogramError(null);
+        } else if (res && !res.ok) {
+          setHistogramError(res.error || 'Histogram aggregation failed');
         }
       })
-      .catch(() => {
-        // Silently tolerate if mock or offline
+      .catch((err) => {
+        if (!active || abort.signal.aborted) return;
+        setHistogramError(err instanceof Error ? err.message : 'Histogram query failed');
       })
       .finally(() => {
         if (active) setIsLoading(false);
@@ -105,12 +110,19 @@ export const TelemetryHistogram: React.FC<TelemetryHistogramProps> = ({
         </div>
 
         <div className="flex items-center gap-3">
-          <div className="flex items-center gap-1.5 bg-slate-50 border border-slate-200/80 px-2 py-0.5 rounded text-[11px] text-slate-600">
-            <Activity className="w-3 h-3 text-blue-500" />
-            <span className="text-slate-500">Volume:</span>
-            <span className="font-mono font-semibold text-slate-900">{totalEvents.toLocaleString()}</span>
-            <span className="text-slate-400">events</span>
-          </div>
+          {histogramError ? (
+            <div className="flex items-center gap-1.5 bg-amber-50 border border-amber-200/80 px-2 py-0.5 rounded text-[11px] text-amber-700" title={histogramError}>
+              <span className="w-1.5 h-1.5 rounded-full bg-amber-500 animate-pulse" />
+              <span>Histogram Query Degraded</span>
+            </div>
+          ) : (
+            <div className="flex items-center gap-1.5 bg-slate-50 border border-slate-200/80 px-2 py-0.5 rounded text-[11px] text-slate-600">
+              <Activity className="w-3 h-3 text-blue-500" />
+              <span className="text-slate-500">Volume:</span>
+              <span className="font-mono font-semibold text-slate-900">{totalEvents.toLocaleString()}</span>
+              <span className="text-slate-400">events</span>
+            </div>
+          )}
 
           <div className="flex items-center gap-1.5 bg-slate-50 border border-slate-200/80 px-2 py-0.5 rounded text-[11px] text-slate-600">
             <Zap className="w-3 h-3 text-amber-500" />
@@ -132,11 +144,16 @@ export const TelemetryHistogram: React.FC<TelemetryHistogramProps> = ({
         {isLoading && (
           <div className="absolute inset-0 bg-white/60 backdrop-blur-[1px] flex items-center justify-center z-10 text-xs text-slate-400">
             <span className="w-3.5 h-3.5 border-2 border-slate-300 border-t-blue-600 rounded-full animate-spin mr-2" />
-            Calculating ClickHouse frequency bins...
+            Calculating frequency bins...
           </div>
         )}
 
-        <div className="w-full h-16 relative">
+        {histogramError ? (
+          <div className="w-full h-16 flex items-center justify-center text-xs text-amber-700 bg-amber-50/50 border border-dashed border-amber-200 rounded px-4 text-center">
+            Histogram query unavailable: {histogramError}. Endpoint ingestion and log storage are operational.
+          </div>
+        ) : (
+          <div className="w-full h-16 relative">
           <svg
             viewBox={`0 0 ${chartWidth} ${chartHeight}`}
             preserveAspectRatio="none"
@@ -200,6 +217,7 @@ export const TelemetryHistogram: React.FC<TelemetryHistogramProps> = ({
             })}
           </svg>
         </div>
+        )}
 
         {/* Time axis endpoints */}
         <div className="flex justify-between items-center text-[10px] text-slate-400 font-mono mt-1 pt-0.5 select-none">

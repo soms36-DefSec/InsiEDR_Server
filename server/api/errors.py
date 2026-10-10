@@ -66,6 +66,11 @@ class ServiceUnavailableError(APIException):
     code = "SERVICE_UNAVAILABLE"
 
 
+class AnalyticsUnavailableError(APIException, PoolError):
+    status_code = 503
+    code = "ANALYTICS_UNAVAILABLE"
+
+
 def register_error_handlers(app: Any) -> None:
     """Register uniform JSON error handlers on the FastAPI application."""
 
@@ -73,7 +78,30 @@ def register_error_handlers(app: Any) -> None:
     @app.exception_handler(QueryCanceled)
     @app.exception_handler(LockNotAvailable)
     async def handle_database_capacity(request: Request, exc: Exception):
-        response = api_error(code="DATABASE_BUSY", message="Database busy; retry shortly", status_code=503)
+        exc_name = type(exc).__name__
+        pgcode = getattr(exc, "pgcode", None)
+        logger.error(
+            "Database capacity/query error on %s %s: %s (pgcode=%s): %s",
+            request.method,
+            request.url.path,
+            exc_name,
+            pgcode,
+            str(exc),
+        )
+        if isinstance(exc, AnalyticsUnavailableError):
+            code = "ANALYTICS_UNAVAILABLE"
+            message = "ClickHouse analytics service unavailable; retry shortly"
+        elif isinstance(exc, QueryCanceled):
+            code = "QUERY_TIMEOUT"
+            message = "Telemetry query exceeded execution time limit; retry with narrower time range"
+        elif isinstance(exc, LockNotAvailable):
+            code = "LOCK_TIMEOUT"
+            message = "Database lock acquisition timeout; retry shortly"
+        else:
+            code = "DATABASE_BUSY"
+            message = "Database busy; retry shortly"
+
+        response = api_error(code=code, message=message, status_code=503)
         response.headers["Retry-After"] = "2"
         return response
 

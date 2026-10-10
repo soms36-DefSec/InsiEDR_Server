@@ -143,16 +143,16 @@ class HybridStorage(BaseStorage):
         # Analytics reads are explicitly opt-in: CH is eventually consistent.
         # Never switch databases within a cursor chain or mix rows and counts.
         if self.telemetry_read_backend == 'clickhouse':
-            from psycopg2.pool import PoolError
+            from server.api.errors import AnalyticsUnavailableError
             if not self.ch or not self.ch.is_connected():
-                raise PoolError('ClickHouse analytics is unavailable')
+                raise AnalyticsUnavailableError('ClickHouse analytics is unavailable')
             try:
                 return self.ch.get_telemetry_page(**filters)
             except ValueError:
                 raise
             except Exception as exc:
                 logger.warning('ClickHouse telemetry read failed: %s', exc)
-                raise PoolError('ClickHouse analytics is unavailable') from exc
+                raise AnalyticsUnavailableError('ClickHouse analytics is unavailable') from exc
         return self.pg.get_telemetry_page(**filters)
 
     def get_telemetry_explorer(self, **filters) -> Dict[str, Any]:

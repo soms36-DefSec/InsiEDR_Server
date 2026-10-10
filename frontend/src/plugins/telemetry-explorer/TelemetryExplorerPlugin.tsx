@@ -544,6 +544,8 @@ export const TelemetryExplorerPlugin: React.FC<TelemetryExplorerPluginProps> = (
         resetKey={`${activeCollector}:${debouncedSearch}:${statusFilter}:${timeRange}:${currentPage}:${pageSize}`}
         onSelectLog={(log) => setSelectedLog(log)}
         isLoading={isLoading}
+        error={loadError}
+        onRetry={() => loadLogs(currentPage, pageSize)}
       />
 
       {/* Interactive Pagination Bar */}

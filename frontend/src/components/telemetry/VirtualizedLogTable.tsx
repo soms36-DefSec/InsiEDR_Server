@@ -11,6 +11,8 @@ export interface VirtualizedLogTableProps {
   onSelectLog: (log: TelemetryLog) => void;
   isLoading?: boolean;
   resetKey?: string;
+  error?: string | null;
+  onRetry?: () => void;
 }
 
 const ROW_HEIGHT = 44;
@@ -21,6 +23,8 @@ export const VirtualizedLogTable: React.FC<VirtualizedLogTableProps> = React.mem
   onSelectLog,
   isLoading = false,
   resetKey = '',
+  error = null,
+  onRetry,
 }) => {
   const [viewport, setViewport] = useState<HTMLDivElement | null>(null);
   const [scrollTop, setScrollTop] = useState(0);
@@ -67,6 +71,24 @@ export const VirtualizedLogTable: React.FC<VirtualizedLogTableProps> = React.mem
       <div className="h-96 flex flex-col items-center justify-center text-slate-400 text-xs">
         <span className="w-5 h-5 border-2 border-slate-300 border-t-blue-600 rounded-full animate-spin mb-2" />
         Streaming telemetry logs from backend storage...
+      </div>
+    );
+  }
+
+  if (error && logs.length === 0) {
+    return (
+      <div className="h-64 flex flex-col items-center justify-center text-amber-800 text-xs bg-amber-50/50 rounded-lg border border-dashed border-amber-300 p-6 text-center space-y-3">
+        <div className="font-semibold text-amber-900 text-sm">Failed to load telemetry</div>
+        <p className="max-w-md text-amber-700 font-mono text-[11px]">{error}</p>
+        {onRetry && (
+          <button
+            type="button"
+            onClick={onRetry}
+            className="px-3 py-1.5 bg-white border border-amber-300 rounded-md shadow-2xs text-amber-900 font-medium hover:bg-amber-100 transition-colors cursor-pointer"
+          >
+            Retry Query
+          </button>
+        )}
       </div>
     );
   }

@@ -184,6 +184,8 @@ class ClickHouseStorage:
         settings = {
             "max_execution_time": self.query_timeout,
             "max_memory_usage": self.max_memory_usage,
+            "max_bytes_before_external_group_by": 134217728,
+            "max_bytes_before_external_sort": 134217728,
         }
         if self.collector_schema_version == 2:
             # Route older count/export APIs through the same deduplicated source.
@@ -218,36 +220,38 @@ class ClickHouseStorage:
                 logger.info("ClickHouse schema verified and up to date in '%s'.", self.database)
 
                 # Automatic backfill of historical collector_results into telemetry_events
-                try:
-                    tel_count_res = self._client.query("SELECT count() FROM telemetry_events")
-                    tel_count = tel_count_res.result_rows[0][0] if tel_count_res and tel_count_res.result_rows else 0
-                    cr_count_res = self._client.query("SELECT count() FROM collector_results")
-                    cr_count = cr_count_res.result_rows[0][0] if cr_count_res and cr_count_res.result_rows else 0
+                enable_backfill = os.environ.get("INSIEDR_ENABLE_STARTUP_BACKFILL", "false").lower() in ("1", "true", "yes")
+                if enable_backfill:
+                    try:
+                        tel_count_res = self._client.query("SELECT count() FROM telemetry_events")
+                        tel_count = tel_count_res.result_rows[0][0] if tel_count_res and tel_count_res.result_rows else 0
+                        cr_count_res = self._client.query("SELECT count() FROM collector_results")
+                        cr_count = cr_count_res.result_rows[0][0] if cr_count_res and cr_count_res.result_rows else 0
 
-                    if cr_count > 0 and tel_count < min(cr_count, 100):
-                        logger.info("Backfilling %d historical collector records into telemetry_events...", cr_count)
-                        backfill_sql = (
-                            "INSERT INTO telemetry_events ("
-                            "event_id, payload_id, agent_id, collector_name, timestamp, hostname, username, status, summary_preview, raw_payload_json, tenant_id"
-                            ") "
-                            "SELECT "
-                            "id AS event_id, "
-                            "payload_id, "
-                            "agent_id, "
-                            "collector AS collector_name, "
-                            "collector_collected_at AS timestamp, "
-                            "hostname, "
-                            "'' AS username, "
-                            "status, "
-                            "substring(payload_json, 1, 150) AS summary_preview, "
-                            "payload_json AS raw_payload_json, "
-                            "'default' AS tenant_id "
-                            "FROM collector_results"
-                        )
-                        self._client.command(backfill_sql)
-                        logger.info("Successfully backfilled historical telemetry_events.")
-                except Exception as bf_exc:
-                    logger.warning("Historical telemetry_events backfill skipped or failed: %s", bf_exc)
+                        if cr_count > 0 and tel_count < min(cr_count, 100):
+                            logger.info("Backfilling %d historical collector records into telemetry_events...", cr_count)
+                            backfill_sql = (
+                                "INSERT INTO telemetry_events ("
+                                "event_id, payload_id, agent_id, collector_name, timestamp, hostname, username, status, summary_preview, raw_payload_json, tenant_id"
+                                ") "
+                                "SELECT "
+                                "id AS event_id, "
+                                "payload_id, "
+                                "agent_id, "
+                                "collector AS collector_name, "
+                                "collector_collected_at AS timestamp, "
+                                "hostname, "
+                                "'' AS username, "
+                                "status, "
+                                "substring(payload_json, 1, 150) AS summary_preview, "
+                                "payload_json AS raw_payload_json, "
+                                "'default' AS tenant_id "
+                                "FROM collector_results"
+                            )
+                            self._client.command(backfill_sql)
+                            logger.info("Successfully backfilled historical telemetry_events.")
+                    except Exception as bf_exc:
+                        logger.warning("Historical telemetry_events backfill skipped or failed: %s", bf_exc)
         except Exception as exc:
             logger.error("Failed ensuring ClickHouse schema: %s", exc)
 
