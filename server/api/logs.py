@@ -152,3 +152,17 @@ async def get_telemetry(
         return JSONResponse({"ok": False, "error": "storage method not implemented", "telemetry": []}, status_code=501)
     return {"ok": True, "logs": telemetry, "total": total, "offset": offset, "limit": limit}
 
+
+from server.api.telemetry import (
+    get_telemetry_explorer,
+    get_telemetry_event_detail,
+    get_telemetry_histogram,
+)
+
+router.add_api_route("/telemetry/explorer", get_telemetry_explorer, methods=["GET"])
+router.add_api_route("/v1/telemetry/explorer", get_telemetry_explorer, methods=["GET"])
+router.add_api_route("/telemetry/events/{event_id}", get_telemetry_event_detail, methods=["GET"])
+router.add_api_route("/v1/telemetry/events/{event_id}", get_telemetry_event_detail, methods=["GET"])
+router.add_api_route("/telemetry/histogram", get_telemetry_histogram, methods=["GET"])
+router.add_api_route("/v1/telemetry/histogram", get_telemetry_histogram, methods=["GET"])
+

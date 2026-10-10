@@ -1083,6 +1083,18 @@ class PostgresStorage(BaseStorage):
         from server.storage.telemetry_queries import telemetry_page
         return telemetry_page(self, **filters)
 
+    def get_telemetry_explorer(self, **filters) -> dict[str, Any]:
+        from server.storage.telemetry_queries import telemetry_explorer
+        return telemetry_explorer(self, **filters)
+
+    def get_telemetry_event_detail(self, event_id: str) -> dict[str, Any] | None:
+        from server.storage.telemetry_queries import telemetry_event_detail
+        return telemetry_event_detail(self, event_id)
+
+    def get_telemetry_histogram(self, **filters) -> dict[str, Any]:
+        from server.storage.telemetry_queries import telemetry_histogram
+        return telemetry_histogram(self, **filters)
+
     def get_distinct_collectors(self) -> list[str]:
         """Return distinct collector names present in collector_results merged with known collectors."""
         default_collectors = [

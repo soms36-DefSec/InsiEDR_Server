@@ -62,14 +62,14 @@ def _stream_csv_logs(storage, filters: dict[str, Any], limit: int) -> Generator[
                 payload_str = str(row["encrypted_envelope_json"])
 
             writer.writerow([
-                row.get("id") or row.get("payload_id", ""),
-                _format_timestamp(row.get("collected_at") or row.get("payload_collected_at") or row.get("received_at")),
+                row.get("event_id") or row.get("id") or row.get("payload_id", ""),
+                _format_timestamp(row.get("timestamp") or row.get("collected_at") or row.get("payload_collected_at") or row.get("received_at")),
                 row.get("agent_id", ""),
                 row.get("hostname", ""),
                 row.get("username", ""),
-                row.get("collector", ""),
+                row.get("collector_name") or row.get("collector", ""),
                 row.get("status") or row.get("validation_status", ""),
-                payload_str,
+                payload_str or str(row.get("summary_preview") or ""),
             ])
 
         yield buffer.getvalue()
@@ -96,10 +96,16 @@ def _stream_json_logs(storage, filters: dict[str, Any], limit: int) -> Generator
 
         for row in rows:
             # Symmetrically guarantee canonical aliases for consumers
-            if "id" not in row and "payload_id" in row:
+            if "id" not in row and "event_id" in row:
+                row["id"] = row["event_id"]
+            elif "id" not in row and "payload_id" in row:
                 row["id"] = row["payload_id"]
-            if "collected_at" not in row and "payload_collected_at" in row:
+            if "collected_at" not in row and "timestamp" in row:
+                row["collected_at"] = row["timestamp"]
+            elif "collected_at" not in row and "payload_collected_at" in row:
                 row["collected_at"] = row["payload_collected_at"]
+            if "collector" not in row and "collector_name" in row:
+                row["collector"] = row["collector_name"]
             if "status" not in row and "validation_status" in row:
                 row["status"] = row["validation_status"]
             yield json.dumps(row, default=str) + "\n"
@@ -207,6 +213,9 @@ async def export_logs(
     username: str | None = None,
     collector: str | None = None,
     status: str | None = None,
+    search: str | None = None,
+    start_time: str | None = None,
+    end_time: str | None = None,
     storage=Depends(get_storage),
     operator: OperatorPrincipal = Depends(require_operator("operator:read")),
 ):
@@ -231,6 +240,9 @@ async def export_logs(
             "username": username,
             "collector": collector,
             "status": status,
+            "search": search,
+            "start_time": start_time,
+            "end_time": end_time,
         }.items() if v
     }
 

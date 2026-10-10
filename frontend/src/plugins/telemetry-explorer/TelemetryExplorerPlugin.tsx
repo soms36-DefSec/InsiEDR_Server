@@ -22,11 +22,12 @@ import { subscribeTelemetry } from '../../services/telemetryStream';
 import type { PluginProps } from '../registry';
 import { VirtualizedLogTable } from '../../components/telemetry/VirtualizedLogTable';
 import { LogInspectorDrawer } from '../../components/telemetry/LogInspectorDrawer';
+import { TelemetryHistogram } from '../../components/telemetry/TelemetryHistogram';
 import { ExportTrainingDatasetModal } from '../../components/telemetry/ExportTrainingDatasetModal';
 import { CollectorDatasetExportModal } from '../../components/telemetry/CollectorDatasetExportModal';
 import { Button } from '../../components/ui/Button';
 import type { TelemetryLog } from '../../types/telemetry';
-import { fetchTelemetry, fetchAvailableCollectors, exportTelemetryCSV, exportTelemetryJSON, triggerServerExport } from '../../services/api';
+import { fetchTelemetry, fetchTelemetryExplorer, fetchAvailableCollectors, exportTelemetryCSV, exportTelemetryJSON, triggerServerExport } from '../../services/api';
 import {
   Search,
   X,
@@ -79,7 +80,11 @@ const formatCollectorLabel = (key: string): string => {
     .replace(/\b\w/g, (c) => c.toUpperCase());
 };
 
-export const TelemetryExplorerPlugin: React.FC<PluginProps> = ({ context }) => {
+export interface TelemetryExplorerPluginProps extends PluginProps {
+  useExplorerApi?: boolean;
+}
+
+export const TelemetryExplorerPlugin: React.FC<TelemetryExplorerPluginProps> = ({ context, useExplorerApi = false }) => {
   const [logs, setLogs] = useState<TelemetryLog[]>(context.logs || []);
   const [selectedLog, setSelectedLog] = useState<TelemetryLog | null>(null);
   const [showTrainingModal, setShowTrainingModal] = useState<boolean>(false);
@@ -100,6 +105,7 @@ export const TelemetryExplorerPlugin: React.FC<PluginProps> = ({ context }) => {
   const pageCursors = useRef<(string | undefined)[]>([undefined]);
   const queryStart = useRef<string | undefined>(undefined);
   const [source, setSource] = useState('postgres');
+  const [isExportingStream, setIsExportingStream] = useState<boolean>(false);
 
   useEffect(() => {
     fetchAvailableCollectors()
@@ -135,23 +141,47 @@ export const TelemetryExplorerPlugin: React.FC<PluginProps> = ({ context }) => {
         queryStart.current = periods[timeRange] ? new Date(Date.now() - periods[timeRange] * 1000).toISOString() : undefined;
       }
       try {
-        const response = await fetchTelemetry(currentSize, 0,
-          activeCollector === 'all' ? null : activeCollector, null, {
-            search: debouncedSearch || undefined,
-            status: statusFilter === 'all' ? undefined : statusFilter,
-            start_time: queryStart.current,
-            cursor: pageCursors.current[pageToLoad - 1],
-            include_total: false,
-            search_scope: searchScope,
-            signal: abort.signal,
-          });
-        if (abort.signal.aborted || request.current !== abort) return;
-        const fetched = response.logs || [];
+        let fetched: TelemetryLog[] = [];
+        let nextCursorVal: string | undefined = undefined;
+        let hasMoreVal = false;
+        let sourceVal = 'postgres';
+
+        if (useExplorerApi) {
+          const response = await fetchTelemetryExplorer(currentSize, pageCursors.current[pageToLoad - 1],
+            activeCollector === 'all' ? null : activeCollector, null, {
+              search: debouncedSearch || undefined,
+              status: statusFilter === 'all' ? undefined : statusFilter,
+              start_time: queryStart.current,
+              signal: abort.signal,
+            });
+          if (abort.signal.aborted || request.current !== abort) return;
+          fetched = (response.events || response.logs || []) as TelemetryLog[];
+          nextCursorVal = response.next_cursor || undefined;
+          hasMoreVal = Boolean(response.has_more && response.next_cursor);
+          sourceVal = response.source || 'clickhouse';
+        } else {
+          const response = await fetchTelemetry(currentSize, 0,
+            activeCollector === 'all' ? null : activeCollector, null, {
+              search: debouncedSearch || undefined,
+              status: statusFilter === 'all' ? undefined : statusFilter,
+              start_time: queryStart.current,
+              cursor: pageCursors.current[pageToLoad - 1],
+              include_total: false,
+              search_scope: searchScope,
+              signal: abort.signal,
+            });
+          if (abort.signal.aborted || request.current !== abort) return;
+          fetched = response.logs || [];
+          nextCursorVal = response.next_cursor || undefined;
+          hasMoreVal = Boolean(response.has_more && response.next_cursor);
+          sourceVal = response.source || 'postgres';
+        }
+
         setLogs(fetched);
         setCurrentPage(pageToLoad);
-        pageCursors.current[pageToLoad] = response.next_cursor || undefined;
-        setHasMore(Boolean(response.has_more && response.next_cursor));
-        setSource(response.source || 'postgres');
+        pageCursors.current[pageToLoad] = nextCursorVal;
+        setHasMore(hasMoreVal);
+        setSource(sourceVal);
         setLoadError(null);
       } catch (error) {
         if (!abort.signal.aborted) setLoadError(error instanceof Error ? error.message : 'Could not load telemetry');
@@ -162,7 +192,7 @@ export const TelemetryExplorerPlugin: React.FC<PluginProps> = ({ context }) => {
           if (queuedRefresh.current) { queuedRefresh.current = false; scheduleRefresh.current(); }
         }
       }
-    }, [activeCollector, debouncedSearch, statusFilter, timeRange, pageSize, searchScope]
+    }, [activeCollector, debouncedSearch, statusFilter, timeRange, pageSize, searchScope, useExplorerApi]
   );
 
   useEffect(() => {
@@ -250,6 +280,22 @@ export const TelemetryExplorerPlugin: React.FC<PluginProps> = ({ context }) => {
     setTimeRange('all');
   };
 
+  const handleStreamAllExport = async () => {
+    try {
+      setIsExportingStream(true);
+      await triggerServerExport('logs', 'csv', {
+        collector: activeCollector === 'all' ? undefined : activeCollector,
+        status: statusFilter === 'all' ? undefined : statusFilter,
+        search: debouncedSearch || undefined,
+        start_time: queryStart.current,
+      });
+    } catch (err) {
+      console.error('Streaming export failed:', err);
+    } finally {
+      setIsExportingStream(false);
+    }
+  };
+
   const hasActiveFilters =
     Boolean(searchTerm.trim()) ||
     activeCollector !== 'all' ||
@@ -264,6 +310,14 @@ export const TelemetryExplorerPlugin: React.FC<PluginProps> = ({ context }) => {
           <button type="button" onClick={() => loadLogs(currentPage, pageSize)} className="ml-3 underline">Retry</button>
         </div>
       )}
+
+      {/* Server-Side Event Frequency Histogram (ClickHouse Aggregation) */}
+      <TelemetryHistogram
+        timeRange={timeRange}
+        activeCollector={activeCollector}
+        statusFilter={statusFilter}
+      />
+
       {/* Comprehensive Filter Toolbar */}
       <div className="bg-white border border-slate-200 rounded-lg p-5 shadow-[0_1px_3px_rgba(0,0,0,0.06)] space-y-4">
         <div className="flex flex-wrap items-center justify-between gap-3">
@@ -373,11 +427,12 @@ export const TelemetryExplorerPlugin: React.FC<PluginProps> = ({ context }) => {
             <Button
               variant="primary"
               size="sm"
-              onClick={() => triggerServerExport('logs', 'csv', { collector: activeCollector })}
-              icon={<Download className="w-3.5 h-3.5" />}
-              title="Stream full server telemetry dataset (CSV)"
+              onClick={handleStreamAllExport}
+              disabled={isExportingStream}
+              icon={<Download className={`w-3.5 h-3.5 ${isExportingStream ? 'animate-bounce' : ''}`} />}
+              title="Stream full server telemetry dataset matching active filters (CSV)"
             >
-              Stream All
+              {isExportingStream ? 'Streaming...' : 'Stream All'}
             </Button>
             <Button
               variant="secondary"

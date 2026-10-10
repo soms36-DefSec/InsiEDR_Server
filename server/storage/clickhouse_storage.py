@@ -211,7 +211,8 @@ class ClickHouseStorage:
                 # CREATE IF NOT EXISTS does not update settings on existing tables.
                 # Bounded block dedup complements, but does not replace, read dedup.
                 for table in ('raw_payloads', 'collector_results', 'collector_events_v2', 'normalized_features',
-                              'risk_events', 'model_outputs', 'anomalies'):
+                              'risk_events', 'model_outputs', 'anomalies',
+                              'telemetry_events', 'process_events', 'network_events'):
                     self._client.command(
                         f'ALTER TABLE {table} MODIFY SETTING non_replicated_deduplication_window = 10000')
                 logger.info("ClickHouse schema verified and up to date in '%s'.", self.database)
@@ -274,7 +275,11 @@ class ClickHouseStorage:
                     self.add(table, row)
 
         sink = Sink()
-        allowed = {'collector_results', 'normalized_features', 'risk_events', 'model_outputs', 'anomalies'}
+        allowed = {
+            'collector_results', 'collector_events_v2', 'normalized_features',
+            'risk_events', 'model_outputs', 'anomalies',
+            'telemetry_events', 'process_events', 'network_events',
+        }
         for record in records:
             before_insert()
             value = record['record_json']
@@ -318,6 +323,24 @@ class ClickHouseStorage:
             raise RuntimeError('ClickHouse is unavailable')
         return telemetry_page(self, **filters)
 
+    def get_telemetry_explorer(self, **filters) -> Dict[str, Any]:
+        from server.storage.clickhouse_telemetry_queries import telemetry_explorer
+        if not self.is_connected():
+            raise RuntimeError('ClickHouse is unavailable')
+        return telemetry_explorer(self, **filters)
+
+    def get_telemetry_event_detail(self, event_id: str) -> Optional[Dict[str, Any]]:
+        from server.storage.clickhouse_telemetry_queries import telemetry_event_detail
+        if not self.is_connected():
+            raise RuntimeError('ClickHouse is unavailable')
+        return telemetry_event_detail(self, event_id)
+
+    def get_telemetry_histogram(self, **filters) -> Dict[str, Any]:
+        from server.storage.clickhouse_telemetry_queries import telemetry_histogram
+        if not self.is_connected():
+            raise RuntimeError('ClickHouse is unavailable')
+        return telemetry_histogram(self, **filters)
+
     # --------------------------------------------------------------------------
     # Ingest & Storage APIs (Queued via Batcher)
     # --------------------------------------------------------------------------
@@ -359,6 +382,11 @@ class ClickHouseStorage:
         collector_rows = []
         feature_rows = []
         risk_rows = []
+        telemetry_event_rows = []
+        process_event_rows = []
+        network_event_rows = []
+
+        from server.storage.clickhouse_telemetry_queries import extract_summary_preview
 
         for cr in decrypted_payload.get("collectors", []):
             if not isinstance(cr, dict):
@@ -368,25 +396,83 @@ class ClickHouseStorage:
             status = str(cr.get("status") or "unknown")
             error = cr.get("error") if isinstance(cr.get("error"), dict) else {}
             source_quality = self._derive_source_quality(cr)
+            hostname_val = str(cr.get("hostname") or decrypted_payload.get("hostname") or "")
+            username_val = str(decrypted_payload.get("username") or "")
+            payload_data = cr.get("payload") or {}
 
             col_id = str(uuid.uuid5(uuid.NAMESPACE_OID, f"{payload_id}:col:{collector_name}"))
+            preview = extract_summary_preview(collector_name, payload_data)
+
             col_row = {
                 "id": col_id,
                 "payload_id": str(payload_id),
                 "agent_id": str(agent_id or ""),
                 "collector": collector_name,
                 "collector_collected_at": col_collected_dt,
-                "hostname": str(cr.get("hostname") or decrypted_payload.get("hostname") or ""),
+                "hostname": hostname_val,
                 "status": status,
-                "payload_json": _json_str(cr.get("payload") or {}),
+                "payload_json": _json_str(payload_data),
                 "error_type": error.get("type"),
                 "error_message": error.get("message"),
                 "source_quality": source_quality,
             }
             if getattr(self, "collector_schema_version", 1) == 2:
-                col_row.update(username=str(decrypted_payload.get('username') or ''),
+                col_row.update(username=username_val,
                                received_at=now_dt, version=int(now_dt.timestamp() * 1000000))
             collector_rows.append(col_row)
+
+            # High-throughput flattened telemetry_events row with sparse index layout
+            tel_row = {
+                "event_id": col_id,
+                "payload_id": str(payload_id),
+                "agent_id": str(agent_id or ""),
+                "collector_name": collector_name,
+                "timestamp": col_collected_dt,
+                "hostname": hostname_val,
+                "username": username_val,
+                "status": status,
+                "summary_preview": preview,
+                "raw_payload_json": _json_str(payload_data),
+                "tenant_id": "default",
+            }
+            telemetry_event_rows.append(tel_row)
+
+            if "process" in collector_name.lower() and isinstance(payload_data, dict):
+                process_event_rows.append({
+                    "event_id": col_id,
+                    "payload_id": str(payload_id),
+                    "agent_id": str(agent_id or ""),
+                    "collector_name": collector_name,
+                    "timestamp": col_collected_dt,
+                    "hostname": hostname_val,
+                    "username": username_val,
+                    "status": status,
+                    "summary_preview": preview,
+                    "process_name": str(payload_data.get("process_name") or payload_data.get("name") or ""),
+                    "process_pid": int(payload_data.get("pid") or payload_data.get("process_id") or 0),
+                    "parent_pid": int(payload_data.get("parent_pid") or payload_data.get("ppid") or 0),
+                    "command_line": str(payload_data.get("command_line") or payload_data.get("cmdline") or ""),
+                    "raw_payload_json": _json_str(payload_data),
+                    "tenant_id": "default",
+                })
+            elif ("network" in collector_name.lower() or "http" in collector_name.lower()) and isinstance(payload_data, dict):
+                network_event_rows.append({
+                    "event_id": col_id,
+                    "payload_id": str(payload_id),
+                    "agent_id": str(agent_id or ""),
+                    "collector_name": collector_name,
+                    "timestamp": col_collected_dt,
+                    "hostname": hostname_val,
+                    "username": username_val,
+                    "status": status,
+                    "summary_preview": preview,
+                    "dest_ip": str(payload_data.get("dest_ip") or payload_data.get("remote_ip") or payload_data.get("host") or ""),
+                    "dest_port": int(payload_data.get("dest_port") or payload_data.get("port") or 0),
+                    "proto": str(payload_data.get("proto") or "TCP"),
+                    "domain": str(payload_data.get("domain") or ""),
+                    "raw_payload_json": _json_str(payload_data),
+                    "tenant_id": "default",
+                })
 
             # Check for tamper alert
             if collector_name == "tamper" or status == "critical":
@@ -395,7 +481,7 @@ class ClickHouseStorage:
                     "id": risk_id,
                     "payload_id": str(payload_id),
                     "agent_id": str(agent_id or ""),
-                    "username": str(decrypted_payload.get("username") or ""),
+                    "username": username_val,
                     "risk_score": 100.0,
                     "risk_level": "critical",
                     "correlated_signals_json": _json_str({"collector": collector_name, "hostname": cr.get("hostname")}),
@@ -404,7 +490,6 @@ class ClickHouseStorage:
                 })
 
             # Extract features
-            payload_data = cr.get("payload")
             if isinstance(payload_data, dict):
                 for feat_name, feat_val in payload_data.items():
                     if feat_val is None:
@@ -414,10 +499,10 @@ class ClickHouseStorage:
                         "id": feat_id,
                         "payload_id": str(payload_id),
                         "agent_id": str(agent_id or ""),
-                        "username": str(decrypted_payload.get("username") or ""),
-                        "hostname": str(decrypted_payload.get("hostname") or cr.get("hostname") or ""),
+                        "username": username_val,
+                        "hostname": hostname_val,
                         "collector": collector_name,
-                        "entity_user": str(decrypted_payload.get("username") or ""),
+                        "entity_user": username_val,
                         "feature_name": str(feat_name),
                         "feature_value_numeric": float(feat_val) if isinstance(feat_val, (int, float, bool)) else None,
                         "feature_value_text": str(feat_val) if isinstance(feat_val, str) else None,
@@ -431,6 +516,12 @@ class ClickHouseStorage:
 
         if collector_rows:
             sink.add_many('collector_events_v2' if self.collector_schema_version == 2 else 'collector_results', collector_rows)
+        if telemetry_event_rows:
+            sink.add_many('telemetry_events', telemetry_event_rows)
+        if process_event_rows:
+            sink.add_many('process_events', process_event_rows)
+        if network_event_rows:
+            sink.add_many('network_events', network_event_rows)
         if feature_rows:
             sink.add_many("normalized_features", feature_rows)
         if risk_rows:

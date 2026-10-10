@@ -24,6 +24,9 @@ import type {
   UserPredictionResponse,
   UserRiskScoresResponse,
   TelemetryResponse,
+  TelemetryExplorerResponse,
+  TelemetryHistogramResponse,
+  TelemetryEventDetailResponse,
   TelemetryLog,
   EndpointRow,
   TamperAlertsResponse,
@@ -130,6 +133,54 @@ export async function fetchTelemetry(
 }
 
 /**
+ * Queries lightweight projected telemetry logs via the CQRS Split-View engine.
+ * Maps to `GET /api/v1/telemetry/explorer`.
+ */
+export async function fetchTelemetryExplorer(
+  limit = 50,
+  cursor?: string | null,
+  collector?: string | null,
+  username?: string | null,
+  filters: { search?: string; status?: string; start_time?: string; end_time?: string; agent_id?: string; signal?: AbortSignal } = {},
+): Promise<TelemetryExplorerResponse> {
+  const params = new URLSearchParams({ limit: String(limit) });
+  if (cursor) params.set('cursor', cursor);
+  if (collector && collector !== 'all') params.set('collector', collector);
+  if (username) params.set('username', username);
+  if (filters.search) params.set('search', filters.search);
+  if (filters.status && filters.status !== 'all') params.set('status', filters.status);
+  if (filters.start_time) params.set('start_time', filters.start_time);
+  if (filters.end_time) params.set('end_time', filters.end_time);
+  if (filters.agent_id) params.set('agent_id', filters.agent_id);
+
+  return fetchApi<TelemetryExplorerResponse>(`/api/v1/telemetry/explorer?${params.toString()}`, { signal: filters.signal });
+}
+
+/**
+ * On-demand deep forensic event payload inspection drawer fetcher.
+ * Maps to `GET /api/v1/telemetry/events/{eventId}`.
+ */
+export async function fetchTelemetryEventDetail(eventId: string | number): Promise<TelemetryEventDetailResponse> {
+  return fetchApi<TelemetryEventDetailResponse>(`/api/v1/telemetry/events/${encodeURIComponent(String(eventId))}`);
+}
+
+/**
+ * Server-side event frequency histogram aggregation query.
+ * Maps to `GET /api/v1/telemetry/histogram`.
+ */
+export async function fetchTelemetryHistogram(
+  timeRange = '1h',
+  filters: { collector?: string | null; status?: string | null; agent_id?: string | null; signal?: AbortSignal } = {},
+): Promise<TelemetryHistogramResponse> {
+  const params = new URLSearchParams({ time_range: timeRange });
+  if (filters.collector && filters.collector !== 'all') params.set('collector', filters.collector);
+  if (filters.status && filters.status !== 'all') params.set('status', filters.status);
+  if (filters.agent_id) params.set('agent_id', filters.agent_id);
+
+  return fetchApi<TelemetryHistogramResponse>(`/api/v1/telemetry/histogram?${params.toString()}`, { signal: filters.signal });
+}
+
+/**
  * Triggers a memory-efficient chunked streaming data export directly from the FastAPI server.
  * Opens the download stream in a new browser context.
  *
@@ -137,18 +188,56 @@ export async function fetchTelemetry(
  * @param format 'csv' or 'json' / 'ndjson'.
  * @param filters Optional filtering parameters.
  */
-export function triggerServerExport(
+export interface ServerExportFilters {
+  collector?: string | null;
+  username?: string | null;
+  status?: string | null;
+  search?: string | null;
+  start_time?: string | null;
+  end_time?: string | null;
+  agent_id?: string | null;
+  limit?: number;
+}
+
+export async function triggerServerExport(
   type: 'logs' | 'threats',
   format: 'csv' | 'json' = 'csv',
-  filters?: { collector?: string | null; username?: string | null; limit?: number }
-): void {
+  filters?: ServerExportFilters
+): Promise<void> {
   const params = new URLSearchParams();
   params.set('format', format);
   if (filters?.limit) params.set('limit', String(filters.limit));
   if (filters?.collector && filters.collector !== 'all') params.set('collector', filters.collector);
   if (filters?.username) params.set('username', filters.username);
+  if (filters?.status && filters.status !== 'all') params.set('status', filters.status);
+  if (filters?.search) params.set('search', filters.search);
+  if (filters?.start_time) params.set('start_time', filters.start_time);
+  if (filters?.end_time) params.set('end_time', filters.end_time);
+  if (filters?.agent_id) params.set('agent_id', filters.agent_id);
+
   const url = `/api/v1/export/${type}?${params.toString()}`;
-  window.open(url, '_blank');
+  try {
+    const res = await fetch(url);
+    if (!res.ok) {
+      let msg = res.statusText;
+      try {
+        const errJson = await res.json();
+        if (errJson?.error?.message || errJson?.error) {
+          msg = errJson.error.message || errJson.error;
+        }
+      } catch {
+        // fallback
+      }
+      throw new Error(`Export failed [${res.status}]: ${msg}`);
+    }
+    const blob = await res.blob();
+    const ext = format === 'json' ? 'jsonl' : 'csv';
+    const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+    downloadBlob(blob, `insiedr_${type}_export_${timestamp}.${ext}`);
+  } catch (err) {
+    console.warn('Authenticated blob export encountered an error, falling back to direct stream:', err);
+    window.open(url, '_blank');
+  }
 }
 
 /**
@@ -181,6 +270,10 @@ export function triggerTrainingDatasetExport(options: {
  */
 export function downloadFile(content: string, filename: string, mimeType = 'text/csv;charset=utf-8;'): void {
   const blob = new Blob([content], { type: mimeType });
+  downloadBlob(blob, filename);
+}
+
+export function downloadBlob(blob: Blob, filename: string): void {
   const url = URL.createObjectURL(blob);
   const a = document.createElement('a');
   a.href = url;
@@ -191,28 +284,40 @@ export function downloadFile(content: string, filename: string, mimeType = 'text
   URL.revokeObjectURL(url);
 }
 
+function escapeCsvCell(val: unknown): string {
+  if (val === null || val === undefined) return '""';
+  const str = String(val);
+  return `"${str.replace(/"/g, '""')}"`;
+}
+
 /**
  * Generates and downloads a CSV export of active fleet endpoints and their risk postures.
  */
 export function exportFleetRiskCSV(endpoints: EndpointRow[]): void {
   let csv = 'Hostname,Username,Risk_Score,Risk_Level,Status,Last_Seen\n';
   endpoints.forEach((ep) => {
-    csv += `"${ep.hostname || ''}","${ep.user || ''}",${ep.score.toFixed(2)},"${ep.level}","${
-      ep.isOnline ? 'ONLINE' : 'OFFLINE'
-    }","${ep.lastSeen || ''}"\n`;
+    csv += `${escapeCsvCell(ep.hostname)},${escapeCsvCell(ep.user)},${ep.score.toFixed(2)},${escapeCsvCell(ep.level)},${
+      escapeCsvCell(ep.isOnline ? 'ONLINE' : 'OFFLINE')
+    },${escapeCsvCell(ep.lastSeen || '')}\n`;
   });
   downloadFile(csv, `insiedr_fleet_risk_${Date.now()}.csv`);
 }
 
 /**
- * Generates and downloads a CSV export of visible telemetry logs.
+ * Generates and downloads an RFC-4180 compliant CSV export of visible telemetry logs with complete forensic fields.
  */
 export function exportTelemetryCSV(logs: TelemetryLog[]): void {
-  let csv = 'Timestamp,Hostname,Username,Collector,Status\n';
+  let csv = 'Event_ID,Timestamp,Agent_ID,Hostname,Username,Collector,Status,Summary_Preview\n';
   logs.forEach((log) => {
-    csv += `"${log.collected_at || ''}","${log.hostname || ''}","${log.username || ''}","${log.collector || ''}","${
-      log.status || ''
-    }"\n`;
+    const eid = log.event_id || log.id || '';
+    const ts = log.timestamp || log.collected_at || '';
+    const aid = log.agent_id || '';
+    const host = log.hostname || '';
+    const user = log.username || '';
+    const col = log.collector_name || log.collector || '';
+    const stat = log.status || '';
+    const summary = log.summary_preview || '';
+    csv += `${escapeCsvCell(eid)},${escapeCsvCell(ts)},${escapeCsvCell(aid)},${escapeCsvCell(host)},${escapeCsvCell(user)},${escapeCsvCell(col)},${escapeCsvCell(stat)},${escapeCsvCell(summary)}\n`;
   });
   downloadFile(csv, `insiedr_telemetry_logs_${Date.now()}.csv`);
 }

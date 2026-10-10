@@ -183,3 +183,58 @@ def test_hybrid_storage_fallback_when_clickhouse_empty():
     # When ClickHouse returns empty, it falls back to PG logs
     logs = hybrid.list_logs(limit=10)
     assert logs == [{"payload_id": "pg-log-1"}]
+
+
+def test_hybrid_storage_telemetry_explorer_routing():
+    pg = MagicMock()
+    ch = MagicMock()
+    pg.get_telemetry_explorer.return_value = {"events": [{"event_id": "pg-1"}]}
+    ch.get_telemetry_explorer.return_value = {"events": [{"event_id": "ch-1"}]}
+    ch.is_connected.return_value = True
+
+    # 1. When ClickHouse connected, routes explorer to ClickHouse
+    hybrid = HybridStorage(postgres_storage=pg, clickhouse_storage=ch)
+    res = hybrid.get_telemetry_explorer(limit=50)
+    assert res == {"events": [{"event_id": "ch-1"}]}
+    ch.get_telemetry_explorer.assert_called_once_with(limit=50)
+    pg.get_telemetry_explorer.assert_not_called()
+
+    # 2. When ClickHouse disconnected, falls back to PG
+    ch.reset_mock()
+    pg.reset_mock()
+    ch.is_connected.return_value = False
+    res = hybrid.get_telemetry_explorer(limit=50)
+    assert res == {"events": [{"event_id": "pg-1"}]}
+    pg.get_telemetry_explorer.assert_called_once_with(limit=50)
+    ch.get_telemetry_explorer.assert_not_called()
+
+
+def test_hybrid_storage_telemetry_detail_and_histogram_routing():
+    pg = MagicMock()
+    ch = MagicMock()
+    pg.get_telemetry_event_detail.return_value = {"event_id": "pg-detail"}
+    ch.get_telemetry_event_detail.return_value = {"event_id": "ch-detail"}
+    pg.get_telemetry_histogram.return_value = {"total_events": 10}
+    ch.get_telemetry_histogram.return_value = {"total_events": 100}
+    ch.is_connected.return_value = True
+
+    # Connected: Routes to ClickHouse
+    hybrid = HybridStorage(postgres_storage=pg, clickhouse_storage=ch)
+    assert hybrid.get_telemetry_event_detail("evt-1") == {"event_id": "ch-detail"}
+    assert hybrid.get_telemetry_histogram(time_range="1h") == {"total_events": 100}
+    ch.get_telemetry_event_detail.assert_called_once_with("evt-1")
+    ch.get_telemetry_histogram.assert_called_once_with(time_range="1h")
+    pg.get_telemetry_event_detail.assert_not_called()
+    pg.get_telemetry_histogram.assert_not_called()
+
+    # Disconnected: Falls back to Postgres
+    ch.reset_mock()
+    pg.reset_mock()
+    ch.is_connected.return_value = False
+    assert hybrid.get_telemetry_event_detail("evt-1") == {"event_id": "pg-detail"}
+    assert hybrid.get_telemetry_histogram(time_range="1h") == {"total_events": 10}
+    pg.get_telemetry_event_detail.assert_called_once_with("evt-1")
+    pg.get_telemetry_histogram.assert_called_once_with(time_range="1h")
+    ch.get_telemetry_event_detail.assert_not_called()
+    ch.get_telemetry_histogram.assert_not_called()
+

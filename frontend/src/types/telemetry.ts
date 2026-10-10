@@ -235,25 +235,79 @@ export interface UserRiskScoresResponse {
  */
 export interface TelemetryLog {
   id?: number | string;
+  event_id?: string;
   collected_at: string;
+  timestamp?: string;
   agent_id?: string;
   hostname: string;
   username: string;
   collector: string;
+  collector_name?: string;
   status: 'success' | 'warning' | 'error' | string;
+  summary_preview?: string;
   payload?: Record<string, unknown> | string;
   payload_json?: string;
+  payload_id?: string;
+  features?: Record<string, unknown>;
+  risk?: Record<string, unknown>;
 }
 
 export interface TelemetryResponse {
   ok: boolean;
   logs: TelemetryLog[];
+  events?: TelemetryLog[];
   total?: number | null;
   has_more?: boolean;
   next_cursor?: string | null;
   source?: 'postgres' | 'clickhouse';
   offset?: number;
   limit?: number;
+  error?: string;
+}
+
+export interface TelemetryExplorerEvent {
+  event_id: string;
+  id?: string;
+  timestamp: string;
+  collected_at?: string;
+  agent_id?: string;
+  collector_name: string;
+  collector?: string;
+  hostname?: string;
+  username?: string;
+  status: string;
+  summary_preview: string;
+  payload?: Record<string, unknown> | string;
+}
+
+export interface TelemetryExplorerResponse {
+  ok: boolean;
+  events: TelemetryExplorerEvent[];
+  logs?: TelemetryExplorerEvent[];
+  next_cursor?: string | null;
+  has_more?: boolean;
+  source?: 'postgres' | 'clickhouse';
+  limit?: number;
+  error?: string;
+}
+
+export interface TelemetryHistogramBucket {
+  timestamp: string;
+  count: number;
+}
+
+export interface TelemetryHistogramResponse {
+  ok: boolean;
+  time_range: string;
+  interval: string;
+  total_events: number;
+  histogram: TelemetryHistogramBucket[];
+  error?: string;
+}
+
+export interface TelemetryEventDetailResponse {
+  ok: boolean;
+  event?: TelemetryLog;
   error?: string;
 }
 

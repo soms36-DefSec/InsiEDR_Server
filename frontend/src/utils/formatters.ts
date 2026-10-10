@@ -130,6 +130,7 @@ function formatPreviewValue(val: unknown): string {
  * Safely unwraps nested agent envelope structures without throwing on malformed JSON.
  */
 export function extractLogPreview(log: TelemetryLog): string {
+  if (log.summary_preview) return log.summary_preview;
   if (!log.payload) return 'Heartbeat telemetry';
   try {
     let p: Record<string, unknown> =

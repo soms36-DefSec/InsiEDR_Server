@@ -144,3 +144,65 @@ CREATE TABLE IF NOT EXISTS anomalies (
 PARTITION BY toYYYYMM(created_at)
 ORDER BY (created_at, agent_id, id)
 TTL created_at + INTERVAL 365 DAY;
+
+-- 7. Telemetry Events: High-throughput flattened telemetry logs with sparse primary index
+CREATE TABLE IF NOT EXISTS telemetry_events (
+    event_id                UUID DEFAULT generateUUIDv4(),
+    payload_id              String,
+    agent_id                String,
+    collector_name          LowCardinality(String),
+    timestamp               DateTime64(3, 'UTC'),
+    hostname                LowCardinality(String),
+    username                LowCardinality(String),
+    status                  LowCardinality(String),
+    summary_preview         String,
+    raw_payload_json        String CODEC(ZSTD(1)),
+    tenant_id               LowCardinality(String) DEFAULT 'default'
+) ENGINE = ReplacingMergeTree()
+PARTITION BY toYYYYMM(timestamp)
+ORDER BY (agent_id, collector_name, toUnixTimestamp64Milli(timestamp), event_id)
+TTL timestamp + INTERVAL 90 DAY;
+
+-- 8. Process Events: Dedicated process sensor telemetry
+CREATE TABLE IF NOT EXISTS process_events (
+    event_id                UUID DEFAULT generateUUIDv4(),
+    payload_id              String,
+    agent_id                String,
+    collector_name          LowCardinality(String) DEFAULT 'process',
+    timestamp               DateTime64(3, 'UTC'),
+    hostname                LowCardinality(String),
+    username                LowCardinality(String),
+    status                  LowCardinality(String),
+    summary_preview         String,
+    process_name            String,
+    process_pid             UInt32 DEFAULT 0,
+    parent_pid              UInt32 DEFAULT 0,
+    command_line            String,
+    raw_payload_json        String CODEC(ZSTD(1)),
+    tenant_id               LowCardinality(String) DEFAULT 'default'
+) ENGINE = ReplacingMergeTree()
+PARTITION BY toYYYYMM(timestamp)
+ORDER BY (agent_id, collector_name, toUnixTimestamp64Milli(timestamp), event_id)
+TTL timestamp + INTERVAL 90 DAY;
+
+-- 9. Network Events: Dedicated network sensor telemetry
+CREATE TABLE IF NOT EXISTS network_events (
+    event_id                UUID DEFAULT generateUUIDv4(),
+    payload_id              String,
+    agent_id                String,
+    collector_name          LowCardinality(String) DEFAULT 'network',
+    timestamp               DateTime64(3, 'UTC'),
+    hostname                LowCardinality(String),
+    username                LowCardinality(String),
+    status                  LowCardinality(String),
+    summary_preview         String,
+    dest_ip                 String,
+    dest_port               UInt16 DEFAULT 0,
+    proto                   LowCardinality(String) DEFAULT 'TCP',
+    domain                  String,
+    raw_payload_json        String CODEC(ZSTD(1)),
+    tenant_id               LowCardinality(String) DEFAULT 'default'
+) ENGINE = ReplacingMergeTree()
+PARTITION BY toYYYYMM(timestamp)
+ORDER BY (agent_id, collector_name, toUnixTimestamp64Milli(timestamp), event_id)
+TTL timestamp + INTERVAL 90 DAY;

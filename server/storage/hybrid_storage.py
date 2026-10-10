@@ -155,6 +155,40 @@ class HybridStorage(BaseStorage):
                 raise PoolError('ClickHouse analytics is unavailable') from exc
         return self.pg.get_telemetry_page(**filters)
 
+    def get_telemetry_explorer(self, **filters) -> Dict[str, Any]:
+        if self.telemetry_read_backend == 'clickhouse' or (self.ch and self.ch.is_connected()):
+            if self.ch and self.ch.is_connected():
+                try:
+                    return self.ch.get_telemetry_explorer(**filters)
+                except ValueError:
+                    raise
+                except Exception as exc:
+                    logger.warning('ClickHouse telemetry explorer read failed: %s', exc)
+                    if self.telemetry_read_backend == 'clickhouse':
+                        from psycopg2.pool import PoolError
+                        raise PoolError('ClickHouse analytics is unavailable') from exc
+        return self.pg.get_telemetry_explorer(**filters)
+
+    def get_telemetry_event_detail(self, event_id: str) -> Optional[Dict[str, Any]]:
+        if self.telemetry_read_backend == 'clickhouse' or (self.ch and self.ch.is_connected()):
+            if self.ch and self.ch.is_connected():
+                try:
+                    res = self.ch.get_telemetry_event_detail(event_id)
+                    if res:
+                        return res
+                except Exception as exc:
+                    logger.warning('ClickHouse telemetry detail read failed: %s', exc)
+        return self.pg.get_telemetry_event_detail(event_id)
+
+    def get_telemetry_histogram(self, **filters) -> Dict[str, Any]:
+        if self.telemetry_read_backend == 'clickhouse' or (self.ch and self.ch.is_connected()):
+            if self.ch and self.ch.is_connected():
+                try:
+                    return self.ch.get_telemetry_histogram(**filters)
+                except Exception as exc:
+                    logger.warning('ClickHouse telemetry histogram failed: %s', exc)
+        return self.pg.get_telemetry_histogram(**filters)
+
     def get_agent(self, agent_id: str) -> Dict[str, Any] | None:
         return self.fleet.get_agent(agent_id)
 

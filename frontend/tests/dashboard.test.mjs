@@ -13,8 +13,12 @@ before(async () => {
   server = await createServer({ root, server: { host: '127.0.0.1', port: 0 }, logLevel: 'error' });
   await server.listen();
   base = server.resolvedUrls.local[0];
-  browser = await chromium.launch({ headless: true,
-    ...(process.env.PLAYWRIGHT_CHANNEL ? { channel: process.env.PLAYWRIGHT_CHANNEL } : {}) });
+  const channel = process.env.PLAYWRIGHT_CHANNEL || (process.platform === 'win32' ? 'msedge' : undefined);
+  try {
+    browser = await chromium.launch({ headless: true, ...(channel ? { channel } : {}) });
+  } catch {
+    browser = await chromium.launch({ headless: true });
+  }
 });
 after(async () => { await browser?.close(); await server?.close(); });
 
