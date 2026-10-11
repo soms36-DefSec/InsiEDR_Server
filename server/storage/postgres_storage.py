@@ -620,12 +620,29 @@ class PostgresStorage(BaseStorage):
                         if config.store_plaintext_payloads:
                             outbox_record = {"envelope": envelope, "payload": decrypted_payload}
                         else:
+                            # Respect store_plaintext_payloads: strip decrypted payload body,
+                            # but preserve lightweight collector metadata so ClickHouse outbox
+                            # replication populates telemetry_events and collector_results.
+                            stripped_collectors = []
+                            for c in decrypted_payload.get("collectors", []):
+                                if isinstance(c, dict):
+                                    stripped_collectors.append({
+                                        "collector": c.get("collector"),
+                                        "collected_at": c.get("collected_at"),
+                                        "hostname": c.get("hostname") or decrypted_payload.get("hostname"),
+                                        "status": c.get("status"),
+                                        "error": c.get("error"),
+                                        "payload": {},
+                                    })
                             outbox_record = {
                                 "envelope": {k: v for k, v in envelope.items() if k != "ciphertext"},
                                 "payload": {
                                     "payload_id": decrypted_payload.get("payload_id"),
                                     "agent_id": decrypted_payload.get("agent_id"),
                                     "collected_at": decrypted_payload.get("collected_at"),
+                                    "hostname": decrypted_payload.get("hostname"),
+                                    "username": decrypted_payload.get("username"),
+                                    "collectors": stripped_collectors,
                                     "_plaintext_stripped": True,
                                 },
                             }

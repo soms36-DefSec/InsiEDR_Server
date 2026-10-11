@@ -212,6 +212,7 @@ services:
       PYTHONPATH: /app
       SYSTEM_DEFAULT_PROFILE: ${SYSTEM_DEFAULT_PROFILE:-DEFAULT}
       ENABLE_CORROBORATION_GUARD: "true"
+      INSIEDR_STORE_PLAINTEXT_PAYLOADS: "${INSIEDR_STORE_PLAINTEXT_PAYLOADS:-true}"
     volumes:
       # Keep the existing host DLQ; prepare UID 10001 ownership before rollout.
       - type: bind

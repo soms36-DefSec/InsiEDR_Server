@@ -211,6 +211,35 @@ def main() -> int:
         )
 
     logger.info("All telemetry migrations completed successfully. Total records processed: %d", total_all)
+
+    if not args.dry_run and (not args.table or args.table in ("collector_results", "telemetry_events")):
+        logger.info("Synchronizing ClickHouse 'telemetry_events' from 'collector_results'...")
+        try:
+            ch_client.command(
+                """
+                INSERT INTO telemetry_events (
+                    event_id, payload_id, agent_id, collector_name, timestamp,
+                    hostname, username, status, summary_preview, raw_payload_json, tenant_id
+                )
+                SELECT
+                    id AS event_id,
+                    payload_id,
+                    agent_id,
+                    collector AS collector_name,
+                    collector_collected_at AS timestamp,
+                    hostname,
+                    '' AS username,
+                    status,
+                    substring(payload_json, 1, 150) AS summary_preview,
+                    payload_json AS raw_payload_json,
+                    'default' AS tenant_id
+                FROM collector_results
+                """
+            )
+            logger.info("ClickHouse 'telemetry_events' successfully populated.")
+        except Exception as exc:
+            logger.warning("Could not sync ClickHouse telemetry_events: %s", exc)
+
     return 0
 
 
