@@ -26,7 +26,7 @@ CREATE TABLE IF NOT EXISTS collector_events_v2 (
 ) ENGINE = ReplacingMergeTree(version)
 PARTITION BY toYYYYMM(collector_collected_at)
 ORDER BY (collector_collected_at, id)
-TTL collector_collected_at + INTERVAL 90 DAY
+TTL toDateTime(collector_collected_at) + INTERVAL 90 DAY
 SETTINGS non_replicated_deduplication_window = 10000;
 
 -- 1. Raw Payloads: High-cardinality envelope and transmission metadata
@@ -49,7 +49,7 @@ CREATE TABLE IF NOT EXISTS raw_payloads (
 ) ENGINE = ReplacingMergeTree(received_at)
 PARTITION BY toYYYYMM(received_at)
 ORDER BY (received_at, hostname, username, payload_id)
-TTL received_at + INTERVAL 30 DAY;
+TTL toDateTime(received_at) + INTERVAL 30 DAY;
 
 -- 2. Collector Results: Endpoint sensor observations and execution status
 CREATE TABLE IF NOT EXISTS collector_results (
@@ -67,7 +67,7 @@ CREATE TABLE IF NOT EXISTS collector_results (
 ) ENGINE = MergeTree()
 PARTITION BY toYYYYMM(collector_collected_at)
 ORDER BY (collector, collector_collected_at, hostname, payload_id)
-TTL collector_collected_at + INTERVAL 90 DAY;
+TTL toDateTime(collector_collected_at) + INTERVAL 90 DAY;
 
 -- 3. Normalized Features: Vectorized feature metrics extracted for detection models
 CREATE TABLE IF NOT EXISTS normalized_features (
@@ -89,7 +89,7 @@ CREATE TABLE IF NOT EXISTS normalized_features (
 ) ENGINE = MergeTree()
 PARTITION BY toYYYYMM(feature_timestamp)
 ORDER BY (feature_name, username, feature_timestamp, payload_id)
-TTL feature_timestamp + INTERVAL 90 DAY;
+TTL toDateTime(feature_timestamp) + INTERVAL 90 DAY;
 
 -- 4. Model Outputs: ML Inference detector scores and explanations
 CREATE TABLE IF NOT EXISTS model_outputs (
@@ -108,7 +108,7 @@ CREATE TABLE IF NOT EXISTS model_outputs (
 ) ENGINE = MergeTree()
 PARTITION BY toYYYYMM(created_at)
 ORDER BY (detector_name, created_at, username, payload_id)
-TTL created_at + INTERVAL 180 DAY;
+TTL toDateTime(created_at) + INTERVAL 180 DAY;
 
 -- 5. Risk Events: Correlated behavioral risk scores and alerts
 CREATE TABLE IF NOT EXISTS risk_events (
@@ -124,7 +124,7 @@ CREATE TABLE IF NOT EXISTS risk_events (
 ) ENGINE = MergeTree()
 PARTITION BY toYYYYMM(created_at)
 ORDER BY (created_at, risk_level, username, payload_id)
-TTL created_at + INTERVAL 180 DAY;
+TTL toDateTime(created_at) + INTERVAL 180 DAY;
 
 -- 6. Anomalies: Operational security alerts for SOC analyst review
 CREATE TABLE IF NOT EXISTS anomalies (
@@ -143,7 +143,7 @@ CREATE TABLE IF NOT EXISTS anomalies (
 ) ENGINE = ReplacingMergeTree(created_at)
 PARTITION BY toYYYYMM(created_at)
 ORDER BY (created_at, agent_id, id)
-TTL created_at + INTERVAL 365 DAY;
+TTL toDateTime(created_at) + INTERVAL 365 DAY;
 
 -- 7. Telemetry Events: High-throughput flattened telemetry logs with sparse primary index
 CREATE TABLE IF NOT EXISTS telemetry_events (
@@ -161,7 +161,7 @@ CREATE TABLE IF NOT EXISTS telemetry_events (
 ) ENGINE = ReplacingMergeTree()
 PARTITION BY toYYYYMM(timestamp)
 ORDER BY (agent_id, collector_name, toUnixTimestamp64Milli(timestamp), event_id)
-TTL timestamp + INTERVAL 90 DAY;
+TTL toDateTime(timestamp) + INTERVAL 90 DAY;
 
 -- 8. Process Events: Dedicated process sensor telemetry
 CREATE TABLE IF NOT EXISTS process_events (
@@ -183,7 +183,7 @@ CREATE TABLE IF NOT EXISTS process_events (
 ) ENGINE = ReplacingMergeTree()
 PARTITION BY toYYYYMM(timestamp)
 ORDER BY (agent_id, collector_name, toUnixTimestamp64Milli(timestamp), event_id)
-TTL timestamp + INTERVAL 90 DAY;
+TTL toDateTime(timestamp) + INTERVAL 90 DAY;
 
 -- 9. Network Events: Dedicated network sensor telemetry
 CREATE TABLE IF NOT EXISTS network_events (
@@ -205,4 +205,4 @@ CREATE TABLE IF NOT EXISTS network_events (
 ) ENGINE = ReplacingMergeTree()
 PARTITION BY toYYYYMM(timestamp)
 ORDER BY (agent_id, collector_name, toUnixTimestamp64Milli(timestamp), event_id)
-TTL timestamp + INTERVAL 90 DAY;
+TTL toDateTime(timestamp) + INTERVAL 90 DAY;

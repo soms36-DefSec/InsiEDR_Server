@@ -139,10 +139,10 @@ services:
     networks: [data]
     stop_grace_period: 120s
     healthcheck:
-      test: ["CMD-SHELL", 'clickhouse-client --user "$${CLICKHOUSE_USER}" --password "$${CLICKHOUSE_PASSWORD}" --query "SELECT 1"']
-      interval: 30s
-      timeout: 10s
-      start_period: 240s
+      test: ["CMD-SHELL", 'wget -q --spider http://localhost:8123/ping || clickhouse-client --user "$${CLICKHOUSE_USER:-default}" --password "$${CLICKHOUSE_PASSWORD}" --query "SELECT 1"']
+      interval: 10s
+      timeout: 5s
+      start_period: 60s
       retries: 5
 
   backend:
