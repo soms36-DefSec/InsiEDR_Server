@@ -108,11 +108,11 @@ def main() -> int:
     args = parser.parse_args()
 
     pg_dsn = os.environ.get("DATABASE_DSN") or os.environ.get("INSIEDR_DATABASE_DSN")
-    ch_host = os.environ.get("CLICKHOUSE_HOST", "localhost")
-    ch_port = int(os.environ.get("CLICKHOUSE_PORT", "8123"))
-    ch_user = os.environ.get("CLICKHOUSE_USER", "default")
-    ch_pass = os.environ.get("CLICKHOUSE_PASSWORD", "")
-    ch_db = os.environ.get("CLICKHOUSE_DB", "insiedr_analytics")
+    ch_host = os.environ.get("INSIEDR_CLICKHOUSE_HOST") or os.environ.get("CLICKHOUSE_HOST", "localhost")
+    ch_port = int(os.environ.get("INSIEDR_CLICKHOUSE_PORT") or os.environ.get("CLICKHOUSE_PORT", "8123"))
+    ch_user = os.environ.get("INSIEDR_CLICKHOUSE_USER") or os.environ.get("CLICKHOUSE_USER", "default")
+    ch_pass = os.environ.get("INSIEDR_CLICKHOUSE_PASSWORD") or os.environ.get("CLICKHOUSE_PASSWORD", "")
+    ch_db = os.environ.get("INSIEDR_CLICKHOUSE_DB") or os.environ.get("CLICKHOUSE_DB", "insiedr_analytics")
 
     if not pg_dsn:
         logger.error("DATABASE_DSN environment variable is required.")
