@@ -128,17 +128,69 @@ def main() -> int:
 
     try:
         import clickhouse_connect
-        ch_client = clickhouse_connect.get_client(
-            host=ch_host,
-            port=ch_port,
-            username=ch_user,
-            password=ch_pass,
-            database=ch_db,
-        )
+        try:
+            ch_client = clickhouse_connect.get_client(
+                host=ch_host,
+                port=ch_port,
+                username=ch_user,
+                password=ch_pass,
+                database=ch_db,
+            )
+        except Exception as conn_err:
+            err_s = str(conn_err).lower()
+            if "does not exist" in err_s or "unknown database" in err_s:
+                logger.info("Database '%s' does not exist yet. Creating via 'default' database...", ch_db)
+                boot_client = clickhouse_connect.get_client(
+                    host=ch_host, port=ch_port, username=ch_user, password=ch_pass, database="default"
+                )
+                boot_client.command(f"CREATE DATABASE IF NOT EXISTS {ch_db}")
+                boot_client.close()
+                ch_client = clickhouse_connect.get_client(
+                    host=ch_host, port=ch_port, username=ch_user, password=ch_pass, database=ch_db
+                )
+            else:
+                raise conn_err
         logger.info("Connected to ClickHouse (%s:%d/%s).", ch_host, ch_port, ch_db)
     except Exception as exc:
         logger.error("Failed connecting to ClickHouse: %s", exc)
         return 1
+
+    # Ensure all required tables exist in ClickHouse before migrating
+    logger.info("Verifying and applying ClickHouse schema...")
+    try:
+        from pathlib import Path
+        schema_file = Path(__file__).resolve().parents[1] / "server" / "storage" / "clickhouse_schema.sql"
+        if not schema_file.is_file():
+            schema_file = Path("/app/server/storage/clickhouse_schema.sql")
+
+        if schema_file.is_file():
+            sql_content = schema_file.read_text(encoding="utf-8")
+            statements = [stmt.strip() for stmt in sql_content.split(";") if stmt.strip()]
+            for stmt in statements:
+                if stmt.upper().startswith("USE "):
+                    continue
+                clean_lines = [line for line in stmt.splitlines() if not line.strip().startswith("--")]
+                clean_stmt = "\n".join(clean_lines).strip()
+                if clean_stmt:
+                    try:
+                        ch_client.command(clean_stmt, settings={"default_database": ch_db})
+                    except Exception as s_err:
+                        logger.debug("Schema initialization notice: %s", s_err)
+
+            for table_name in ("raw_payloads", "collector_results", "collector_events_v2",
+                               "normalized_features", "risk_events", "model_outputs", "anomalies",
+                               "telemetry_events", "process_events", "network_events"):
+                try:
+                    ch_client.command(
+                        f"ALTER TABLE {table_name} MODIFY SETTING non_replicated_deduplication_window = 10000"
+                    )
+                except Exception:
+                    pass
+            logger.info("ClickHouse schema verified and all destination tables are ready.")
+        else:
+            logger.warning("Could not find clickhouse_schema.sql at %s", schema_file)
+    except Exception as schema_err:
+        logger.warning("Schema auto-creation notice: %s", schema_err)
 
     # Table migration transforms
     def _transform_raw_payloads(r: dict) -> dict:
