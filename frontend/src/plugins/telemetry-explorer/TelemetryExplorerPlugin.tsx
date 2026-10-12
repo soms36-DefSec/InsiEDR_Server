@@ -84,7 +84,7 @@ export interface TelemetryExplorerPluginProps extends PluginProps {
   useExplorerApi?: boolean;
 }
 
-export const TelemetryExplorerPlugin: React.FC<TelemetryExplorerPluginProps> = ({ context, useExplorerApi = true }) => {
+export const TelemetryExplorerPlugin: React.FC<TelemetryExplorerPluginProps> = ({ context, useExplorerApi = false }) => {
   const [logs, setLogs] = useState<TelemetryLog[]>(context.logs || []);
   const [selectedLog, setSelectedLog] = useState<TelemetryLog | null>(null);
   const [showTrainingModal, setShowTrainingModal] = useState<boolean>(false);
@@ -126,6 +126,7 @@ export const TelemetryExplorerPlugin: React.FC<TelemetryExplorerPluginProps> = (
   const [currentPage, setCurrentPage] = useState<number>(1);
   const [pageSize, setPageSize] = useState<number>(50);
   const [isLoading, setIsLoading] = useState<boolean>(false);
+  const [isRefreshing, setIsRefreshing] = useState<boolean>(false);
   const [hasMore, setHasMore] = useState<boolean>(true);
 
   const loadLogs = useCallback(
@@ -134,7 +135,11 @@ export const TelemetryExplorerPlugin: React.FC<TelemetryExplorerPluginProps> = (
       request.current?.abort();
       const abort = new AbortController();
       request.current = abort;
-      setIsLoading(true);
+      if (background) {
+        setIsRefreshing(true);
+      } else {
+        setIsLoading(true);
+      }
       const periods: Record<string, number> = { '15m': 900, '1h': 3600, '24h': 86400, '7d': 604800 };
       if (pageToLoad === 1) {
         pageCursors.current = [undefined];
@@ -189,6 +194,7 @@ export const TelemetryExplorerPlugin: React.FC<TelemetryExplorerPluginProps> = (
         if (request.current === abort) {
           request.current = null;
           setIsLoading(false);
+          setIsRefreshing(false);
           if (queuedRefresh.current) { queuedRefresh.current = false; scheduleRefresh.current(); }
         }
       }
@@ -217,7 +223,6 @@ export const TelemetryExplorerPlugin: React.FC<TelemetryExplorerPluginProps> = (
     const poll = context.isConnected ? undefined : window.setInterval(schedule, 30000);
     const onVisible = () => { if (document.visibilityState === 'visible') schedule(); };
     document.addEventListener('visibilitychange', onVisible);
-    if (context.isConnected) schedule();
     return () => {
       unsubscribe();
       window.clearInterval(poll);
@@ -457,7 +462,7 @@ export const TelemetryExplorerPlugin: React.FC<TelemetryExplorerPluginProps> = (
               size="sm"
               onClick={() => loadLogs(currentPage, pageSize)}
               disabled={isLoading}
-              icon={<RefreshCw className={`w-3.5 h-3.5 ${isLoading ? 'animate-spin' : ''}`} />}
+              icon={<RefreshCw className={`w-3.5 h-3.5 ${isLoading || isRefreshing ? 'animate-spin' : ''}`} />}
             >
               Refresh
             </Button>

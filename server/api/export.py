@@ -1425,17 +1425,25 @@ def get_export_collectors(
     if storage is None:
         return JSONResponse({"ok": False, "error": "Storage is not configured"}, status_code=503)
 
+    from server.api.cache import api_cache
+    cache_key = f"export:collectors:{id(storage)}"
+    cached = api_cache.get(cache_key)
+    if cached is not None:
+        return cached
+
     collectors = getattr(storage, "get_distinct_collectors", lambda: [
         "logon", "file", "process", "network", "device", "http",
         "lsass_monitor", "registry", "keystroke-collector"
     ])()
     usernames = getattr(storage, "get_distinct_usernames", lambda: [])()
 
-    return {
+    res = {
         "ok": True,
         "collectors": collectors,
         "usernames": usernames,
     }
+    api_cache.set(cache_key, res, ttl=30.0)
+    return res
 
 
 @router.get("/v1/export/collector-preview")

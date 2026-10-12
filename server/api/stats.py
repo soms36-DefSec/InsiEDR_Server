@@ -57,10 +57,16 @@ def dashboard_summary(storage=Depends(get_storage),
         )
 
     try:
+        actor = getattr(operator, "actor", "anon")
+        cache_key = f"dashboard_summary:{actor}:{id(storage)}"
+        cached = api_cache.get(cache_key)
+        if cached is not None:
+            return cached
+
         pc_status = storage.get_pc_status(seconds_since_online=300) if hasattr(storage, "get_pc_status") else {}
         agents = storage.list_agents(limit=500, offset=0) if hasattr(storage, "list_agents") else []
         stats = _fleet_stats(storage) if hasattr(storage, "get_stats") else {}
-        return {
+        res = {
             "ok": True,
             "pc_status": pc_status,
             "agents": agents,
@@ -69,6 +75,8 @@ def dashboard_summary(storage=Depends(get_storage),
             "risk_events": [],
             "anomalies": [],
         }
+        api_cache.set(cache_key, res, ttl=4.0)
+        return res
     except (PoolError, QueryCanceled, LockNotAvailable):
         raise  # Central handler returns a retryable 503, not a generic 500.
     except Exception:

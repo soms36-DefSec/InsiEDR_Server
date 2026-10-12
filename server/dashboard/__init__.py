@@ -14,7 +14,7 @@ bp = router  # Backward compatibility alias
 async def serve_favicon():
     fav = DIST_DIR / "favicon.svg"
     if fav.is_file():
-        return FileResponse(fav)
+        return FileResponse(fav, headers={"Cache-Control": "public, max-age=86400"})
     return HTMLResponse("", status_code=404)
 
 
@@ -22,7 +22,7 @@ async def serve_favicon():
 async def serve_icons():
     icons = DIST_DIR / "icons.svg"
     if icons.is_file():
-        return FileResponse(icons)
+        return FileResponse(icons, headers={"Cache-Control": "public, max-age=86400"})
     return HTMLResponse("", status_code=404)
 
 
@@ -34,13 +34,16 @@ async def serve_dashboard(path: str = ""):
     if DIST_DIR.is_dir():
         file_path = DIST_DIR / path
         if path and file_path.is_file():
-            return FileResponse(file_path)
+            headers = {}
+            if "assets/" in path or path.startswith("assets"):
+                headers["Cache-Control"] = "public, max-age=31536000, immutable"
+            return FileResponse(file_path, headers=headers)
         asset_file = DIST_DIR / "assets" / path
         if path and asset_file.is_file():
-            return FileResponse(asset_file)
+            return FileResponse(asset_file, headers={"Cache-Control": "public, max-age=31536000, immutable"})
         index_file = DIST_DIR / "index.html"
         if index_file.is_file():
-            return FileResponse(index_file)
+            return FileResponse(index_file, headers={"Cache-Control": "no-cache, no-store, must-revalidate"})
 
     return HTMLResponse(
         content=(

@@ -114,6 +114,8 @@ def telemetry_page(storage, limit=100, offset=0, collector=None, username=None,
                     row["payload"] = json.loads(row["payload"])
                 except ValueError:
                     pass
+            from server.storage.clickhouse_telemetry_queries import extract_summary_preview
+            row["summary_preview"] = extract_summary_preview(row.get("collector"), row.get("payload"))
         # Unfiltered counts don't need to visit payload JSON, risk events, or
         # normalized features. Enrichment must not multiply/paginate raw rows.
         count_source = source if username or search else "FROM collector_results cr"
@@ -431,8 +433,7 @@ def telemetry_histogram(storage, time_range='1h', interval=None, collector=None,
     start_time = (now - time_delta).strftime('%Y-%m-%d %H:%M:%S')
 
     clauses, params = [
-        "(COALESCE(cr.collector_collected_at, rp.received_at) >= %s "
-        "OR REPLACE(CAST(COALESCE(cr.collector_collected_at, rp.received_at) AS TEXT), ' ', 'T') >= %s)"
+        "(cr.collector_collected_at >= %s OR REPLACE(CAST(cr.collector_collected_at AS TEXT), ' ', 'T') >= %s)"
     ], [start_time, start_time]
     if collector:
         clauses.append("LOWER(cr.collector) = LOWER(%s)")
@@ -466,8 +467,8 @@ def telemetry_histogram(storage, time_range='1h', interval=None, collector=None,
     with storage.connection() as conn, closing(conn.cursor()) as cur:
         try:
             sql = (
-                f"SELECT SUBSTR(CAST(COALESCE(cr.collector_collected_at, rp.received_at) AS TEXT), 1, {substr_len}) AS t, count(*) AS c "
-                f"FROM collector_results cr LEFT JOIN raw_payloads rp ON cr.payload_id = rp.payload_id "
+                f"SELECT SUBSTR(CAST(cr.collector_collected_at AS TEXT), 1, {substr_len}) AS t, count(*) AS c "
+                f"FROM collector_results cr "
                 f"{where} GROUP BY t ORDER BY t"
             )
             cur.execute(sql, tuple(params))

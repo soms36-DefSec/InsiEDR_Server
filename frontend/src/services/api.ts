@@ -32,26 +32,59 @@ import type {
   TamperAlertsResponse,
 } from '../types/telemetry';
 
-/**
- * Generic fetch wrapper that validates HTTP status codes and parses JSON responses.
- *
- * @throws {Error} Detailed error containing status code and status text if the request fails.
- */
-export async function fetchApi<T>(url: string, options?: RequestInit): Promise<T> {
-  const res = await fetch(url, options);
-  if (!res.ok) {
-    let errorDetail = res.statusText;
-    try {
-      const errJson = await res.json();
-      if (errJson?.error?.message) {
-        errorDetail = errJson.error.message;
-      }
-    } catch {
-      // Non-JSON response body; keep standard statusText
+const DEFAULT_TIMEOUT_MS = 10000;
+
+export async function fetchApi<T>(url: string, options?: RequestInit & { timeoutMs?: number }): Promise<T> {
+  const timeoutMs = options?.timeoutMs ?? DEFAULT_TIMEOUT_MS;
+  const controller = new AbortController();
+  let timedOut = false;
+  const timer = setTimeout(() => {
+    timedOut = true;
+    controller.abort(new Error(`API request timed out after ${timeoutMs}ms: ${url}`));
+  }, timeoutMs);
+
+  const callerSignal = options?.signal;
+  let abortHandler: (() => void) | undefined;
+  if (callerSignal) {
+    if (callerSignal.aborted) {
+      clearTimeout(timer);
+      throw callerSignal.reason instanceof Error ? callerSignal.reason : new Error('Request aborted');
     }
-    throw new Error(`API request failed [${res.status}]: ${errorDetail}`);
+    abortHandler = () => controller.abort(callerSignal.reason);
+    callerSignal.addEventListener('abort', abortHandler, { once: true });
   }
-  return res.json() as Promise<T>;
+
+  try {
+    const res = await fetch(url, {
+      ...options,
+      signal: controller.signal,
+    });
+    if (!res.ok) {
+      let errorDetail = res.statusText;
+      try {
+        const errJson = await res.json();
+        if (errJson?.error?.message) {
+          errorDetail = errJson.error.message;
+        } else if (typeof errJson?.error === 'string') {
+          errorDetail = errJson.error;
+        }
+      } catch {
+        // Non-JSON response body; keep standard statusText
+      }
+      throw new Error(`API request failed [${res.status}]: ${errorDetail}`);
+    }
+    return (await res.json()) as T;
+  } catch (err: unknown) {
+    if (timedOut) {
+      throw new Error(`API request timed out after ${timeoutMs}ms: ${url}`);
+    }
+    throw err;
+  } finally {
+    clearTimeout(timer);
+    if (callerSignal && abortHandler) {
+      callerSignal.removeEventListener('abort', abortHandler);
+    }
+  }
 }
 
 /**

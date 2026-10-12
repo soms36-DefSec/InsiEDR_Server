@@ -204,6 +204,8 @@ async def agent_heartbeat(
             "status": status,
             "metrics": metrics,
         })
+        from server.api.cache import api_cache
+        api_cache.clear_pattern("dashboard_summary:*")
     except Exception:
         pass
 

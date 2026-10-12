@@ -89,6 +89,7 @@ def telemetry_page(storage, limit=100, offset=0, collector=None, username=None,
                 row['payload'] = json.loads(row['payload'])
             except ValueError:
                 pass
+        row['summary_preview'] = extract_summary_preview(row.get('collector'), row.get('payload'))
     total = None
     if include_total:
         total = storage._query('SELECT count()' + source + count_where, params).result_rows[0][0]

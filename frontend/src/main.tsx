@@ -12,3 +12,6 @@ createRoot(document.getElementById('root')!).render(
     <App />
   </StrictMode>,
 );
+
+const skeleton = document.getElementById('app-skeleton');
+if (skeleton) skeleton.remove();

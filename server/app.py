@@ -249,6 +249,9 @@ def create_app(*, storage=None, apply_migrations: bool = True) -> FastAPI:
         allow_headers=["*"],
     )
 
+    from fastapi.middleware.gzip import GZipMiddleware
+    app.add_middleware(GZipMiddleware, minimum_size=1000)
+
     # Register centralized RFC 7807 JSON error handlers
     register_error_handlers(app)
 
