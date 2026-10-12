@@ -308,6 +308,8 @@ async def process_encrypted_request(req) -> tuple[int, dict[str, Any]]:
                 from server.api.cache import api_cache
                 api_cache.clear_pattern("telemetry:*")
                 api_cache.clear_pattern("logs:*")
+                api_cache.clear_pattern("dashboard_summary:*")
+                api_cache.clear_pattern("fleet_stats:*")
             except Exception:
                 pass
             return True

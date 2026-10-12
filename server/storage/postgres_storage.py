@@ -5,6 +5,7 @@ import json
 import logging
 import os
 import threading
+from datetime import datetime, timezone
 from contextlib import contextmanager, closing
 from pathlib import Path
 from typing import Any
@@ -47,6 +48,9 @@ class _SQLiteCursorAdapter:
             sql,
             flags=re.IGNORECASE
         )
+        sql = re.sub(r"\bBTRIM\(", "TRIM(", sql, flags=re.IGNORECASE)
+        sql = re.sub(r"\bGREATEST\(", "MAX(", sql, flags=re.IGNORECASE)
+        sql = re.sub(r"\bLEAST\(", "MIN(", sql, flags=re.IGNORECASE)
         return sql
 
     def _adapt_params(self, params):
@@ -61,6 +65,10 @@ class _SQLiteCursorAdapter:
         for p in params:
             if isinstance(p, PgJson):
                 result.append(json.dumps(p.adapted))
+            elif isinstance(p, (dict, list)):
+                result.append(json.dumps(p))
+            elif isinstance(p, datetime):
+                result.append(p.isoformat(sep=" "))
             else:
                 result.append(p)
         return tuple(result)
@@ -391,23 +399,46 @@ class PostgresStorage(BaseStorage):
     def _upsert_agent(self, cursor, decrypted_payload: dict[str, Any]) -> None:
         agent_id = decrypted_payload["agent_id"]
         hostname = decrypted_payload.get("hostname")
+        if hostname is not None:
+            hostname = hostname.strip(" \t\r\n\f\v")
+            if not hostname:
+                hostname = None
+
         username = decrypted_payload.get("username")
         os_info = decrypted_payload.get("os") or {}
+
+        # Parse collected_at if present to prevent historical/replayed telemetry from marking PC online
+        collected_at_raw = decrypted_payload.get("collected_at")
+        seen_dt = None
+        if collected_at_raw and isinstance(collected_at_raw, str):
+            try:
+                dt = datetime.fromisoformat(collected_at_raw.replace("Z", "+00:00"))
+                if dt.tzinfo is None:
+                    dt = dt.replace(tzinfo=timezone.utc)
+                now = datetime.now(timezone.utc)
+                seen_dt = dt if dt <= now else now
+            except Exception:
+                seen_dt = None
+
         cursor.execute(
             """
             INSERT INTO agents (
                 agent_id, hostname, username_last_seen, os_system, os_release, 
                 os_version, os_machine, first_seen_at, last_seen_at, last_payload_id, status
             )
-            VALUES (%s, %s, %s, %s, %s, %s, %s, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, %s, %s)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, COALESCE(%s, CURRENT_TIMESTAMP), COALESCE(%s, CURRENT_TIMESTAMP), %s, %s)
             ON CONFLICT (agent_id) DO UPDATE SET
-                hostname = COALESCE(EXCLUDED.hostname, agents.hostname),
+                hostname = COALESCE(NULLIF(EXCLUDED.hostname, ''), agents.hostname),
                 username_last_seen = COALESCE(EXCLUDED.username_last_seen, agents.username_last_seen),
                 os_system = COALESCE(EXCLUDED.os_system, agents.os_system),
                 os_release = COALESCE(EXCLUDED.os_release, agents.os_release),
                 os_version = COALESCE(EXCLUDED.os_version, agents.os_version),
                 os_machine = COALESCE(EXCLUDED.os_machine, agents.os_machine),
-                last_seen_at = EXCLUDED.last_seen_at,
+                last_seen_at = CASE
+                    WHEN EXCLUDED.last_seen_at IS NOT NULL
+                    THEN GREATEST(agents.last_seen_at, EXCLUDED.last_seen_at)
+                    ELSE agents.last_seen_at
+                END,
                 last_payload_id = EXCLUDED.last_payload_id,
                 status = EXCLUDED.status
             """,
@@ -419,6 +450,8 @@ class PostgresStorage(BaseStorage):
                 os_info.get("release"),
                 os_info.get("version"),
                 os_info.get("machine"),
+                seen_dt,
+                seen_dt,
                 decrypted_payload.get("payload_id"),
                 "active",
             ),

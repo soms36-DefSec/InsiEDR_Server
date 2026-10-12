@@ -18,16 +18,19 @@ function fleetEndpoints(summary: DashboardSummary | null): FleetEndpoint[] {
   // Compatibility with older summaries: collapse agent IDs to unique hosts,
   // keeping the newest observation. The UI discloses any incomplete list.
   const hosts = new Map<string, FleetEndpoint>();
+  const now = Date.now();
   for (const agent of summary?.agents ?? []) {
     const hostname = agent.hostname?.trim();
     if (!hostname) continue;
-    const previous = hosts.get(hostname);
+    const lower = hostname.toLowerCase();
+    const previous = hosts.get(lower);
     const seen = Date.parse(agent.last_seen_at) || 0;
     if (!previous || seen > (Date.parse(previous.last_seen_at ?? '') || 0)) {
-      hosts.set(hostname, {
+      const isOnline = (now - seen) < 300000;
+      hosts.set(lower, {
         hostname,
         last_seen_at: agent.last_seen_at || null,
-        status: ['active', 'online'].includes(agent.status) ? 'online' : 'offline',
+        status: isOnline ? 'online' : 'offline',
       });
     }
   }

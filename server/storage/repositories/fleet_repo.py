@@ -36,8 +36,26 @@ class FleetRepository:
             return
 
         hostname = decrypted_payload.get("hostname")
+        if hostname is not None:
+            hostname = hostname.strip(" \t\r\n\f\v")
+            if not hostname:
+                hostname = None
+
         username = decrypted_payload.get("username")
         os_info = decrypted_payload.get("os") or {}
+
+        # Parse collected_at if present to prevent historical/replayed telemetry from marking PC online
+        collected_at_raw = decrypted_payload.get("collected_at")
+        seen_dt = None
+        if collected_at_raw and isinstance(collected_at_raw, str):
+            try:
+                dt = datetime.fromisoformat(collected_at_raw.replace("Z", "+00:00"))
+                if dt.tzinfo is None:
+                    dt = dt.replace(tzinfo=timezone.utc)
+                now = datetime.now(timezone.utc)
+                seen_dt = dt if dt <= now else now
+            except Exception:
+                seen_dt = None
 
         with self.pg.connection() as conn:
             with closing(conn.cursor()) as cur:
@@ -47,15 +65,19 @@ class FleetRepository:
                         agent_id, hostname, username_last_seen, os_system, os_release, 
                         os_version, os_machine, first_seen_at, last_seen_at, last_payload_id, status
                     )
-                    VALUES (%s, %s, %s, %s, %s, %s, %s, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, %s, %s)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, COALESCE(%s, CURRENT_TIMESTAMP), COALESCE(%s, CURRENT_TIMESTAMP), %s, %s)
                     ON CONFLICT (agent_id) DO UPDATE SET
-                        hostname = COALESCE(EXCLUDED.hostname, agents.hostname),
+                        hostname = COALESCE(NULLIF(EXCLUDED.hostname, ''), agents.hostname),
                         username_last_seen = COALESCE(EXCLUDED.username_last_seen, agents.username_last_seen),
                         os_system = COALESCE(EXCLUDED.os_system, agents.os_system),
                         os_release = COALESCE(EXCLUDED.os_release, agents.os_release),
                         os_version = COALESCE(EXCLUDED.os_version, agents.os_version),
                         os_machine = COALESCE(EXCLUDED.os_machine, agents.os_machine),
-                        last_seen_at = EXCLUDED.last_seen_at,
+                        last_seen_at = CASE
+                            WHEN EXCLUDED.last_seen_at IS NOT NULL
+                            THEN GREATEST(agents.last_seen_at, EXCLUDED.last_seen_at)
+                            ELSE agents.last_seen_at
+                        END,
                         last_payload_id = EXCLUDED.last_payload_id,
                         status = EXCLUDED.status
                     """,
@@ -67,6 +89,8 @@ class FleetRepository:
                         os_info.get("release"),
                         os_info.get("version"),
                         os_info.get("machine"),
+                        seen_dt,
+                        seen_dt,
                         decrypted_payload.get("payload_id"),
                         "active",
                     ),
@@ -103,15 +127,15 @@ class FleetRepository:
             with closing(conn.cursor()) as cur:
                 cur.execute(
                     """
-                    SELECT hostname, MAX(last_seen_at) AS last_seen_at,
+                    SELECT MAX(hostname) AS hostname, MAX(last_seen_at) AS last_seen_at,
                            CASE WHEN MAX(last_seen_at) > %s
                                 THEN 'online' ELSE 'offline' END AS status
                     FROM (
-                        SELECT TRIM(hostname, %s) AS hostname, last_seen_at
+                        SELECT BTRIM(hostname, %s) AS hostname, last_seen_at
                         FROM agents
-                        WHERE hostname IS NOT NULL AND TRIM(hostname, %s) != ''
+                        WHERE hostname IS NOT NULL AND BTRIM(hostname, %s) != ''
                     ) AS named_agents
-                    GROUP BY hostname
+                    GROUP BY LOWER(hostname)
                     ORDER BY hostname
                     """,
                     (cutoff, whitespace, whitespace),
@@ -140,6 +164,10 @@ class FleetRepository:
         """Register or update an agent's heartbeat, status, and health metrics."""
         if not agent_id:
             return
+        if hostname is not None:
+            hostname = hostname.strip(" \t\r\n\f\v")
+            if not hostname:
+                hostname = None
         metrics = metrics or {}
         with self.pg.connection() as conn:
             with closing(conn.cursor()) as cur:
@@ -150,7 +178,7 @@ class FleetRepository:
                     )
                     VALUES (%s, %s, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, %s)
                     ON CONFLICT (agent_id) DO UPDATE SET
-                        hostname = COALESCE(EXCLUDED.hostname, agents.hostname),
+                        hostname = COALESCE(NULLIF(EXCLUDED.hostname, ''), agents.hostname),
                         last_seen_at = CURRENT_TIMESTAMP,
                         status = EXCLUDED.status
                     """,

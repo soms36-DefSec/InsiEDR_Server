@@ -106,3 +106,170 @@ def test_storage_failure_is_not_reported_as_an_empty_healthy_fleet(fleet):
         conn.execute("DROP TABLE agents")
     with pytest.raises(sqlite3.OperationalError):
         storage.get_pc_status()
+
+
+def test_case_insensitive_hostname_grouping(fleet):
+    storage, add = fleet
+    add("agent-1", "SOCL4-61", 10)
+    add("agent-2", "socl4-61", 100)
+    add("agent-3", "MUMU", 86400)
+    add("agent-4", "MuMu", 36000)
+    result = storage.get_pc_status()
+    assert result["total_pcs"] == 2
+    assert result["online_pcs"] == 1
+    assert result["offline_pcs"] == 1
+    endpoints = {e["hostname"].lower(): e for e in result["endpoints"]}
+    assert "socl4-61" in endpoints
+    assert endpoints["socl4-61"]["status"] == "online"
+    assert "mumu" in endpoints
+    assert endpoints["mumu"]["status"] == "offline"
+
+
+@pytest.fixture
+def full_fleet(monkeypatch):
+    class Clock(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return NOW
+
+    monkeypatch.setattr(fleet_repo, "datetime", Clock)
+    conn = sqlite3.connect(":memory:", check_same_thread=False)
+    conn.execute("""
+        CREATE TABLE agents (
+            agent_id TEXT PRIMARY KEY,
+            hostname TEXT,
+            username_last_seen TEXT,
+            os_system TEXT,
+            os_release TEXT,
+            os_version TEXT,
+            os_machine TEXT,
+            first_seen_at TEXT,
+            last_seen_at TEXT,
+            last_payload_id TEXT,
+            status TEXT
+        )
+    """)
+    conn.execute("""
+        CREATE TABLE agent_heartbeats (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            agent_id TEXT,
+            hostname TEXT,
+            ip_address TEXT,
+            agent_version TEXT,
+            status TEXT,
+            metrics_json TEXT,
+            config_version TEXT,
+            received_at TEXT
+        )
+    """)
+
+    @contextmanager
+    def connection():
+        yield _SQLiteParamAdapter(conn)
+
+    storage = PostgresStorage.__new__(PostgresStorage)
+    storage.connection = connection
+    yield storage
+    conn.close()
+
+
+def test_historical_telemetry_does_not_make_offline_pc_online(full_fleet):
+    storage = full_fleet
+    historical_time = (NOW - timedelta(hours=10)).isoformat()
+    storage.fleet.upsert_agent({
+        "agent_id": "historical-agent",
+        "hostname": "DESKTOP-H6EAHHC",
+        "collected_at": historical_time,
+        "payload_id": "p-1",
+    })
+    status = storage.get_pc_status()
+    assert status["total_pcs"] == 1
+    assert status["online_pcs"] == 0
+    assert status["offline_pcs"] == 1
+    assert status["endpoints"][0]["status"] == "offline"
+
+
+def test_fresh_telemetry_makes_pc_online(full_fleet):
+    storage = full_fleet
+    fresh_time = (NOW - timedelta(seconds=15)).isoformat()
+    storage.fleet.upsert_agent({
+        "agent_id": "active-agent",
+        "hostname": "SOCL4-61",
+        "collected_at": fresh_time,
+        "payload_id": "p-2",
+    })
+    status = storage.get_pc_status()
+    assert status["total_pcs"] == 1
+    assert status["online_pcs"] == 1
+    assert status["offline_pcs"] == 0
+    assert status["endpoints"][0]["status"] == "online"
+
+
+def test_delayed_telemetry_does_not_regress_newer_last_seen(full_fleet):
+    storage = full_fleet
+    storage.fleet.upsert_agent_heartbeat(
+        agent_id="agent-soc",
+        hostname="SOCL4-61",
+        status="active"
+    )
+    assert storage.get_pc_status()["online_pcs"] == 1
+
+    delayed_time = (NOW - timedelta(hours=2)).isoformat()
+    storage.fleet.upsert_agent({
+        "agent_id": "agent-soc",
+        "hostname": "SOCL4-61",
+        "collected_at": delayed_time,
+        "payload_id": "p-old",
+    })
+    status = storage.get_pc_status()
+    assert status["online_pcs"] == 1
+    assert status["endpoints"][0]["status"] == "online"
+
+
+def test_blank_hostname_does_not_erase_existing_hostname(full_fleet):
+    storage = full_fleet
+    storage.fleet.upsert_agent({
+        "agent_id": "agent-pc",
+        "hostname": "DESKTOP-H6EAHHC",
+        "collected_at": NOW.isoformat(),
+        "payload_id": "p-1",
+    })
+    storage.fleet.upsert_agent({
+        "agent_id": "agent-pc",
+        "hostname": "   ",
+        "collected_at": NOW.isoformat(),
+        "payload_id": "p-2",
+    })
+    status = storage.get_pc_status()
+    assert status["total_pcs"] == 1
+    assert status["endpoints"][0]["hostname"] == "DESKTOP-H6EAHHC"
+
+
+def test_future_timestamp_clamped_to_server_time(full_fleet):
+    storage = full_fleet
+    future_time = (NOW + timedelta(hours=2)).isoformat()
+    storage.fleet.upsert_agent({
+        "agent_id": "drifting-agent",
+        "hostname": "CLOCK-DRIFT",
+        "collected_at": future_time,
+        "payload_id": "p-drift",
+    })
+    assert storage.get_pc_status()["online_pcs"] == 1
+    # Clamped to NOW; checking with cutoff at NOW (0s) gives offline
+    assert storage.get_pc_status(seconds_since_online=0)["online_pcs"] == 0
+
+
+def test_heartbeat_maintains_agent_online_without_telemetry(full_fleet):
+    storage = full_fleet
+    storage.fleet.upsert_agent_heartbeat(
+        agent_id="silent-agent",
+        hostname="SILENT-PC",
+        status="healthy"
+    )
+    status = storage.get_pc_status()
+    assert status["total_pcs"] == 1
+    assert status["online_pcs"] == 1
+    assert status["offline_pcs"] == 0
+    assert status["endpoints"][0]["hostname"] == "SILENT-PC"
+    assert status["endpoints"][0]["status"] == "online"
+
