@@ -20,7 +20,7 @@ class BaseStorage:
     def list_agents(self, limit: int = 100, offset: int = 0) -> list[dict[str, Any]]:
         raise NotImplementedError()
 
-    def list_logs(self, limit: int = 100, offset: int = 0) -> list[dict[str, Any]]:
+    def list_logs(self, limit: int = 100, offset: int = 0, **filters) -> list[dict[str, Any]]:
         raise NotImplementedError()
 
     def list_anomalies(self, limit: int = 100, offset: int = 0) -> list[dict[str, Any]]:

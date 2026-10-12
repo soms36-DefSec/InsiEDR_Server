@@ -230,6 +230,12 @@ def dispatch_telemetry_event(payload_id: str) -> None:
     # An invalidation carries no unsanitized collector payload. The authenticated
     # REST query remains authoritative for privacy policy and current filters.
     broadcaster.publish("telemetry", "telemetry_changed", {"payload_id": payload_id})
+    try:
+        from server.api.cache import api_cache
+        api_cache.clear_pattern("telemetry:*")
+        api_cache.clear_pattern("logs:*")
+    except Exception:
+        pass
 
 
 async def _sse_generator(topic: str) -> AsyncGenerator[str, None]:

@@ -978,6 +978,7 @@ class PostgresStorage(BaseStorage):
         status: str | None = None,
         start_time: str | None = None,
         end_time: str | None = None,
+        **kwargs,
     ) -> list[dict[str, Any]]:
         with self.connection() as conn:
             with closing(conn.cursor()) as cursor:
@@ -987,17 +988,38 @@ class PostgresStorage(BaseStorage):
                     where.append("rp.agent_id = %s")
                     params.append(agent_id)
                 if hostname:
-                    where.append("rp.hostname = %s")
+                    where.append("LOWER(rp.hostname) = LOWER(%s)")
                     params.append(hostname)
                 if username:
-                    where.append("rp.username = %s")
+                    where.append("LOWER(rp.username) = LOWER(%s)")
                     params.append(username)
-                if collector:
-                    where.append("EXISTS (SELECT 1 FROM collector_results cr WHERE cr.payload_id = rp.payload_id AND cr.collector LIKE %s)")
+                if collector and status:
+                    if status.lower() == "error":
+                        where.append(
+                            "EXISTS (SELECT 1 FROM collector_results cr "
+                            "WHERE cr.payload_id = rp.payload_id "
+                            "AND LOWER(cr.collector) LIKE LOWER(%s) "
+                            "AND LOWER(cr.status) IN ('error', 'failed', 'critical', 'tampered'))"
+                        )
+                        params.append(f"%{collector}%")
+                    else:
+                        where.append(
+                            "EXISTS (SELECT 1 FROM collector_results cr "
+                            "WHERE cr.payload_id = rp.payload_id "
+                            "AND LOWER(cr.collector) LIKE LOWER(%s) "
+                            "AND LOWER(cr.status) = LOWER(%s))"
+                        )
+                        params.append(f"%{collector}%")
+                        params.append(status)
+                elif collector:
+                    where.append("EXISTS (SELECT 1 FROM collector_results cr WHERE cr.payload_id = rp.payload_id AND LOWER(cr.collector) LIKE LOWER(%s))")
                     params.append(f"%{collector}%")
-                if status:
-                    where.append("EXISTS (SELECT 1 FROM collector_results crs WHERE crs.payload_id = rp.payload_id AND crs.status = %s)")
-                    params.append(status)
+                elif status:
+                    if status.lower() == "error":
+                        where.append("EXISTS (SELECT 1 FROM collector_results crs WHERE crs.payload_id = rp.payload_id AND LOWER(crs.status) IN ('error', 'failed', 'critical', 'tampered'))")
+                    else:
+                        where.append("EXISTS (SELECT 1 FROM collector_results crs WHERE crs.payload_id = rp.payload_id AND LOWER(crs.status) = LOWER(%s))")
+                        params.append(status)
                 if start_time:
                     where.append("rp.received_at >= %s")
                     params.append(start_time)

@@ -78,6 +78,13 @@ async def get_logs(
     if storage is None:
         return JSONResponse({"ok": False, "error": "storage is not configured", "logs": []}, status_code=503)
 
+    from server.api.cache import api_cache
+    actor = getattr(operator, "actor", "anon")
+    cache_key = f"logs:list:{actor}:{limit}:{offset}:{agent_id or ''}:{hostname or ''}:{username or ''}:{collector or ''}:{status or ''}:{start_time or ''}:{end_time or ''}"
+    hit = api_cache.get(cache_key)
+    if hit is not None:
+        return hit
+
     filters = {
         "agent_id": agent_id,
         "hostname": hostname,
@@ -97,7 +104,9 @@ async def get_logs(
     logs = await anyio.to_thread.run_sync(
         lambda: storage.list_logs(limit=limit, offset=offset, **valid_filters)
     ) if hasattr(storage, "list_logs") else []
-    return {"ok": True, "logs": logs}
+    res = {"ok": True, "logs": logs}
+    api_cache.set(cache_key, res, ttl=5.0)
+    return res
 
 
 @router.get("/telemetry")
@@ -131,6 +140,18 @@ async def get_telemetry(
             end_time = end_time.replace(tzinfo=timezone.utc)
         if start_time and end_time and start_time > end_time:
             return JSONResponse({"ok": False, "error": "start_time must precede end_time"}, status_code=422)
+
+        from server.api.cache import api_cache
+        actor = getattr(operator, "actor", "anon")
+        cache_key = (
+            f"telemetry:page:{actor}:{limit}:{offset}:{collector or ''}:{username or ''}:{status or ''}:"
+            f"{search or ''}:{start_time.isoformat() if start_time else ''}:{end_time.isoformat() if end_time else ''}:"
+            f"{include_enrichment}:{include_total}:{cursor or ''}:{search_scope}"
+        )
+        hit = api_cache.get(cache_key)
+        if hit is not None:
+            return hit
+
         if callable(getattr(storage, "get_telemetry_page", None)):
             page = await anyio.to_thread.run_sync(lambda: storage.get_telemetry_page(
                 limit=limit, offset=offset, collector=collector, username=username,
@@ -139,18 +160,22 @@ async def get_telemetry(
                 include_enrichment=include_enrichment,
                 cursor=cursor, include_total=include_total, search_scope=search_scope,
             ))
-            return {"ok": True, **page}
+            res = {"ok": True, **page}
+            api_cache.set(cache_key, res, ttl=5.0)
+            return res
         telemetry = await anyio.to_thread.run_sync(
             lambda: storage.list_collector_results(limit=limit, offset=offset, collector=collector, username=username)
         )
         total = await anyio.to_thread.run_sync(
             lambda: getattr(storage, "count_collector_results", lambda **kw: len(telemetry))(collector=collector, username=username)
         )
+        fallback_res = {"ok": True, "logs": telemetry, "total": total, "offset": offset, "limit": limit}
+        api_cache.set(cache_key, fallback_res, ttl=5.0)
+        return fallback_res
     except ValueError as exc:
         return JSONResponse({'ok': False, 'error': str(exc)}, status_code=422)
     except AttributeError:
         return JSONResponse({"ok": False, "error": "storage method not implemented", "telemetry": []}, status_code=501)
-    return {"ok": True, "logs": telemetry, "total": total, "offset": offset, "limit": limit}
 
 
 from server.api.telemetry import (

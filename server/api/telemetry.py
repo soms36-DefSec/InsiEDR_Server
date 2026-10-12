@@ -46,13 +46,24 @@ async def get_telemetry_explorer(
         if start_time and end_time and start_time > end_time:
             return JSONResponse({"ok": False, "error": "start_time must precede end_time"}, status_code=422)
 
+        from server.api.cache import api_cache
+        actor = getattr(operator, "actor", "anon")
+        cache_key = (
+            f"telemetry:explorer:{actor}:{limit}:{cursor or ''}:{collector or ''}:{username or ''}:"
+            f"{status or ''}:{search or ''}:{start_time.isoformat() if start_time else ''}:"
+            f"{end_time.isoformat() if end_time else ''}:{agent_id or ''}"
+        )
+        hit = api_cache.get(cache_key)
+        if hit is not None:
+            return hit
+
         if callable(getattr(storage, "get_telemetry_explorer", None)):
             result = await anyio.to_thread.run_sync(lambda: storage.get_telemetry_explorer(
                 limit=limit, cursor=cursor, collector=collector, username=username,
                 status=status, search=search, start_time=start_time, end_time=end_time,
                 agent_id=agent_id,
             ))
-            return {
+            res = {
                 "ok": True,
                 "events": result.get("events", []),
                 "logs": result.get("events", []),
@@ -61,6 +72,8 @@ async def get_telemetry_explorer(
                 "limit": limit,
                 "source": result.get("source", "clickhouse"),
             }
+            api_cache.set(cache_key, res, ttl=5.0)
+            return res
 
         # Fallback to get_telemetry_page if explorer query is not implemented
         if callable(getattr(storage, "get_telemetry_page", None)):
@@ -90,7 +103,7 @@ async def get_telemetry_explorer(
                     "status": str(row.get("status") or "success"),
                     "summary_preview": row.get("summary_preview") or extract_summary_preview(cname, row.get("payload")),
                 })
-            return {
+            res = {
                 "ok": True,
                 "events": projected,
                 "logs": projected,
@@ -99,6 +112,8 @@ async def get_telemetry_explorer(
                 "limit": limit,
                 "source": page.get("source", "postgres"),
             }
+            api_cache.set(cache_key, res, ttl=5.0)
+            return res
 
         return JSONResponse({"ok": False, "error": "storage method not implemented", "events": []}, status_code=501)
     except ValueError as exc:
@@ -121,9 +136,26 @@ async def get_telemetry_event_detail(
         return JSONResponse({"ok": False, "error": "storage is not configured"}, status_code=503)
 
     try:
+        from server.api.cache import api_cache
+        actor = getattr(operator, "actor", "anon")
+        cache_key = f"telemetry:event:{actor}:{event_id}"
+        hit = api_cache.get(cache_key)
+        if hit is not None:
+            return hit
+
         event = None
         if callable(getattr(storage, "get_telemetry_event_detail", None)):
-            event = await anyio.to_thread.run_sync(lambda: storage.get_telemetry_event_detail(event_id))
+            res_event = await anyio.to_thread.run_sync(lambda: storage.get_telemetry_event_detail(event_id))
+            if isinstance(res_event, dict):
+                event = res_event
+
+        if not event and callable(getattr(storage, "get_payload", None)):
+            try:
+                raw_payload = await anyio.to_thread.run_sync(lambda: storage.get_payload(event_id))
+                if isinstance(raw_payload, dict):
+                    event = raw_payload
+            except Exception:
+                pass
 
         if not event:
             # Fallback check via list_logs if direct detail query returned None
@@ -141,7 +173,9 @@ async def get_telemetry_event_detail(
         if not event:
             return JSONResponse({"ok": False, "error": "Telemetry event not found"}, status_code=404)
 
-        return {"ok": True, "event": event}
+        res = {"ok": True, "event": event}
+        api_cache.set(cache_key, res, ttl=60.0)
+        return res
     except ValueError as exc:
         return JSONResponse({"ok": False, "error": str(exc)}, status_code=422)
 
@@ -166,18 +200,27 @@ async def get_telemetry_histogram(
         return JSONResponse({"ok": False, "error": "storage is not configured", "histogram": []}, status_code=503)
 
     try:
+        from server.api.cache import api_cache
+        actor = getattr(operator, "actor", "anon")
+        cache_key = f"telemetry:histogram:{actor}:{time_range}:{interval or ''}:{collector or ''}:{status or ''}:{agent_id or ''}"
+        hit = api_cache.get(cache_key)
+        if hit is not None:
+            return hit
+
         if callable(getattr(storage, "get_telemetry_histogram", None)):
             res = await anyio.to_thread.run_sync(lambda: storage.get_telemetry_histogram(
                 time_range=time_range, interval=interval, collector=collector,
                 status=status, agent_id=agent_id,
             ))
-            return {
+            hist_res = {
                 "ok": True,
                 "time_range": res.get("time_range", time_range),
                 "interval": res.get("interval", interval or "1m"),
                 "total_events": res.get("total_events", 0),
                 "histogram": res.get("histogram", []),
             }
+            api_cache.set(cache_key, hist_res, ttl=5.0)
+            return hist_res
 
         return {"ok": True, "time_range": time_range, "interval": "1m", "total_events": 0, "histogram": []}
     except ValueError as exc:

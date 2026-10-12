@@ -424,10 +424,18 @@ class ClickHouseStorage:
 
         from server.storage.clickhouse_telemetry_queries import extract_summary_preview
 
-        for cr in decrypted_payload.get("collectors", []):
+        collector_seen_counts: Dict[str, int] = {}
+        risk_seen_counts: Dict[str, int] = {}
+        feat_seen_counts: Dict[tuple[str, str], int] = {}
+
+        for idx, cr in enumerate(decrypted_payload.get("collectors", [])):
             if not isinstance(cr, dict):
                 continue
             collector_name = str(cr.get("collector") or "")
+            col_count = collector_seen_counts.get(collector_name, 0)
+            collector_seen_counts[collector_name] = col_count + 1
+            col_suffix = f"{payload_id}:col:{collector_name}:{col_count}" if col_count > 0 else f"{payload_id}:col:{collector_name}"
+
             col_collected_dt = _format_dt(cr.get("collected_at")) or collected_dt
             status = str(cr.get("status") or "unknown")
             error = cr.get("error") if isinstance(cr.get("error"), dict) else {}
@@ -436,7 +444,14 @@ class ClickHouseStorage:
             username_val = str(decrypted_payload.get("username") or "")
             payload_data = cr.get("payload") or {}
 
-            col_id = str(uuid.uuid5(uuid.NAMESPACE_OID, f"{payload_id}:col:{collector_name}"))
+            existing_id = cr.get("id")
+            if existing_id:
+                try:
+                    col_id = str(uuid.UUID(str(existing_id)))
+                except (ValueError, AttributeError):
+                    col_id = str(uuid.uuid5(uuid.NAMESPACE_OID, col_suffix))
+            else:
+                col_id = str(uuid.uuid5(uuid.NAMESPACE_OID, col_suffix))
             preview = extract_summary_preview(collector_name, payload_data)
 
             col_row = {
@@ -512,7 +527,10 @@ class ClickHouseStorage:
 
             # Check for tamper alert
             if collector_name == "tamper" or status == "critical":
-                risk_id = str(uuid.uuid5(uuid.NAMESPACE_OID, f"{payload_id}:risk:{collector_name}"))
+                risk_count = risk_seen_counts.get(collector_name, 0)
+                risk_seen_counts[collector_name] = risk_count + 1
+                risk_suffix = f"{payload_id}:risk:{collector_name}:{risk_count}" if risk_count > 0 else f"{payload_id}:risk:{collector_name}"
+                risk_id = str(uuid.uuid5(uuid.NAMESPACE_OID, risk_suffix))
                 risk_rows.append({
                     "id": risk_id,
                     "payload_id": str(payload_id),
@@ -530,7 +548,11 @@ class ClickHouseStorage:
                 for feat_name, feat_val in payload_data.items():
                     if feat_val is None:
                         continue
-                    feat_id = str(uuid.uuid5(uuid.NAMESPACE_OID, f"{payload_id}:feat:{collector_name}:{feat_name}"))
+                    feat_key = (collector_name, str(feat_name))
+                    f_count = feat_seen_counts.get(feat_key, 0)
+                    feat_seen_counts[feat_key] = f_count + 1
+                    feat_suffix = f"{payload_id}:feat:{collector_name}:{feat_name}:{f_count}" if f_count > 0 else f"{payload_id}:feat:{collector_name}:{feat_name}"
+                    feat_id = str(uuid.uuid5(uuid.NAMESPACE_OID, feat_suffix))
                     feat_row = {
                         "id": feat_id,
                         "payload_id": str(payload_id),
@@ -650,6 +672,7 @@ class ClickHouseStorage:
         status: str | None = None,
         start_time: str | None = None,
         end_time: str | None = None,
+        **kwargs,
     ) -> List[Dict[str, Any]]:
         """Query raw payload logs with high-performance filtering and resource guards."""
         if not self.is_connected():
@@ -657,16 +680,41 @@ class ClickHouseStorage:
 
         where_clauses = []
         params: Dict[str, Any] = {}
+        col_table = "collector_events_v2" if getattr(self, "collector_schema_version", 1) == 2 else "collector_results"
 
         if agent_id:
             where_clauses.append("agent_id = %(agent_id)s")
             params["agent_id"] = agent_id
         if hostname:
-            where_clauses.append("hostname = %(hostname)s")
+            where_clauses.append("lower(hostname) = lower(%(hostname)s)")
             params["hostname"] = hostname
         if username:
-            where_clauses.append("username = %(username)s")
+            where_clauses.append("lower(username) = lower(%(username)s)")
             params["username"] = username
+        if collector and status:
+            if status.lower() == "error":
+                where_clauses.append(
+                    f"payload_id IN (SELECT payload_id FROM {col_table} "
+                    f"WHERE positionCaseInsensitiveUTF8(collector, %(collector)s) > 0 "
+                    f"AND lower(status) IN ('error', 'failed', 'critical', 'tampered'))"
+                )
+            else:
+                where_clauses.append(
+                    f"payload_id IN (SELECT payload_id FROM {col_table} "
+                    f"WHERE positionCaseInsensitiveUTF8(collector, %(collector)s) > 0 "
+                    f"AND lower(status) = lower(%(status)s))"
+                )
+                params["status"] = status
+            params["collector"] = collector
+        elif collector:
+            where_clauses.append(f"payload_id IN (SELECT payload_id FROM {col_table} WHERE positionCaseInsensitiveUTF8(collector, %(collector)s) > 0)")
+            params["collector"] = collector
+        elif status:
+            if status.lower() == "error":
+                where_clauses.append(f"payload_id IN (SELECT payload_id FROM {col_table} WHERE lower(status) IN ('error', 'failed', 'critical', 'tampered'))")
+            else:
+                where_clauses.append(f"payload_id IN (SELECT payload_id FROM {col_table} WHERE lower(status) = lower(%(status)s))")
+                params["status"] = status
         if start_time:
             where_clauses.append("received_at >= %(start_time)s")
             params["start_time"] = start_time

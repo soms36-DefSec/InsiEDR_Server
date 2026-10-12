@@ -304,6 +304,12 @@ async def process_encrypted_request(req) -> tuple[int, dict[str, Any]]:
             if _check_duplicate_policy(storage, envelope, payload):
                 return False
             storage.store_raw_payload(envelope, payload)
+            try:
+                from server.api.cache import api_cache
+                api_cache.clear_pattern("telemetry:*")
+                api_cache.clear_pattern("logs:*")
+            except Exception:
+                pass
             return True
 
         persisted = await anyio.to_thread.run_sync(_persist)

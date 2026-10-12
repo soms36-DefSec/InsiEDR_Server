@@ -273,14 +273,21 @@ def telemetry_explorer(storage, limit=50, cursor=None, collector=None, username=
         try:
             fb_clauses = []
             fb_params = dict(params)
+            version2 = getattr(storage, 'collector_schema_version', 1) == 2
             for c in clauses:
                 fb_c = (c.replace('collector_name', 'cr.collector')
                          .replace('summary_preview', 'cr.payload_json')
                          .replace('timestamp', 'cr.collector_collected_at')
                          .replace('event_id', 'cr.id'))
+                if not version2:
+                    import re
+                    fb_c = re.sub(
+                        r'positionCaseInsensitiveUTF8\(username,\s*(%\([^)]+\)s)\)\s*>\s*0',
+                        r'cr.payload_id IN (SELECT payload_id FROM raw_payloads WHERE positionCaseInsensitiveUTF8(username, \1) > 0)',
+                        fb_c
+                    )
                 fb_clauses.append(fb_c)
             fb_where = (' WHERE ' + ' AND '.join(fb_clauses)) if fb_clauses else ''
-            version2 = getattr(storage, 'collector_schema_version', 1) == 2
             if version2:
                 source = ' FROM (SELECT * FROM collector_events_v2 FINAL) cr '
                 username_col = 'cr.username'
@@ -325,15 +332,17 @@ def telemetry_explorer(storage, limit=50, cursor=None, collector=None, username=
                 # Secondary fast lookup for usernames on returned limit rows only
                 if pids and not version2:
                     try:
-                        rp_res = storage._query(
-                            "SELECT payload_id, argMin(username, received_at) AS username FROM raw_payloads WHERE payload_id IN %(pids)s GROUP BY payload_id",
-                            {'pids': list(dict.fromkeys(pids))}
-                        )
-                        if rp_res and hasattr(rp_res, 'result_rows'):
-                            user_map = {r[0]: str(r[1] or '') for r in rp_res.result_rows}
-                            for ev in events:
-                                if ev.get('payload_id') in user_map:
-                                    ev['username'] = user_map[ev['payload_id']]
+                        valid_pids = [p for p in dict.fromkeys(pids) if p]
+                        if valid_pids:
+                            rp_res = storage._query(
+                                "SELECT payload_id, argMin(username, received_at) AS username FROM raw_payloads WHERE payload_id IN %(pids)s GROUP BY payload_id",
+                                {'pids': valid_pids}
+                            )
+                            if rp_res and hasattr(rp_res, 'result_rows'):
+                                user_map = {r[0]: str(r[1] or '') for r in rp_res.result_rows}
+                                for ev in events:
+                                    if ev.get('payload_id') in user_map:
+                                        ev['username'] = user_map[ev['payload_id']]
                     except Exception:
                         pass
         except Exception:
@@ -525,8 +534,11 @@ def telemetry_histogram(storage, time_range='1h', interval=None, collector=None,
         params['collector'] = collector.strip().lower()
         clauses.append("lower(collector_name) = %(collector)s")
     if status:
-        params['status'] = status.lower()
-        clauses.append("lower(status) = %(status)s")
+        if status.lower() == 'error':
+            clauses.append("lower(status) IN ('error', 'failed', 'critical', 'tampered')")
+        else:
+            params['status'] = status.lower()
+            clauses.append("lower(status) = %(status)s")
     if agent_id:
         params['agent_id'] = str(agent_id)
         clauses.append("agent_id = %(agent_id)s")

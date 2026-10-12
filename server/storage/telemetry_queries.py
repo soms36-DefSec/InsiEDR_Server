@@ -1,8 +1,11 @@
 import json
+import logging
 from typing import Any
 from datetime import datetime, timezone
 from contextlib import closing
 from server.storage.telemetry_cursor import filter_key, encode_cursor, decode_cursor
+
+logger = logging.getLogger("insiedr.telemetry")
 
 
 def telemetry_page(storage, limit=100, offset=0, collector=None, username=None,
@@ -414,6 +417,17 @@ def telemetry_histogram(storage, time_range='1h', interval=None, collector=None,
     }
     time_delta, default_int, substr_len = delta_map.get(time_range, delta_map['1h'])
     actual_interval = interval or default_int
+    interval_substr_map = {
+        '1m': 16,
+        '5m': 16,
+        '10m': 16,
+        '15m': 16,
+        '1h': 13,
+        '2h': 13,
+        '1d': 10,
+    }
+    if interval and interval in interval_substr_map:
+        substr_len = interval_substr_map[interval]
     start_time = (now - time_delta).strftime('%Y-%m-%d %H:%M:%S')
 
     clauses, params = [
@@ -424,8 +438,11 @@ def telemetry_histogram(storage, time_range='1h', interval=None, collector=None,
         clauses.append("LOWER(cr.collector) = LOWER(%s)")
         params.append(collector.strip())
     if status:
-        clauses.append("LOWER(cr.status) = LOWER(%s)")
-        params.append(status.strip())
+        if status.lower() == 'error':
+            clauses.append("LOWER(cr.status) IN ('error', 'failed', 'critical', 'tampered')")
+        else:
+            clauses.append("LOWER(cr.status) = LOWER(%s)")
+            params.append(status.strip())
     if agent_id:
         clauses.append("cr.agent_id = %s")
         params.append(str(agent_id))
