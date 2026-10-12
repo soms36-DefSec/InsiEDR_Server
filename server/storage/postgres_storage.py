@@ -1058,11 +1058,7 @@ class PostgresStorage(BaseStorage):
                     f"""
                     SELECT cr.payload_id, cr.agent_id, cr.collector, cr.collector_collected_at, cr.hostname,
                            cr.status, cr.payload_json, rp.username, rp.received_at, re.risk_level, re.summary, re.correlated_signals_json, re.risk_score,
-                           (
-                               SELECT json_object_agg(nf.feature_name, COALESCE(nf.feature_value_text, nf.feature_value_numeric::text))
-                               FROM normalized_features nf
-                               WHERE nf.payload_id = cr.payload_id
-                           ) AS features_json
+                           rp.encrypted_envelope_json, rp.crypto_scheme
                     FROM collector_results cr
                     LEFT JOIN raw_payloads rp ON cr.payload_id = rp.payload_id
                     LEFT JOIN risk_events re ON cr.payload_id = re.payload_id
@@ -1075,10 +1071,6 @@ class PostgresStorage(BaseStorage):
                 results = []
                 for row in cursor.fetchall():
                     payload = row[6] if isinstance(row[6], dict) else (json.loads(row[6]) if row[6] else {})
-                    features_json = row[13] if isinstance(row[13], dict) else (json.loads(row[13]) if row[13] else {})
-                    if not payload and features_json:
-                        payload = features_json
-                        
                     results.append({
                         "payload_id": row[0],
                         "agent_id": row[1],
@@ -1092,7 +1084,9 @@ class PostgresStorage(BaseStorage):
                         "risk_level": row[9],
                         "summary": row[10],
                         "correlated_signals_json": row[11],
-                        "risk_score": row[12]
+                        "risk_score": row[12],
+                        "encrypted_envelope_json": row[13],
+                        "crypto_scheme": row[14],
                     })
                 return results
 

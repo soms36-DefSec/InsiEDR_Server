@@ -99,18 +99,8 @@ def telemetry_page(storage, limit=100, offset=0, collector=None, username=None,
             FROM risk_events WHERE payload_id IN %(ids)s GROUP BY payload_id''', {'ids': ids})
         fields = ('risk_level', 'summary', 'correlated_signals_json', 'risk_score')
         risks = {row[0]: dict(zip(fields, row[1])) for row in result.result_rows}
-        empty_ids = list(dict.fromkeys(row['payload_id'] for row in logs if not row['payload']))
-        features = {}
-        if empty_ids:
-            result = storage._query('''SELECT payload_id, feature_name,
-                argMax(coalesce(feature_value_text, toString(feature_value_numeric)), (created_at, id))
-                FROM normalized_features WHERE payload_id IN %(ids)s GROUP BY payload_id, feature_name''', {'ids': empty_ids})
-            for payload_id, name, value in result.result_rows:
-                features.setdefault(payload_id, {})[name] = value
         for row in logs:
             row.update(risks.get(row['payload_id'], dict.fromkeys(fields)))
-            if not row['payload']:
-                row['payload'] = features.get(row['payload_id'], {})
     return {'logs': logs, 'total': total, 'offset': offset, 'limit': limit,
             'has_more': has_more, 'next_cursor': next_cursor, 'source': 'clickhouse'}
 
@@ -466,10 +456,12 @@ def telemetry_event_detail(storage, event_id: str) -> dict[str, Any] | None:
     if pid:
         try:
             f_res = storage._query("SELECT feature_name, coalesce(feature_value_text, toString(feature_value_numeric)) "
-                                   "FROM normalized_features WHERE payload_id = %(pid)s", {'pid': pid})
+                                   "FROM normalized_features WHERE payload_id = %(pid)s "
+                                   "AND (feature_value_numeric IS NOT NULL OR feature_value_text != '')", {'pid': pid})
             if f_res and hasattr(f_res, 'result_rows'):
                 for fname, fval in f_res.result_rows:
-                    features[str(fname)] = fval
+                    if fval is not None and str(fval).lower() != 'none':
+                        features[str(fname)] = fval
         except Exception:
             pass
         try:

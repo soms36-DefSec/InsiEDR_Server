@@ -9,7 +9,45 @@ from server.api.export import (
     flatten_collector_payload,
     _build_collector_filename,
     _normalize_iso_date_bound,
+    _normalize_collector_payload_for_record,
+    _resolve_collector_payload,
 )
+
+
+def test_user_keyed_logon_payload_unwraps_cleanly_without_prefixes():
+    # Real payload structure emitted by Windows logon.py collector
+    raw_logon_payload = {
+        "MUTHUMUGESH123@HOTMAIL.COM": {
+            "logon_count": 5,
+            "logoff_count": 3,
+            "first_logon_time": "2026-10-12T04:50:45",
+            "interactive_duration_seconds": 600.0,
+        },
+        "DWM-4": {
+            "logon_count": 1,
+            "logoff_count": 0,
+        },
+        "UMFD-5": {
+            "logon_count": 2,
+            "logoff_count": 0,
+        },
+    }
+    # 1. When record has matching username
+    record = {"username": "MUTHUMUGESH123@HOTMAIL.COM", "payload": raw_logon_payload}
+    norm = _resolve_collector_payload(record, "logon")
+    assert "logon_count" in norm
+    assert norm["logon_count"] == 5
+    assert norm["first_logon_time"] == "2026-10-12T04:50:45"
+    assert "DWM-4" not in norm
+    assert "UMFD-5" not in norm
+
+    # 2. When flattened, column names are clean and NOT prefixed by username
+    flat = flatten_collector_payload(norm)
+    assert "logon_count" in flat
+    assert "MUTHUMUGESH123@HOTMAIL_COM_logon_count" not in flat
+    assert "DWM_4_logon_count" not in flat
+    assert flat["interactive_duration_seconds"] == 600.0
+
 
 
 # ------------------------------------------------------------------------------

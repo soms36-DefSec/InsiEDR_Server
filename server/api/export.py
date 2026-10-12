@@ -1240,6 +1240,59 @@ async def export_keystrokes(
 # Collector-Specific Dataset Export & Dynamic Feature Schema
 # ------------------------------------------------------------------------------
 
+def _normalize_collector_payload_for_record(payload: Any, row_username: str | None = None) -> Any:
+    """Normalize collector payload by unwrapping per-user dictionaries (e.g. logon collector)
+    so columns represent actual feature metrics instead of username-prefixed keys.
+    Filters out system accounts like DWM-* and UMFD-*.
+    """
+    if not isinstance(payload, dict) or not payload:
+        return payload
+
+    is_user_keyed = (
+        len(payload) > 0
+        and all(isinstance(v, dict) for v in payload.values())
+        and any(
+            any(k in v for k in ("logon_count", "logoff_count", "first_logon_time", "interactive_duration_seconds", "event_count", "failed_logons"))
+            for v in payload.values()
+        )
+    )
+    if is_user_keyed:
+        if row_username:
+            clean_u = row_username.strip().lower()
+            for k, v in payload.items():
+                k_clean = k.strip().lower()
+                if k_clean == clean_u or clean_u in k_clean or k_clean in clean_u:
+                    return v
+        for k, v in payload.items():
+            k_upper = k.strip().upper()
+            if not any(k_upper.startswith(prefix) for prefix in ("DWM-", "UMFD-", "SYSTEM", "LOCAL SERVICE", "NETWORK SERVICE")):
+                return v
+        return next(iter(payload.values()))
+
+    return payload
+
+
+def _resolve_collector_payload(record: dict[str, Any], target_collector: str) -> dict[str, Any]:
+    raw_payload = record.get("payload") or record.get("payload_json") or {}
+    if isinstance(raw_payload, str) and raw_payload.strip():
+        try:
+            raw_payload = json.loads(raw_payload)
+        except Exception:
+            raw_payload = {}
+
+    if (not raw_payload or not isinstance(raw_payload, dict)):
+        decrypted = _resolve_decrypted_payload(record)
+        if isinstance(decrypted, dict):
+            for col_entry in decrypted.get("collectors", []):
+                col_name = str(col_entry.get("collector") or "").lower()
+                target_col = target_collector.lower()
+                if col_name == target_col or col_name.replace("-", "_") == target_col.replace("-", "_"):
+                    raw_payload = col_entry.get("payload") or {}
+                    break
+
+    return _normalize_collector_payload_for_record(raw_payload, record.get("username"))
+
+
 def flatten_collector_payload(payload: Any, prefix: str = "", sep: str = "_") -> dict[str, Any]:
     """Recursively flatten nested dictionary features into single-level column keys.
     Preserves types: int, float, bool, str.
@@ -1333,12 +1386,7 @@ def _stream_csv_collector_dataset(
             if not rows:
                 break
             for record in rows:
-                payload = record.get("payload") or record.get("payload_json") or {}
-                if isinstance(payload, str):
-                    try:
-                        payload = json.loads(payload)
-                    except ValueError:
-                        payload = {}
+                payload = _resolve_collector_payload(record, collector)
                 flat = flatten_collector_payload(payload)
                 columns.update(flat)
                 if len(columns) > 10000:
@@ -1426,12 +1474,7 @@ def preview_collector_dataset(
     flattened_rows = []
 
     for r in rows:
-        raw_payload = r.get("payload") or r.get("payload_json") or {}
-        if isinstance(raw_payload, str):
-            try:
-                raw_payload = json.loads(raw_payload)
-            except Exception:
-                raw_payload = {}
+        raw_payload = _resolve_collector_payload(r, collector.strip())
         flat = flatten_collector_payload(raw_payload)
         discovered_keys.update(flat.keys())
         ts = _format_timestamp(r.get("collected_at") or r.get("collector_collected_at") or r.get("received_at"))

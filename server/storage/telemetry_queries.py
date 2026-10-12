@@ -139,16 +139,18 @@ def telemetry_page(storage, limit=100, offset=0, collector=None, username=None,
             if empty_ids:
                 cur.execute(
                     "SELECT payload_id, feature_name, COALESCE(feature_value_text, CAST(feature_value_numeric AS TEXT)) "
-                    "FROM normalized_features WHERE payload_id IN (" + ",".join("%s" for _ in empty_ids) + ")",
+                    "FROM normalized_features WHERE payload_id IN (" + ",".join("%s" for _ in empty_ids) + ") "
+                    "AND (feature_value_numeric IS NOT NULL OR (feature_value_text IS NOT NULL AND feature_value_text != ''))",
                     tuple(empty_ids),
                 )
                 for payload_id, name, value in cur.fetchall():
-                    features.setdefault(payload_id, {})[name] = value
+                    if value is not None and str(value).lower() != 'none':
+                        features.setdefault(payload_id, {})[name] = value
             for row in logs:
                 row.update(risk.get(row["payload_id"], dict.fromkeys(
                     ("risk_level", "summary", "correlated_signals_json", "risk_score"))))
-                if not row["payload"]:
-                    row["payload"] = features.get(row["payload_id"], {})
+                if not row["payload"] and row["payload_id"] in features:
+                    row["payload"] = features[row["payload_id"]]
     return {"logs": logs, "total": total, "offset": offset, "limit": limit,
             "has_more": has_more, "next_cursor": next_cursor, 'source': 'postgres'}
 
@@ -301,7 +303,7 @@ def telemetry_event_detail(storage, event_id: str) -> dict[str, Any] | None:
 
         raw_json = d.get('payload_json') or '{}'
         payload_obj = {}
-        if isinstance(raw_json, str):
+        if isinstance(raw_json, str) and raw_json.strip():
             try:
                 payload_obj = json.loads(raw_json)
             except Exception:
@@ -314,17 +316,54 @@ def telemetry_event_detail(storage, event_id: str) -> dict[str, Any] | None:
         pid = d.get('payload_id')
         cname = str(d.get('collector_name') or '')
 
+        if (not payload_obj or payload_obj == {}) and pid:
+            try:
+                cur.execute(
+                    "SELECT encrypted_envelope_json, crypto_scheme FROM raw_payloads WHERE payload_id = %s LIMIT 1",
+                    (pid,)
+                )
+                rp_row = cur.fetchone()
+                if rp_row:
+                    envelope, scheme = rp_row[0], rp_row[1] or "aes-256-gcm"
+                    if envelope:
+                        if isinstance(envelope, str):
+                            try:
+                                envelope = json.loads(envelope)
+                            except Exception:
+                                envelope = None
+                        if isinstance(envelope, dict):
+                            from server.plugin_registry import registry
+                            if not registry.schemes():
+                                registry.initialize()
+                            plugin = registry.get(scheme)
+                            if plugin and hasattr(plugin, "decrypt"):
+                                plaintext_bytes = plugin.decrypt(envelope)
+                                from shared.protocol import parse_json_bytes
+                                decrypted_full = parse_json_bytes(plaintext_bytes)
+                                if isinstance(decrypted_full, dict):
+                                    for col_item in decrypted_full.get("collectors", []):
+                                        item_name = str(col_item.get("collector") or "").lower()
+                                        target_name = cname.lower()
+                                        if item_name == target_name or item_name.replace("-", "_") == target_name.replace("-", "_"):
+                                            payload_obj = col_item.get("payload") or {}
+                                            raw_json = json.dumps(payload_obj)
+                                            break
+            except Exception:
+                pass
+
         features = {}
         risk = {}
         if pid:
             try:
                 cur.execute(
                     "SELECT feature_name, COALESCE(feature_value_text, CAST(feature_value_numeric AS TEXT)) "
-                    "FROM normalized_features WHERE payload_id = %s",
+                    "FROM normalized_features WHERE payload_id = %s "
+                    "AND (feature_value_numeric IS NOT NULL OR (feature_value_text IS NOT NULL AND feature_value_text != ''))",
                     (pid,),
                 )
                 for fname, fval in cur.fetchall():
-                    features[str(fname)] = fval
+                    if fval is not None and str(fval).lower() != 'none':
+                        features[str(fname)] = fval
             except Exception:
                 pass
             try:
