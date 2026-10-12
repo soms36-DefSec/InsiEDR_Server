@@ -28,6 +28,7 @@ import os
 import hashlib
 import threading
 import re
+import time
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
@@ -116,6 +117,8 @@ class ClickHouseStorage:
         self._client = client
         self._is_connected = False
         self._client_lock = threading.RLock()
+        self._last_ping_time = 0.0
+        self._last_ping_status = False
 
         if client is not None:
             self._is_connected = True
@@ -179,6 +182,43 @@ class ClickHouseStorage:
     def is_connected(self) -> bool:
         return self._is_connected and self._client is not None
 
+    def ping(self) -> bool:
+        """Check ClickHouse connectivity with an active SELECT 1 command, reconnecting if disconnected.
+        Throttles redundant probe queries within 3.0s and uses bounded lock acquisition to prevent
+        health check timeouts when analytics queries or micro-batches are running.
+        """
+        now = time.monotonic()
+        if self._is_connected and (now - getattr(self, "_last_ping_time", 0.0) < 3.0):
+            return getattr(self, "_last_ping_status", True)
+
+        if not (self._is_connected and self._client is not None):
+            self._init_connection()
+        if not (self._is_connected and self._client is not None):
+            self._last_ping_time = now
+            self._last_ping_status = False
+            return False
+
+        # Attempt to acquire lock with 1.0s timeout: if another thread is currently querying ClickHouse,
+        # it proves ClickHouse is active and connected without blocking the health probe.
+        acquired = self._client_lock.acquire(timeout=1.0)
+        if not acquired:
+            return self._is_connected
+
+        try:
+            self._client.command("SELECT 1")
+            self._is_connected = True
+            self._last_ping_time = now
+            self._last_ping_status = True
+            return True
+        except Exception as exc:
+            logger.warning("ClickHouse ping probe failed: %s", exc)
+            self._is_connected = False
+            self._last_ping_time = now
+            self._last_ping_status = False
+            return False
+        finally:
+            self._client_lock.release()
+
     def _query(self, query: str, parameters: Optional[Dict[str, Any]] = None) -> Any:
         """Execute a parameterized query with server-side memory & execution time quotas."""
         settings = {
@@ -191,8 +231,19 @@ class ClickHouseStorage:
             # Route older count/export APIs through the same deduplicated source.
             # This only rewrites a fixed internal table token, never parameters.
             query = re.sub(r'\bFROM collector_results\b', 'FROM collector_events_v2 FINAL', query)
-        with self._client_lock:
-            return self._client.query(query, parameters=parameters, settings=settings)
+        try:
+            with self._client_lock:
+                res = self._client.query(query, parameters=parameters, settings=settings)
+            self._last_ping_time = time.monotonic()
+            self._last_ping_status = True
+            return res
+        except Exception as exc:
+            logger.error("ClickHouse query error: %s\nQuery: %s", exc, query[:500])
+            err_msg = str(exc).lower()
+            if "connection" in err_msg or "refused" in err_msg or "closed" in err_msg or "broken pipe" in err_msg:
+                self._is_connected = False
+                self._last_ping_status = False
+            raise
 
     def ensure_schema(self) -> None:
         """Create ClickHouse database and telemetry tables if not already present."""

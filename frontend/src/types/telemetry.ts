@@ -321,6 +321,8 @@ export interface SystemHealth {
   model_missing_artifacts?: string[];
   model_missing_dependencies?: string[];
   database?: 'ok' | 'error' | 'not_configured' | string;
+  analytics?: 'ok' | 'unavailable' | 'disabled' | string;
+  telemetry_backend?: 'postgres' | 'clickhouse' | string;
   crypto?: string;
   queue_backend?: string;
   queue_status?: 'ok' | 'degraded' | 'unavailable' | string;

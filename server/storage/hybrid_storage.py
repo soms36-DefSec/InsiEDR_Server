@@ -64,6 +64,30 @@ class HybridStorage(BaseStorage):
     def connection(self):
         return self.pg.connection()
 
+    def ping(self) -> bool:
+        """Check primary PostgreSQL database connectivity."""
+        if hasattr(self.pg, "ping") and callable(self.pg.ping):
+            return self.pg.ping()
+        try:
+            with self.connection() as conn:
+                with conn.cursor() as cur:
+                    cur.execute("SELECT 1")
+            return True
+        except Exception:
+            return False
+
+    def ping_analytics(self) -> Optional[bool]:
+        """Check ClickHouse analytics engine connectivity.
+        Returns True if connected and responsive, False if error/disconnected, None if not configured.
+        """
+        if not self.ch:
+            return None
+        if hasattr(self.ch, "ping") and callable(self.ch.ping):
+            return self.ch.ping()
+        if hasattr(self.ch, "is_connected") and callable(self.ch.is_connected):
+            return self.ch.is_connected()
+        return False
+
     @property
     def dsn(self):
         return getattr(self.pg, "dsn", None)
@@ -160,7 +184,7 @@ class HybridStorage(BaseStorage):
             if self.ch and self.ch.is_connected():
                 try:
                     res = self.ch.get_telemetry_explorer(**filters)
-                    if res and res.get('events'):
+                    if res is not None and ('events' in res or 'logs' in res):
                         return res
                 except ValueError:
                     raise
@@ -184,7 +208,7 @@ class HybridStorage(BaseStorage):
             if self.ch and self.ch.is_connected():
                 try:
                     res = self.ch.get_telemetry_histogram(**filters)
-                    if res and res.get('total_events', 0) > 0:
+                    if res is not None and ('total_events' in res or 'histogram' in res or res.get('ok')):
                         return res
                 except Exception as exc:
                     logger.warning('ClickHouse telemetry histogram failed: %s', exc)

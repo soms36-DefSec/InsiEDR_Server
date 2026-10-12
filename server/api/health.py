@@ -96,6 +96,19 @@ def health(
             database = "error"
             db_healthy = False
 
+    analytics = "disabled"
+    if storage is not None:
+        if hasattr(storage, "ping_analytics") and callable(storage.ping_analytics):
+            ana_status = storage.ping_analytics()
+            if ana_status is True:
+                analytics = "ok"
+            elif ana_status is False:
+                analytics = "unavailable"
+            else:
+                analytics = "disabled"
+        elif hasattr(storage, "ch") and storage.ch is not None:
+            analytics = "ok" if getattr(storage.ch, "is_connected", lambda: False)() else "unavailable"
+
     schemes = registry.schemes()
     crypto = "ok" if ("hpke" in schemes or "aes-256-gcm" in schemes) else "unconfigured"
     plaintext = "enabled" if "plaintext" in schemes else "disabled"
@@ -117,6 +130,8 @@ def health(
     resp_body = {
         "ok": status_ok,
         "database": database,
+        "analytics": analytics,
+        "telemetry_backend": getattr(storage, "telemetry_read_backend", "postgres") if storage is not None else "none",
         "crypto": crypto,
         "crypto_schemes": schemes,
         "plaintext_crypto": plaintext,

@@ -328,6 +328,8 @@ def test_deep_health_check(client):
     assert resp.status_code == 200
     data = resp.json()
     assert "database" in data
+    assert "analytics" in data
+    assert "telemetry_backend" in data
     assert "queue_backend" in data
     assert "sse_subscribers" in data
     assert "threats" in data["sse_subscribers"]

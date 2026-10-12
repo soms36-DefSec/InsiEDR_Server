@@ -34,6 +34,7 @@ export const TopNavbar: React.FC<TopNavbarProps> = ({
 
   const summary = context.summary;
   const databaseReady = context.health?.database === 'ok';
+  const analyticsStatus = context.health?.analytics as string | undefined;
   const handleRefresh = async () => {
     setIsRefreshing(true);
     try {
@@ -101,21 +102,69 @@ export const TopNavbar: React.FC<TopNavbarProps> = ({
         {/* Right Section: Fleet Status & Action Controls */}
         <div className="flex items-center gap-3 shrink-0">
           {/* Fleet Status Metrics: Total PCs, Online, Offline */}
-          <div className="hidden xl:flex items-center gap-2 text-xs">
+          <div className="hidden lg:flex items-center gap-2 text-xs">
             <FleetStatusCards summary={summary} compact />
 
             <span className="w-px h-3.5 bg-slate-200" />
 
-            <div className="flex items-center gap-1.5 text-slate-600" title="Database health">
+            {/* PostgreSQL OLTP Status */}
+            <div
+              className="flex items-center gap-1.5 text-slate-600"
+              title="PostgreSQL OLTP Engine: Persists fleet metadata, baselines, and outbox queue"
+            >
               <Database className={`w-3.5 h-3.5 ${databaseReady ? 'text-emerald-600' : 'text-amber-600'}`} />
               <span className={`font-semibold uppercase text-[10px] ${databaseReady ? 'text-emerald-700' : 'text-amber-700'}`}>
                 {databaseReady ? 'DB READY' : context.health?.database === 'error' ? 'DB ERROR' : 'DB UNKNOWN'}
               </span>
             </div>
+
+            {/* ClickHouse OLAP Analytics Status */}
+            {analyticsStatus !== 'disabled' && (
+              <div
+                className="flex items-center gap-1.5 text-slate-600"
+                title={
+                  analyticsStatus === 'ok'
+                    ? 'ClickHouse OLAP Engine: High-velocity telemetry queries and server-side aggregation operational'
+                    : analyticsStatus === 'unavailable'
+                    ? 'ClickHouse OLAP Engine unreachable: High-volume queries temporarily falling back to PostgreSQL'
+                    : 'ClickHouse OLAP Engine status unknown: Probing analytics engine...'
+                }
+              >
+                <span
+                  className={`w-2 h-2 rounded-full ${
+                    analyticsStatus === 'ok'
+                      ? 'bg-emerald-500'
+                      : analyticsStatus === 'unavailable'
+                      ? 'bg-red-500 animate-pulse'
+                      : 'bg-amber-400'
+                  }`}
+                />
+                <span
+                  className={`font-semibold uppercase text-[10px] ${
+                    analyticsStatus === 'ok'
+                      ? 'text-emerald-700'
+                      : analyticsStatus === 'unavailable'
+                      ? 'text-red-700'
+                      : 'text-amber-700'
+                  }`}
+                >
+                  {analyticsStatus === 'ok' ? 'CH READY' : analyticsStatus === 'unavailable' ? 'CH UNAVAIL' : 'CH UNKNOWN'}
+                </span>
+              </div>
+            )}
           </div>
 
           {/* Real-time Stream Status */}
-          <div className="flex items-center gap-2 px-2.5 py-1.5 rounded-md border border-slate-200 bg-slate-50 text-xs">
+          <div
+            className="flex items-center gap-2 px-2.5 py-1.5 rounded-md border border-slate-200 bg-slate-50 text-xs"
+            title={
+              connectionMode === 'sse'
+                ? 'Server-Sent Events (SSE) active: Live cache invalidation and notification channel connected (does not reflect database query health)'
+                : connectionMode === 'polling'
+                ? 'HTTP Polling active: Polling server endpoints every 3 seconds'
+                : 'Live stream disconnected: Metrics may be stale'
+            }
+          >
             <span
               className={`w-2 h-2 rounded-full ${
                 !autoRefresh ? 'bg-slate-400' : connectionMode === 'sse'
@@ -127,7 +176,7 @@ export const TopNavbar: React.FC<TopNavbarProps> = ({
             />
             <span className="text-slate-600 text-[11px] font-normal hidden sm:inline">
               {!autoRefresh ? 'Paused' : connectionMode === 'sse'
-                ? 'Stream Active'
+                ? 'Event Stream Active'
                 : autoRefresh
                 ? 'Polling 3s'
                 : 'Paused'}

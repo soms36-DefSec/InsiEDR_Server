@@ -238,3 +238,42 @@ def test_hybrid_storage_telemetry_detail_and_histogram_routing():
     ch.get_telemetry_event_detail.assert_not_called()
     ch.get_telemetry_histogram.assert_not_called()
 
+
+def test_hybrid_storage_preserves_valid_empty_results_when_connected():
+    pg = MagicMock()
+    ch = MagicMock()
+    pg.get_telemetry_explorer.return_value = {"events": [{"event_id": "pg-fallback"}]}
+    pg.get_telemetry_histogram.return_value = {"total_events": 999, "ok": True}
+
+    # ClickHouse returns legitimately empty result sets for both explorer and histogram
+    ch.get_telemetry_explorer.return_value = {"events": [], "logs": [], "has_more": False}
+    ch.get_telemetry_histogram.return_value = {"total_events": 0, "histogram": [], "ok": True}
+    ch.is_connected.return_value = True
+
+    hybrid = HybridStorage(postgres_storage=pg, clickhouse_storage=ch)
+    exp = hybrid.get_telemetry_explorer(limit=50)
+    assert exp == {"events": [], "logs": [], "has_more": False}
+    pg.get_telemetry_explorer.assert_not_called()
+
+    hist = hybrid.get_telemetry_histogram(time_range="1h")
+    assert hist == {"total_events": 0, "histogram": [], "ok": True}
+    pg.get_telemetry_histogram.assert_not_called()
+
+
+def test_hybrid_storage_ping_and_ping_analytics():
+    pg = MagicMock()
+    ch = MagicMock()
+    pg.ping.return_value = True
+    ch.ping.return_value = True
+
+    hybrid = HybridStorage(postgres_storage=pg, clickhouse_storage=ch)
+    assert hybrid.ping() is True
+    assert hybrid.ping_analytics() is True
+
+    ch.ping.return_value = False
+    assert hybrid.ping_analytics() is False
+
+    hybrid_no_ch = HybridStorage(postgres_storage=pg, clickhouse_storage=None)
+    assert hybrid_no_ch.ping_analytics() is None
+
+

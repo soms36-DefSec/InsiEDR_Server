@@ -9,7 +9,7 @@ const metrics: { key: FleetFilter; label: string }[] = [
   { key: 'total', label: 'Total PCs' },
   { key: 'online', label: 'Online' },
   { key: 'offline', label: 'Offline' },
-  { key: 'logs', label: 'Total Logs' },
+  { key: 'logs', label: 'Total Logs (All-Time)' },
 ];
 
 function fleetEndpoints(summary: DashboardSummary | null): FleetEndpoint[] {
@@ -106,6 +106,7 @@ export function FleetStatusCards({ summary, compact = false }: {
               aria-expanded={open === key}
               aria-controls={open === key ? `${id}-endpoints` : undefined}
               aria-label={`${label}: ${counts[key] ?? 'unavailable'}. Show details`}
+              title={isLogs ? 'All-Time Raw Payloads across entire history' : undefined}
               onClick={() => {
                 setOpen(open === key ? null : key);
                 setQuery('');
@@ -161,7 +162,7 @@ export function FleetStatusCards({ summary, compact = false }: {
             <div>
               <h2 className="text-sm font-semibold">{selectedLabel} · {counts[open] ?? '—'}</h2>
               <p className="mt-1 text-xs text-slate-500">
-                {open === 'logs' ? 'Telemetry volume breakdown across all collectors' : 'Online = seen within the last 5 minutes.'}
+                {open === 'logs' ? 'All-time raw payload envelope volume across all collectors' : 'Online = seen within the last 5 minutes.'}
               </p>
             </div>
             <button type="button" onClick={close} aria-label="Close details" className="p-1 rounded hover:bg-slate-100 focus-visible:outline-blue-500 cursor-pointer">

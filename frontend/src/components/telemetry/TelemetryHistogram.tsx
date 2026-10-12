@@ -21,6 +21,29 @@ export interface TelemetryHistogramProps {
   onSelectBucket?: (timestamp: string) => void;
 }
 
+const formatAxisLabel = (isoStr: string | undefined, range: string, intervalStr: string): string => {
+  if (!isoStr) return '';
+  const d = new Date(isoStr);
+  if (isNaN(d.getTime())) return '';
+  const isDailyOrLong = intervalStr === '1d' || range === 'all' || range === '7d';
+  if (isDailyOrLong) {
+    return d.toLocaleDateString([], { month: 'short', day: 'numeric' });
+  }
+  return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+};
+
+const formatTooltipTime = (isoStr: string, range: string, intervalStr: string): string => {
+  const d = new Date(isoStr);
+  if (isNaN(d.getTime())) return isoStr;
+  if (intervalStr === '1d' || range === 'all') {
+    return d.toLocaleDateString([], { weekday: 'short', month: 'short', day: 'numeric', year: 'numeric' });
+  }
+  if (range === '7d' || intervalStr === '2h') {
+    return `${d.toLocaleDateString([], { month: 'short', day: 'numeric' })} ${d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}`;
+  }
+  return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+};
+
 export const TelemetryHistogram: React.FC<TelemetryHistogramProps> = ({
   timeRange,
   activeCollector,
@@ -118,7 +141,7 @@ export const TelemetryHistogram: React.FC<TelemetryHistogramProps> = ({
           ) : (
             <div className="flex items-center gap-1.5 bg-slate-50 border border-slate-200/80 px-2 py-0.5 rounded text-[11px] text-slate-600">
               <Activity className="w-3 h-3 text-blue-500" />
-              <span className="text-slate-500">Volume:</span>
+              <span className="text-slate-500">Volume{timeRange === 'all' ? ' (90d window)' : ''}:</span>
               <span className="font-mono font-semibold text-slate-900">{totalEvents.toLocaleString()}</span>
               <span className="text-slate-400">events</span>
             </div>
@@ -221,9 +244,9 @@ export const TelemetryHistogram: React.FC<TelemetryHistogramProps> = ({
 
         {/* Time axis endpoints */}
         <div className="flex justify-between items-center text-[10px] text-slate-400 font-mono mt-1 pt-0.5 select-none">
-          <span>{displayBuckets[0]?.timestamp ? new Date(displayBuckets[0].timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : 'Start'}</span>
-          <span className="text-slate-400 text-[10px]">Rolling Window ({timeRange.toUpperCase()})</span>
-          <span>{displayBuckets.at(-1)?.timestamp ? new Date(displayBuckets.at(-1)!.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : 'Now'}</span>
+          <span>{displayBuckets[0]?.timestamp ? formatAxisLabel(displayBuckets[0].timestamp, timeRange, interval) : 'Start'}</span>
+          <span className="text-slate-400 text-[10px]">Rolling Window ({timeRange === 'all' ? '90D RETENTION' : timeRange.toUpperCase()})</span>
+          <span>{displayBuckets.at(-1)?.timestamp ? formatAxisLabel(displayBuckets.at(-1)!.timestamp, timeRange, interval) : 'Now'}</span>
         </div>
       </div>
 
@@ -238,7 +261,7 @@ export const TelemetryHistogram: React.FC<TelemetryHistogramProps> = ({
             {hoveredBucket.bucket.count.toLocaleString()} events
           </div>
           <div className="text-slate-400 text-[10px]">
-            {new Date(hoveredBucket.bucket.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })}
+            {formatTooltipTime(hoveredBucket.bucket.timestamp, timeRange, interval)}
           </div>
         </div>
       )}

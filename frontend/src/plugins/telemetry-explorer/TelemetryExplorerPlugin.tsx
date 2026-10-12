@@ -84,12 +84,13 @@ export interface TelemetryExplorerPluginProps extends PluginProps {
   useExplorerApi?: boolean;
 }
 
-export const TelemetryExplorerPlugin: React.FC<TelemetryExplorerPluginProps> = ({ context, useExplorerApi = false }) => {
+export const TelemetryExplorerPlugin: React.FC<TelemetryExplorerPluginProps> = ({ context, useExplorerApi = true }) => {
   const [logs, setLogs] = useState<TelemetryLog[]>(context.logs || []);
   const [selectedLog, setSelectedLog] = useState<TelemetryLog | null>(null);
   const [showTrainingModal, setShowTrainingModal] = useState<boolean>(false);
   const [showCollectorExportModal, setShowCollectorExportModal] = useState<boolean>(false);
   const [availableCollectors, setAvailableCollectors] = useState<string[]>([]);
+  const [lastUpdated, setLastUpdated] = useState<Date | null>(null);
 
   // Filters State
   const [searchTerm, setSearchTerm] = useState('');
@@ -188,8 +189,14 @@ export const TelemetryExplorerPlugin: React.FC<TelemetryExplorerPluginProps> = (
         setHasMore(hasMoreVal);
         setSource(sourceVal);
         setLoadError(null);
+        setLastUpdated(new Date());
       } catch (error) {
-        if (!abort.signal.aborted) setLoadError(error instanceof Error ? error.message : 'Could not load telemetry');
+        if (!abort.signal.aborted) {
+          const errMsg = error instanceof Error ? error.message : 'Could not load telemetry';
+          if (!background || logs.length === 0) {
+            setLoadError(errMsg);
+          }
+        }
       } finally {
         if (request.current === abort) {
           request.current = null;
@@ -525,7 +532,7 @@ export const TelemetryExplorerPlugin: React.FC<TelemetryExplorerPluginProps> = (
             ) : (
               <span className="text-slate-500 font-medium flex items-center gap-1.5">
                 <Activity className="w-3.5 h-3.5 text-blue-500" />
-                <span>All Watchers & Collectors Active ({collectorOptions.length - 1} telemetry sources available)</span>
+                <span>All Collectors ({collectorOptions.length - 1} sources available)</span>
               </span>
             )}
           </div>
@@ -537,8 +544,16 @@ export const TelemetryExplorerPlugin: React.FC<TelemetryExplorerPluginProps> = (
             </span>
             <span className="text-slate-400 font-normal">/</span>
             <span className="text-blue-600 font-mono font-bold">
-              {source === 'clickhouse' ? 'Analytics replica (may lag)' : 'Live telemetry'}
+              {source === 'clickhouse' ? 'Analytics replica' : 'Live telemetry'}
             </span>
+            {lastUpdated && (
+              <>
+                <span className="text-slate-300">|</span>
+                <span className="text-slate-400 font-normal text-[11px]" title={`Last updated at ${lastUpdated.toLocaleTimeString()}`}>
+                  Updated {lastUpdated.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })}
+                </span>
+              </>
+            )}
           </div>
         </div>
       </div>

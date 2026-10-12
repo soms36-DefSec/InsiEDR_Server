@@ -55,24 +55,39 @@ def telemetry_page(storage, limit=100, offset=0, collector=None, username=None,
         if value:
             params[name] = str(value)
             clauses.append(f"cr.collector_collected_at {operator} parseDateTime64BestEffort(%({name})s, 3, 'UTC')")
-    where = ' WHERE ' + ' AND '.join(clauses) if clauses else ''
-    # The legacy writer emits deterministic IDs but MergeTree does not enforce
-    # uniqueness. DISTINCT also prevents replay from changing page boundaries.
-    source = ''' FROM (SELECT DISTINCT id, payload_id, agent_id, collector,
-        collector_collected_at, hostname, status, payload_json FROM collector_results) cr
-        LEFT JOIN (SELECT payload_id, argMin(username, received_at) AS username,
-        min(received_at) AS received_at FROM raw_payloads GROUP BY payload_id) rp
-        ON cr.payload_id = rp.payload_id'''
-    if version2:
-        source = ' FROM (SELECT * FROM collector_events_v2 FINAL) cr'
-    count_where = where
     if cursor:
         timestamp, row_id = decode_cursor(cursor, cursor_source, key)
         if timestamp is None:
             raise ValueError('ClickHouse cursors require a timestamp')
         params.update(cursor_time=timestamp, cursor_id=row_id)
         clauses.append("(cr.collector_collected_at, cr.id) < (parseDateTime64BestEffort(%(cursor_time)s, 3, 'UTC'), toUUID(%(cursor_id)s))")
-        where = ' WHERE ' + ' AND '.join(clauses)
+    where = ' WHERE ' + ' AND '.join(clauses) if clauses else ''
+    count_where = where
+
+    # Push down filters on collector_results to prevent unbounded DISTINCT over memory
+    cr_clauses = [c.replace('cr.', '') for c in clauses if 'rp.' not in c]
+    cr_sub_where = (' WHERE ' + ' AND '.join(cr_clauses)) if cr_clauses else ''
+
+    rp_dependent = any('rp.' in c for c in clauses)
+    inner_limit_clause = ''
+    if not rp_dependent and not version2:
+        params['inner_limit'] = limit + offset + 1
+        inner_limit_clause = ' ORDER BY collector_collected_at DESC, id DESC LIMIT %(inner_limit)s'
+
+    if cr_sub_where or inner_limit_clause:
+        rp_filter = f' WHERE payload_id IN (SELECT payload_id FROM (SELECT id, payload_id, collector_collected_at FROM collector_results{cr_sub_where}{inner_limit_clause}))'
+    else:
+        rp_filter = ''
+
+    # The legacy writer emits deterministic IDs but MergeTree does not enforce
+    # uniqueness. DISTINCT also prevents replay from changing page boundaries.
+    source = f''' FROM (SELECT DISTINCT id, payload_id, agent_id, collector,
+        collector_collected_at, hostname, status, payload_json FROM collector_results{cr_sub_where}{inner_limit_clause}) cr
+        LEFT JOIN (SELECT payload_id, argMin(username, received_at) AS username,
+        min(received_at) AS received_at FROM raw_payloads{rp_filter} GROUP BY payload_id) rp
+        ON cr.payload_id = rp.payload_id'''
+    if version2:
+        source = ' FROM (SELECT * FROM collector_events_v2 FINAL) cr'
     params.update(limit=limit + 1, offset=offset)
     result = storage._query(f'''SELECT cr.id, cr.payload_id, cr.agent_id, cr.collector,
         cr.collector_collected_at AS collected_at, cr.hostname, {username_column} AS username,
@@ -92,7 +107,12 @@ def telemetry_page(storage, limit=100, offset=0, collector=None, username=None,
         row['summary_preview'] = extract_summary_preview(row.get('collector'), row.get('payload'))
     total = None
     if include_total:
-        total = storage._query('SELECT count()' + source + count_where, params).result_rows[0][0]
+        if version2:
+            total = storage._query('SELECT count()' + source + count_where, params).result_rows[0][0]
+        elif not rp_dependent:
+            total = storage._query(f'SELECT count(DISTINCT id) FROM collector_results{cr_sub_where}', params).result_rows[0][0]
+        else:
+            total = storage._query('SELECT count()' + source + count_where, params).result_rows[0][0]
     if include_enrichment and logs:
         ids = list(dict.fromkeys(row['payload_id'] for row in logs))
         result = storage._query('''SELECT payload_id,
