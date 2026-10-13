@@ -14,6 +14,7 @@ from fastapi.exceptions import RequestValidationError
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from server.api.responses import api_error
+import psycopg2
 from psycopg2.pool import PoolError
 from psycopg2.errors import QueryCanceled, LockNotAvailable
 
@@ -77,6 +78,8 @@ def register_error_handlers(app: Any) -> None:
     @app.exception_handler(PoolError)
     @app.exception_handler(QueryCanceled)
     @app.exception_handler(LockNotAvailable)
+    @app.exception_handler(psycopg2.OperationalError)
+    @app.exception_handler(psycopg2.DatabaseError)
     async def handle_database_capacity(request: Request, exc: Exception):
         exc_name = type(exc).__name__
         pgcode = getattr(exc, "pgcode", None)

@@ -1,11 +1,14 @@
 from __future__ import annotations
 
+import logging
 from fastapi import APIRouter, Depends, Request
 from server.api.cache import api_cache
 from server.api.responses import api_error
 from server.api.deps import get_storage, require_operator, OperatorPrincipal
 from psycopg2.pool import PoolError
 from psycopg2.errors import QueryCanceled, LockNotAvailable
+
+logger = logging.getLogger("insiedr.api.stats")
 
 router = APIRouter(prefix="/api", tags=["System & Observability"])
 bp = router  # Backward compatibility alias
@@ -65,7 +68,12 @@ def dashboard_summary(storage=Depends(get_storage),
 
         pc_status = storage.get_pc_status(seconds_since_online=300) if hasattr(storage, "get_pc_status") else {}
         agents = storage.list_agents(limit=500, offset=0) if hasattr(storage, "list_agents") else []
-        stats = _fleet_stats(storage) if hasattr(storage, "get_stats") else {}
+        try:
+            stats = _fleet_stats(storage) if hasattr(storage, "get_stats") else {}
+        except Exception as stats_err:
+            logger.warning("Non-fatal: fleet stats calculation error: %s", stats_err)
+            stats = {"ok": False, "error": str(stats_err)}
+
         res = {
             "ok": True,
             "pc_status": pc_status,

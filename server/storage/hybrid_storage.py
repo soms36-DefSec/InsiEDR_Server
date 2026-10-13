@@ -385,20 +385,27 @@ class HybridStorage(BaseStorage):
           - Relational counts (agents, baselines) from PostgreSQL 16.
           - Telemetry & anomaly counts from ClickHouse (or PG fallback).
         """
-        # Baseline stats from PostgreSQL
-        pg_stats = self.pg.get_stats()
+        ch_connected = bool(self.ch and getattr(self.ch, "is_connected", lambda: False)())
 
-        if self.ch and getattr(self.ch, "is_connected", lambda: False)():
-            ch_stats = self.ch.get_telemetry_stats()
-            # Overlay ClickHouse high-precision telemetry counts
-            for k in ("logs", "collector_results", "anomalies", "risk_events"):
-                if k in ch_stats and ch_stats[k] > 0:
-                    pg_stats[k] = ch_stats[k]
-            if ch_stats.get("collector_status"):
-                pg_stats["collector_status"] = ch_stats["collector_status"]
-            if ch_stats.get("collector_counts"):
-                pg_stats["collector_counts"] = ch_stats["collector_counts"]
-            if ch_stats.get("source_quality"):
-                pg_stats["source_quality"] = ch_stats["source_quality"]
+        try:
+            pg_stats = self.pg.get_stats(include_telemetry=not ch_connected)
+        except TypeError:
+            pg_stats = self.pg.get_stats()
+
+        if ch_connected:
+            try:
+                ch_stats = self.ch.get_telemetry_stats()
+                # Overlay ClickHouse high-precision telemetry counts
+                for k in ("logs", "collector_results", "anomalies", "risk_events"):
+                    if k in ch_stats and ch_stats[k] >= 0:
+                        pg_stats[k] = ch_stats[k]
+                if ch_stats.get("collector_status"):
+                    pg_stats["collector_status"] = ch_stats["collector_status"]
+                if ch_stats.get("collector_counts"):
+                    pg_stats["collector_counts"] = ch_stats["collector_counts"]
+                if ch_stats.get("source_quality"):
+                    pg_stats["source_quality"] = ch_stats["source_quality"]
+            except Exception as exc:
+                logger.warning("ClickHouse telemetry stats overlay failed: %s", exc)
 
         return pg_stats

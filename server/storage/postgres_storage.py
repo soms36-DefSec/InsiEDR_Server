@@ -1319,38 +1319,83 @@ class PostgresStorage(BaseStorage):
                     conn.rollback()
                     return []
 
-    def get_stats(self) -> dict[str, Any]:
+    def get_stats(self, include_telemetry: bool = True) -> dict[str, Any]:
         with self.connection() as conn:
             with closing(conn.cursor()) as cursor:
-                stats = {}
-                for key, table in (
-                    ("agents", "agents"),
-                    ("logs", "raw_payloads"),
-                    ("collector_results", "collector_results"),
-                    ("anomalies", "anomalies"),
-                    ("risk_events", "risk_events"),
-                    ("baselines", "baseline_snapshots"),
-                ):
+                stats = {"agents": 0, "baselines": 0}
+                try:
+                    cursor.execute("SELECT COUNT(*) FROM agents")
+                    row = cursor.fetchone()
+                    stats["agents"] = row[0] if row else 0
+                except Exception:
                     try:
-                        cursor.execute(f"SELECT COUNT(*) FROM {table}")
-                        stats[key] = cursor.fetchone()[0]
+                        conn.rollback()
                     except Exception:
-                        stats[key] = 0
+                        pass
                 try:
-                    cursor.execute("SELECT status, COUNT(*) FROM collector_results GROUP BY status")
-                    stats["collector_status"] = {row[0]: row[1] for row in cursor.fetchall()}
+                    cursor.execute("SELECT COUNT(*) FROM baseline_snapshots")
+                    row = cursor.fetchone()
+                    stats["baselines"] = row[0] if row else 0
                 except Exception:
-                    stats["collector_status"] = {}
-                try:
-                    cursor.execute("SELECT collector, COUNT(*) FROM collector_results GROUP BY collector")
-                    stats["collector_counts"] = {row[0]: row[1] for row in cursor.fetchall()}
-                except Exception:
-                    stats["collector_counts"] = {}
-                try:
-                    cursor.execute("SELECT source_quality, COUNT(*) FROM normalized_features GROUP BY source_quality")
-                    stats["source_quality"] = {row[0]: row[1] for row in cursor.fetchall()}
-                except Exception:
-                    stats["source_quality"] = {}
+                    try:
+                        conn.rollback()
+                    except Exception:
+                        pass
+
+                if include_telemetry:
+                    for key, table in (
+                        ("logs", "raw_payloads"),
+                        ("collector_results", "collector_results"),
+                        ("anomalies", "anomalies"),
+                        ("risk_events", "risk_events"),
+                    ):
+                        try:
+                            cursor.execute(f"SELECT COUNT(*) FROM {table}")
+                            row = cursor.fetchone()
+                            stats[key] = row[0] if row else 0
+                        except Exception:
+                            try:
+                                conn.rollback()
+                            except Exception:
+                                pass
+                            stats[key] = 0
+                    try:
+                        cursor.execute("SELECT status, COUNT(*) FROM collector_results GROUP BY status")
+                        stats["collector_status"] = {row[0]: row[1] for row in cursor.fetchall()}
+                    except Exception:
+                        try:
+                            conn.rollback()
+                        except Exception:
+                            pass
+                        stats["collector_status"] = {}
+                    try:
+                        cursor.execute("SELECT collector, COUNT(*) FROM collector_results GROUP BY collector")
+                        stats["collector_counts"] = {row[0]: row[1] for row in cursor.fetchall()}
+                    except Exception:
+                        try:
+                            conn.rollback()
+                        except Exception:
+                            pass
+                        stats["collector_counts"] = {}
+                    try:
+                        cursor.execute("SELECT source_quality, COUNT(*) FROM normalized_features GROUP BY source_quality")
+                        stats["source_quality"] = {row[0]: row[1] for row in cursor.fetchall()}
+                    except Exception:
+                        try:
+                            conn.rollback()
+                        except Exception:
+                            pass
+                        stats["source_quality"] = {}
+                else:
+                    stats.update({
+                        "logs": 0,
+                        "collector_results": 0,
+                        "anomalies": 0,
+                        "risk_events": 0,
+                        "collector_status": {},
+                        "collector_counts": {},
+                        "source_quality": {},
+                    })
                 return {"ok": True, **stats}
 
     def get_feature_vector(self, payload_id: str) -> dict[str, Any]:
