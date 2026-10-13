@@ -23,6 +23,45 @@ logger = logging.getLogger("insiedr.storage.fleet_repo")
 
 
 
+def resolve_effective_agent_id(agent_id: str | None, hostname: str | None) -> str:
+    """Resolve an agent identifier deterministically:
+    - If None, empty, 'AUTO', or 'AGENT-DEFAULT', formats 'AGENT-{hostname}'.
+    - If template 'AGENT-SANDY' is received on a host whose hostname is not 'SANDY',
+      auto-corrects to 'AGENT-{hostname}' to match agent-side dynamic resolution.
+    - Token substitutions: {hostname} and {computername}.
+    - Preserves explicit custom IDs when valid.
+    """
+    clean_host = (hostname or "").strip(" \t\r\n\f\v")
+    if not agent_id:
+        return f"AGENT-{clean_host}" if clean_host else "AGENT-UNKNOWN"
+    aid = agent_id.strip()
+    if not aid or aid.upper() in ("AUTO", "AGENT-DEFAULT"):
+        return f"AGENT-{clean_host}" if clean_host else aid
+    if "{hostname}" in aid or "{computername}" in aid:
+        return aid.replace("{hostname}", clean_host).replace("{computername}", clean_host)
+    if aid.upper() == "AGENT-SANDY" and clean_host and clean_host.upper() != "SANDY":
+        return f"AGENT-{clean_host}"
+    return aid
+
+
+def _has_table(cur: Any, table_name: str) -> bool:
+    """Safe table existence check for both SQLite and PostgreSQL."""
+    raw_cursor = getattr(cur, "_cursor", cur)
+    module_name = type(raw_cursor).__module__
+    if module_name.startswith("sqlite3") or hasattr(cur, "_is_sqlite"):
+        try:
+            cur.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name = %s", (table_name,))
+            return bool(cur.fetchone())
+        except Exception:
+            return False
+    try:
+        cur.execute("SELECT to_regclass(%s)", (table_name,))
+        row = cur.fetchone()
+        return bool(row and row[0])
+    except Exception:
+        return False
+
+
 class FleetRepository:
     """Encapsulates fleet discovery, agent lifecycle, and PC online/offline status."""
 
@@ -43,6 +82,8 @@ class FleetRepository:
 
         username = decrypted_payload.get("username")
         os_info = decrypted_payload.get("os") or {}
+
+        effective_agent_id = resolve_effective_agent_id(agent_id, hostname)
 
         # Parse collected_at if present to prevent historical/replayed telemetry from marking PC online
         collected_at_raw = decrypted_payload.get("collected_at")
@@ -82,7 +123,7 @@ class FleetRepository:
                         status = EXCLUDED.status
                     """,
                     (
-                        agent_id,
+                        effective_agent_id,
                         hostname,
                         username,
                         os_info.get("system"),
@@ -95,6 +136,18 @@ class FleetRepository:
                         "active",
                     ),
                 )
+                if agent_id != effective_agent_id:
+                    try:
+                        cur.execute(
+                            """
+                            INSERT INTO agents (agent_id, status, first_seen_at, last_seen_at)
+                            VALUES (%s, 'active', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+                            ON CONFLICT (agent_id) DO NOTHING
+                            """,
+                            (agent_id,),
+                        )
+                    except Exception:
+                        pass
                 conn.commit()
 
     def list_agents(self, limit: int = 100, offset: int = 0) -> List[Dict[str, Any]]:
@@ -115,33 +168,179 @@ class FleetRepository:
                 cols = [col[0] for col in cur.description or []]
                 return [dict(zip(cols, row)) for row in cur.fetchall()]
 
+    def sync_discovered_agents(self) -> int:
+        """Backfill any hostnames observed in telemetry or heartbeats into agents table.
+
+        Prevents endpoints from disappearing from the agents table when
+        template or colliding agent_ids are used.
+        """
+        whitespace = " \t\r\n\f\v"
+        synced = 0
+        with self.pg.connection() as conn:
+            with closing(conn.cursor()) as cur:
+                if not _has_table(cur, "agents"):
+                    return 0
+
+                has_hb = _has_table(cur, "agent_heartbeats")
+                has_rp = _has_table(cur, "raw_payloads")
+                if not has_hb and not has_rp:
+                    return 0
+
+                subqueries = []
+                params: list[Any] = []
+                if has_hb:
+                    subqueries.append(
+                        """
+                        SELECT BTRIM(hostname, %s) AS hostname,
+                               MIN(received_at) AS first_seen,
+                               MAX(received_at) AS last_seen
+                        FROM agent_heartbeats
+                        WHERE hostname IS NOT NULL AND BTRIM(hostname, %s) != ''
+                        GROUP BY BTRIM(hostname, %s)
+                        """
+                    )
+                    params.extend([whitespace, whitespace, whitespace])
+                if has_rp:
+                    subqueries.append(
+                        """
+                        SELECT BTRIM(hostname, %s) AS hostname,
+                               MIN(COALESCE(payload_collected_at, received_at)) AS first_seen,
+                               MAX(COALESCE(payload_collected_at, received_at)) AS last_seen
+                        FROM raw_payloads
+                        WHERE hostname IS NOT NULL AND BTRIM(hostname, %s) != ''
+                        GROUP BY BTRIM(hostname, %s)
+                        """
+                    )
+                    params.extend([whitespace, whitespace, whitespace])
+
+                if not subqueries:
+                    return 0
+
+                union_sql = " UNION ALL ".join(subqueries)
+                cur.execute(
+                    f"""
+                    SELECT MAX(hostname) AS hostname,
+                           MIN(first_seen) AS first_seen_at,
+                           MAX(last_seen) AS last_seen_at
+                    FROM ({union_sql}) AS observed
+                    GROUP BY LOWER(hostname)
+                    """,
+                    tuple(params),
+                )
+                cols = [col[0] for col in cur.description or []]
+                observed_hosts = [dict(zip(cols, row)) for row in cur.fetchall()]
+
+                for host_info in observed_hosts:
+                    hname = host_info["hostname"]
+                    first_seen = host_info.get("first_seen_at")
+                    last_seen = host_info.get("last_seen_at")
+                    canonical_id = f"AGENT-{hname}"
+                    try:
+                        cur.execute(
+                            """
+                            INSERT INTO agents (
+                                agent_id, hostname, first_seen_at, last_seen_at, status
+                            )
+                            VALUES (%s, %s, COALESCE(%s, CURRENT_TIMESTAMP), COALESCE(%s, CURRENT_TIMESTAMP), 'active')
+                            ON CONFLICT (agent_id) DO UPDATE SET
+                                hostname = COALESCE(NULLIF(EXCLUDED.hostname, ''), agents.hostname),
+                                last_seen_at = GREATEST(agents.last_seen_at, EXCLUDED.last_seen_at)
+                            """,
+                            (canonical_id, hname, first_seen, last_seen),
+                        )
+                        synced += 1
+                    except Exception as err:
+                        logger.debug("Non-fatal: could not backfill agent %s: %s", canonical_id, err)
+                try:
+                    conn.commit()
+                except Exception:
+                    pass
+        return synced
+
     def get_pc_status(self, seconds_since_online: int = 300) -> Dict[str, Any]:
         """Return counts and their complete hostname breakdown from one snapshot.
 
         Multiple agent registrations for one hostname represent one PC; its
         newest observation determines presence. Blank names never count.
+        Unions observed presence across agents, agent_heartbeats, and raw_payloads
+        so devices are never lost even when template agent_ids collided.
         """
         cutoff = datetime.now(timezone.utc) - timedelta(seconds=seconds_since_online)
+        now = datetime.now(timezone.utc)
         whitespace = " \t\r\n\f\v"
         with self.pg.connection() as conn:
             with closing(conn.cursor()) as cur:
-                cur.execute(
+                subqueries = [
                     """
-                    SELECT MAX(hostname) AS hostname, MAX(last_seen_at) AS last_seen_at,
-                           CASE WHEN MAX(last_seen_at) > %s
-                                THEN 'online' ELSE 'offline' END AS status
-                    FROM (
-                        SELECT BTRIM(hostname, %s) AS hostname, last_seen_at
-                        FROM agents
+                    SELECT BTRIM(hostname, %s) AS hostname, last_seen_at
+                    FROM agents
+                    WHERE hostname IS NOT NULL AND BTRIM(hostname, %s) != ''
+                    """
+                ]
+                params: list[Any] = [whitespace, whitespace]
+
+                if _has_table(cur, "agent_heartbeats"):
+                    subqueries.append(
+                        """
+                        SELECT BTRIM(hostname, %s) AS hostname, MAX(received_at) AS last_seen_at
+                        FROM agent_heartbeats
                         WHERE hostname IS NOT NULL AND BTRIM(hostname, %s) != ''
-                    ) AS named_agents
+                        GROUP BY BTRIM(hostname, %s)
+                        """
+                    )
+                    params.extend([whitespace, whitespace, whitespace])
+
+                if _has_table(cur, "raw_payloads"):
+                    subqueries.append(
+                        """
+                        SELECT BTRIM(hostname, %s) AS hostname,
+                               MAX(COALESCE(payload_collected_at, received_at)) AS last_seen_at
+                        FROM raw_payloads
+                        WHERE hostname IS NOT NULL AND BTRIM(hostname, %s) != ''
+                        GROUP BY BTRIM(hostname, %s)
+                        """
+                    )
+                    params.extend([whitespace, whitespace, whitespace])
+
+                union_sql = " UNION ALL ".join(subqueries)
+                cur.execute(
+                    f"""
+                    SELECT MAX(hostname) AS hostname, MAX(last_seen_at) AS last_seen_at
+                    FROM ({union_sql}) AS all_named_agents
                     GROUP BY LOWER(hostname)
                     ORDER BY hostname
                     """,
-                    (cutoff, whitespace, whitespace),
+                    tuple(params),
                 )
                 cols = [col[0] for col in cur.description or []]
-                endpoints = [dict(zip(cols, row)) for row in cur.fetchall()]
+                raw_endpoints = [dict(zip(cols, row)) for row in cur.fetchall()]
+
+        endpoints = []
+        for ep in raw_endpoints:
+            hname = ep["hostname"]
+            raw_seen = ep.get("last_seen_at")
+            seen_dt = None
+            if raw_seen is not None:
+                if isinstance(raw_seen, str):
+                    try:
+                        dt = datetime.fromisoformat(raw_seen.replace("Z", "+00:00"))
+                        seen_dt = dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
+                    except Exception:
+                        seen_dt = None
+                elif isinstance(raw_seen, datetime):
+                    seen_dt = raw_seen if raw_seen.tzinfo else raw_seen.replace(tzinfo=timezone.utc)
+
+            # Clamp future timestamp to server current time
+            if seen_dt and seen_dt > now:
+                seen_dt = now
+                raw_seen = now.isoformat() if isinstance(raw_seen, str) else now
+
+            is_online = bool(seen_dt and seen_dt > cutoff)
+            endpoints.append({
+                "hostname": hname,
+                "last_seen_at": raw_seen,
+                "status": "online" if is_online else "offline",
+            })
 
         online_pcs = sum(endpoint["status"] == "online" for endpoint in endpoints)
         return {
@@ -168,6 +367,8 @@ class FleetRepository:
             hostname = hostname.strip(" \t\r\n\f\v")
             if not hostname:
                 hostname = None
+
+        effective_agent_id = resolve_effective_agent_id(agent_id, hostname)
         metrics = metrics or {}
         with self.pg.connection() as conn:
             with closing(conn.cursor()) as cur:
@@ -182,8 +383,20 @@ class FleetRepository:
                         last_seen_at = CURRENT_TIMESTAMP,
                         status = EXCLUDED.status
                     """,
-                    (agent_id, hostname, status),
+                    (effective_agent_id, hostname, status),
                 )
+                if agent_id != effective_agent_id:
+                    try:
+                        cur.execute(
+                            """
+                            INSERT INTO agents (agent_id, status, first_seen_at, last_seen_at)
+                            VALUES (%s, 'active', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+                            ON CONFLICT (agent_id) DO NOTHING
+                            """,
+                            (agent_id,),
+                        )
+                    except Exception:
+                        pass
                 try:
                     cur.execute(
                         """

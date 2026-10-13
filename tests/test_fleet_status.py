@@ -162,6 +162,15 @@ def full_fleet(monkeypatch):
             received_at TEXT
         )
     """)
+    conn.execute("""
+        CREATE TABLE raw_payloads (
+            payload_id TEXT PRIMARY KEY,
+            agent_id TEXT,
+            received_at TEXT,
+            payload_collected_at TEXT,
+            hostname TEXT
+        )
+    """)
 
     @contextmanager
     def connection():
@@ -272,4 +281,68 @@ def test_heartbeat_maintains_agent_online_without_telemetry(full_fleet):
     assert status["offline_pcs"] == 0
     assert status["endpoints"][0]["hostname"] == "SILENT-PC"
     assert status["endpoints"][0]["status"] == "online"
+
+
+def test_shared_agent_id_does_not_clobber_pc_inventory(full_fleet):
+    storage = full_fleet
+    historical_time = (NOW - timedelta(hours=12)).isoformat()
+    # Machine 1: DESKTOP-H6EAHHC sends telemetry with shared agent_id AGENT-SANDY
+    storage.fleet.upsert_agent({
+        "agent_id": "AGENT-SANDY",
+        "hostname": "DESKTOP-H6EAHHC",
+        "collected_at": historical_time,
+        "payload_id": "p-desktop-1",
+    })
+
+    # Machine 2: SOCL4-61 sends heartbeat with shared agent_id AGENT-SANDY
+    storage.fleet.upsert_agent_heartbeat(
+        agent_id="AGENT-SANDY",
+        hostname="SOCL4-61",
+        status="active"
+    )
+
+    status = storage.get_pc_status()
+    assert status["total_pcs"] == 2
+    assert status["online_pcs"] == 1
+    assert status["offline_pcs"] == 1
+
+    hostnames = {ep["hostname"]: ep for ep in status["endpoints"]}
+    assert "DESKTOP-H6EAHHC" in hostnames
+    assert hostnames["DESKTOP-H6EAHHC"]["status"] == "offline"
+
+    assert "SOCL4-61" in hostnames
+    assert hostnames["SOCL4-61"]["status"] == "online"
+
+
+def test_raw_payloads_discovered_when_missing_from_agents_table(full_fleet):
+    storage = full_fleet
+    # Insert telemetry directly into raw_payloads without creating an agents entry
+    historical_time = (NOW - timedelta(hours=24)).isoformat()
+    with storage.connection() as conn:
+        conn.execute(
+            "INSERT INTO raw_payloads (payload_id, agent_id, received_at, payload_collected_at, hostname) VALUES (?, ?, ?, ?, ?)",
+            ("p-orphan", "AGENT-LEGACY", historical_time, historical_time, "LEGACY-PC"),
+        )
+
+    # get_pc_status must discover LEGACY-PC via raw_payloads union
+    status = storage.get_pc_status()
+    assert status["total_pcs"] == 1
+    assert status["online_pcs"] == 0
+    assert status["offline_pcs"] == 1
+    assert status["endpoints"][0]["hostname"] == "LEGACY-PC"
+    assert status["endpoints"][0]["status"] == "offline"
+
+    # sync_discovered_agents must backfill it into agents table
+    synced = storage.fleet.sync_discovered_agents()
+    assert synced >= 1
+
+    # Now verify it exists in agents table directly
+    with storage.connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute("SELECT agent_id, hostname FROM agents WHERE hostname = ?", ("LEGACY-PC",))
+        row = cursor.fetchone()
+        assert row is not None
+        assert row[0] == "AGENT-LEGACY-PC"
+        assert row[1] == "LEGACY-PC"
+
 

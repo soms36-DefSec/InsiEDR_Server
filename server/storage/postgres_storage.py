@@ -335,6 +335,12 @@ class PostgresStorage(BaseStorage):
             except Exception as e:
                 logger.warning("Default partition verification note: %s", e)
 
+        # Backfill any endpoints discovered across raw_payloads / heartbeats
+        try:
+            self.fleet.sync_discovered_agents()
+        except Exception as e:
+            logger.warning("Fleet discovery backfill note: %s", e)
+
     def ensure_retention_indexes(self, check_only: bool = False) -> dict[str, str]:
         """Verify or concurrently build retention indexes on PostgreSQL.
 
@@ -397,7 +403,9 @@ class PostgresStorage(BaseStorage):
         return status_report
 
     def _upsert_agent(self, cursor, decrypted_payload: dict[str, Any]) -> None:
-        agent_id = decrypted_payload["agent_id"]
+        agent_id = decrypted_payload.get("agent_id")
+        if not agent_id:
+            return
         hostname = decrypted_payload.get("hostname")
         if hostname is not None:
             hostname = hostname.strip(" \t\r\n\f\v")
@@ -406,6 +414,9 @@ class PostgresStorage(BaseStorage):
 
         username = decrypted_payload.get("username")
         os_info = decrypted_payload.get("os") or {}
+
+        from server.storage.repositories.fleet_repo import resolve_effective_agent_id
+        effective_agent_id = resolve_effective_agent_id(agent_id, hostname)
 
         # Parse collected_at if present to prevent historical/replayed telemetry from marking PC online
         collected_at_raw = decrypted_payload.get("collected_at")
@@ -443,7 +454,7 @@ class PostgresStorage(BaseStorage):
                 status = EXCLUDED.status
             """,
             (
-                agent_id,
+                effective_agent_id,
                 hostname,
                 username,
                 os_info.get("system"),
@@ -456,6 +467,18 @@ class PostgresStorage(BaseStorage):
                 "active",
             ),
         )
+        if agent_id != effective_agent_id:
+            try:
+                cursor.execute(
+                    """
+                    INSERT INTO agents (agent_id, status, first_seen_at, last_seen_at)
+                    VALUES (%s, 'active', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+                    ON CONFLICT (agent_id) DO NOTHING
+                    """,
+                    (agent_id,),
+                )
+            except Exception:
+                pass
 
     def store_raw_payload(self, envelope: dict[str, Any], decrypted_payload: dict[str, Any]) -> bool:
         """Commit telemetry atomically; return False for an already stored payload."""
