@@ -433,8 +433,8 @@ def telemetry_histogram(storage, time_range='1h', interval=None, collector=None,
     start_time = (now - time_delta).strftime('%Y-%m-%d %H:%M:%S')
 
     clauses, params = [
-        "(cr.collector_collected_at >= %s OR REPLACE(CAST(cr.collector_collected_at AS TEXT), ' ', 'T') >= %s)"
-    ], [start_time, start_time]
+        "cr.collector_collected_at >= %s"
+    ], [start_time]
     if collector:
         clauses.append("LOWER(cr.collector) = LOWER(%s)")
         params.append(collector.strip())

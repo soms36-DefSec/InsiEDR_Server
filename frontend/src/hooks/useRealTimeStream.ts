@@ -24,15 +24,26 @@ export function useRealTimeStream() {
     controller.current = abort;
     const run = async () => {
       try {
-        const [nextSummary, nextHealth] = await Promise.all([
+        const [summaryResult, healthResult] = await Promise.allSettled([
           fetchDashboardSummary(abort.signal),
-          fetchHealth(abort.signal).catch(() => ({ status: 'unknown' })),
+          fetchHealth(abort.signal),
         ]);
         if (abort.signal.aborted) return;
-        setSummary(nextSummary);
-        setHealth(nextHealth);
-        setLastUpdated(new Date());
-        setError(null);
+
+        if (healthResult.status === 'fulfilled') {
+          setHealth(healthResult.value);
+        } else {
+          setHealth({ status: 'unknown' });
+        }
+
+        if (summaryResult.status === 'fulfilled') {
+          setSummary(summaryResult.value);
+          setLastUpdated(new Date());
+          setError(null);
+        } else {
+          const reason = summaryResult.reason;
+          setError(reason instanceof Error ? reason.message : 'Telemetry sync failed');
+        }
       } catch (err) {
         if (!abort.signal.aborted) setError(err instanceof Error ? err.message : 'Telemetry sync failed');
       } finally {

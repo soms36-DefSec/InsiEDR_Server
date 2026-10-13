@@ -26,21 +26,50 @@ async def serve_icons():
     return HTMLResponse("", status_code=404)
 
 
+ASSET_EXTENSIONS = {
+    ".js", ".css", ".map", ".svg", ".png", ".jpg", ".jpeg", 
+    ".gif", ".ico", ".woff", ".woff2", ".ttf", ".eot", ".webp"
+}
+
+
 @router.get("/dashboard", include_in_schema=False)
 @router.get("/dashboard/", include_in_schema=False)
 @router.get("/dashboard/{path:path}", include_in_schema=False)
 @router.get("/assets/{path:path}", include_in_schema=False)
 async def serve_dashboard(path: str = ""):
     if DIST_DIR.is_dir():
-        file_path = DIST_DIR / path
-        if path and file_path.is_file():
-            headers = {}
-            if "assets/" in path or path.startswith("assets"):
-                headers["Cache-Control"] = "public, max-age=31536000, immutable"
-            return FileResponse(file_path, headers=headers)
-        asset_file = DIST_DIR / "assets" / path
-        if path and asset_file.is_file():
-            return FileResponse(asset_file, headers={"Cache-Control": "public, max-age=31536000, immutable"})
+        clean_path = path.strip("/")
+        suffix = Path(clean_path).suffix.lower()
+        is_asset = (
+            "assets/" in clean_path
+            or clean_path.startswith("assets")
+            or suffix in ASSET_EXTENSIONS
+        )
+
+        if clean_path:
+            # 1. Direct path in DIST_DIR (e.g. dist/assets/index-xxx.js or dist/favicon.svg)
+            file_path = DIST_DIR / clean_path
+            if file_path.is_file():
+                headers = {}
+                if is_asset:
+                    headers["Cache-Control"] = "public, max-age=31536000, immutable"
+                return FileResponse(file_path, headers=headers)
+
+            # 2. Subpath under dist/assets/ (e.g. requested via /assets/{filename})
+            asset_file = DIST_DIR / "assets" / clean_path
+            if asset_file.is_file():
+                return FileResponse(asset_file, headers={"Cache-Control": "public, max-age=31536000, immutable"})
+
+            # If an asset was explicitly requested but does not exist, return 404 immediately.
+            # NEVER fall through to index.html for stylesheets, scripts, or images.
+            if is_asset:
+                return HTMLResponse(
+                    content="Asset not found",
+                    status_code=404,
+                    headers={"Cache-Control": "no-cache, no-store, must-revalidate"}
+                )
+
+        # 3. SPA Route Navigation -> Serve index.html
         index_file = DIST_DIR / "index.html"
         if index_file.is_file():
             return FileResponse(index_file, headers={"Cache-Control": "no-cache, no-store, must-revalidate"})

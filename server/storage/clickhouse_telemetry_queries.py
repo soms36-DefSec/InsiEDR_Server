@@ -4,10 +4,13 @@ Deduplicate replayed rows before LIMIT/count. This compatibility path still
 needs a raw-payload join for username; see the audit's denormalized v2 design.
 """
 import json
+import logging
 from typing import Any
 from datetime import datetime, timezone
 
 from server.storage.telemetry_cursor import filter_key, encode_cursor, decode_cursor
+
+logger = logging.getLogger(__name__)
 
 
 def telemetry_page(storage, limit=100, offset=0, collector=None, username=None,
@@ -587,10 +590,14 @@ def telemetry_histogram(storage, time_range='1h', interval=None, collector=None,
             for t_val, c_val in res.result_rows:
                 histogram.append({'timestamp': _format_iso(t_val), 'count': int(c_val)})
                 total_events += int(c_val)
-    except Exception:
-        # Fallback to collector_results
+    except Exception as exc:
+        logger.debug("Primary ClickHouse histogram query on telemetry_events note: %s", exc)
+        # Fallback to collector_results if telemetry_events table doesn't exist
         try:
-            fb_clauses = [c.replace('timestamp', 'collector_collected_at').replace('collector_name', 'collector') for c in clauses]
+            fb_clauses = [
+                c.replace('timestamp', 'collector_collected_at').replace('lower(collector_name)', 'lower(collector)')
+                for c in clauses
+            ]
             fb_bucket_fn = bucket_fn.replace('timestamp', 'collector_collected_at')
             fb_where = " WHERE " + " AND ".join(fb_clauses)
             fb_sql = (

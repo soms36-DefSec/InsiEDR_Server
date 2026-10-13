@@ -150,14 +150,14 @@ export const TelemetryHistogram: React.FC<TelemetryHistogramProps> = ({
           <div className="flex items-center gap-1.5 bg-slate-50 border border-slate-200/80 px-2 py-0.5 rounded text-[11px] text-slate-600">
             <Zap className="w-3 h-3 text-amber-500" />
             <span className="text-slate-500">Peak:</span>
-            <span className="font-mono font-semibold text-slate-900">{maxCount.toLocaleString()}</span>
+            <span className="font-mono font-semibold text-slate-900">{histogramError ? '--' : maxCount.toLocaleString()}</span>
             <span className="text-slate-400">/bucket</span>
           </div>
 
           <div className="flex items-center gap-1 bg-slate-50 border border-slate-200/80 px-2 py-0.5 rounded text-[11px] text-slate-500">
             <Clock className="w-3 h-3 text-slate-400" />
             <span>Bucket:</span>
-            <span className="font-mono font-semibold text-slate-800">{interval}</span>
+            <span className="font-mono font-semibold text-slate-800">{histogramError ? '--' : interval}</span>
           </div>
         </div>
       </div>
@@ -173,7 +173,7 @@ export const TelemetryHistogram: React.FC<TelemetryHistogramProps> = ({
 
         {histogramError ? (
           <div className="w-full h-16 flex items-center justify-center text-xs text-amber-700 bg-amber-50/50 border border-dashed border-amber-200 rounded px-4 text-center">
-            Histogram query unavailable: {histogramError}. Endpoint ingestion and log storage are operational.
+            Histogram query unavailable: {histogramError}. Check server telemetry connectivity.
           </div>
         ) : (
           <div className="w-full h-16 relative">
