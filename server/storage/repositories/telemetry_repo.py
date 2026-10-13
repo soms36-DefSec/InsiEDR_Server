@@ -92,6 +92,13 @@ class TelemetryRepository:
         return getattr(self.pg, "get_distinct_collectors", lambda: [])()
 
     def get_distinct_usernames(self) -> List[str]:
+        if hasattr(self.pg, "get_distinct_usernames"):
+            try:
+                users = self.pg.get_distinct_usernames()
+                if users:
+                    return users
+            except Exception:
+                pass
         if self._has_ch():
             try:
                 users = self.ch.get_distinct_usernames()

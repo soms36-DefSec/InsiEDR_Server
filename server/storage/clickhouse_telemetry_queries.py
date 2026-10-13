@@ -255,6 +255,9 @@ def telemetry_explorer(storage, limit=50, cursor=None, collector=None, username=
             raise ValueError('ClickHouse cursors require a timestamp')
         params.update(cursor_time=timestamp, cursor_id=row_id)
         clauses.append("(timestamp, event_id) < (parseDateTime64BestEffort(%(cursor_time)s, 3, 'UTC'), toUUID(%(cursor_id)s))")
+    elif not start_time:
+        # Default partition bound for unpaged initial query: prune older monthly parts
+        clauses.append("timestamp >= now() - INTERVAL 30 DAY")
 
     where = ' WHERE ' + ' AND '.join(clauses) if clauses else ''
     params['limit'] = limit + 1
@@ -315,16 +318,25 @@ def telemetry_explorer(storage, limit=50, cursor=None, collector=None, username=
             if version2:
                 source = ' FROM (SELECT * FROM collector_events_v2 FINAL) cr '
                 username_col = 'cr.username'
+                fb_sql = (
+                    f"SELECT cr.id AS event_id, cr.payload_id, cr.collector_collected_at AS timestamp, cr.agent_id, cr.collector AS collector_name, "
+                    f"cr.hostname, {username_col} AS username, cr.status, cr.payload_json "
+                    + source + fb_where + " "
+                    + "ORDER BY cr.collector_collected_at DESC, cr.id DESC LIMIT %(limit)s"
+                )
             else:
-                source = ' FROM collector_results cr '
+                source = (
+                    f" FROM (SELECT cr.id, cr.payload_id, cr.agent_id, cr.collector, cr.collector_collected_at, "
+                    f"cr.hostname, cr.status, cr.payload_json FROM collector_results cr{fb_where} "
+                    f"ORDER BY cr.collector_collected_at DESC, cr.id DESC LIMIT %(limit)s) cr "
+                )
                 username_col = "''"
-
-            fb_sql = (
-                f"SELECT cr.id AS event_id, cr.payload_id, cr.collector_collected_at AS timestamp, cr.agent_id, cr.collector AS collector_name, "
-                f"cr.hostname, {username_col} AS username, cr.status, cr.payload_json "
-                + source + fb_where + " "
-                + "ORDER BY cr.collector_collected_at DESC, cr.id DESC LIMIT %(limit)s"
-            )
+                fb_sql = (
+                    f"SELECT cr.id AS event_id, cr.payload_id, cr.collector_collected_at AS timestamp, cr.agent_id, cr.collector AS collector_name, "
+                    f"cr.hostname, {username_col} AS username, cr.status, cr.payload_json "
+                    + source +
+                    "ORDER BY cr.collector_collected_at DESC, cr.id DESC"
+                )
             res = storage._query(fb_sql, fb_params)
             if res and hasattr(res, 'result_rows'):
                 pids = []
@@ -353,15 +365,20 @@ def telemetry_explorer(storage, limit=50, cursor=None, collector=None, username=
                         'status': str(d.get('status') or 'success'),
                         'summary_preview': preview,
                     })
-                # Secondary fast lookup for usernames on returned limit rows only
+                # Secondary fast lookup for usernames on returned limit rows only (pruned to recent partitions)
                 if pids and not version2:
                     try:
                         valid_pids = [p for p in dict.fromkeys(pids) if p]
                         if valid_pids:
                             rp_res = storage._query(
-                                "SELECT payload_id, argMin(username, received_at) AS username FROM raw_payloads WHERE payload_id IN %(pids)s GROUP BY payload_id",
+                                "SELECT payload_id, argMin(username, received_at) AS username FROM raw_payloads WHERE received_at >= now() - INTERVAL 14 DAY AND payload_id IN %(pids)s GROUP BY payload_id",
                                 {'pids': valid_pids}
                             )
+                            if not rp_res or not getattr(rp_res, 'result_rows', None):
+                                rp_res = storage._query(
+                                    "SELECT payload_id, argMin(username, received_at) AS username FROM raw_payloads WHERE payload_id IN %(pids)s GROUP BY payload_id",
+                                    {'pids': valid_pids}
+                                )
                             if rp_res and hasattr(rp_res, 'result_rows'):
                                 user_map = {r[0]: str(r[1] or '') for r in rp_res.result_rows}
                                 for ev in events:
@@ -394,8 +411,17 @@ def telemetry_event_detail(storage, event_id: str) -> dict[str, Any] | None:
     On-Demand Deep Forensic Telemetry Inspection.
     Fetches full raw payload, features, and risk event context only when analyst selects a row.
     """
-    if not event_id:
+    if not event_id or str(event_id).isdigit():
         return None
+
+    import uuid as _uuid_mod
+    try:
+        _uuid_mod.UUID(str(event_id))
+        id_clause_te = "event_id = toUUID(%(event_id)s)"
+        id_clause_cr = "id = toUUID(%(event_id)s)"
+    except (ValueError, TypeError, AttributeError):
+        id_clause_te = "toString(event_id) = %(event_id)s"
+        id_clause_cr = "toString(id) = %(event_id)s"
 
     row_data = None
     params = {'event_id': str(event_id)}
@@ -404,7 +430,7 @@ def telemetry_event_detail(storage, event_id: str) -> dict[str, Any] | None:
     try:
         sql = (
             "SELECT event_id, payload_id, agent_id, collector_name, timestamp, hostname, username, status, "
-            "summary_preview, raw_payload_json FROM telemetry_events WHERE event_id = toUUID(%(event_id)s) LIMIT 1"
+            f"summary_preview, raw_payload_json FROM telemetry_events WHERE {id_clause_te} LIMIT 1"
         )
         res = storage._query(sql, params)
         if res and res.result_rows:
@@ -429,10 +455,10 @@ def telemetry_event_detail(storage, event_id: str) -> dict[str, Any] | None:
         try:
             version2 = getattr(storage, 'collector_schema_version', 1) == 2
             if version2:
-                source = ' FROM collector_events_v2 FINAL WHERE id = toUUID(%(event_id)s) '
+                source = f' FROM collector_events_v2 FINAL WHERE {id_clause_cr} '
                 username_col = 'username'
             else:
-                source = ' FROM collector_results WHERE id = toUUID(%(event_id)s) '
+                source = f' FROM collector_results WHERE {id_clause_cr} '
                 username_col = "''"
             sql = (
                 f"SELECT id AS event_id, payload_id, agent_id, collector AS collector_name, "
@@ -487,10 +513,26 @@ def telemetry_event_detail(storage, event_id: str) -> dict[str, Any] | None:
     features = {}
     risk = {}
     if pid:
+        date_bound_sql = ""
+        bound_params = {'pid': pid}
+        ts_dt = None
+        if isinstance(ts, datetime):
+            ts_dt = ts
+        elif isinstance(ts, str):
+            try:
+                ts_dt = datetime.fromisoformat(ts.replace('Z', '+00:00'))
+            except Exception:
+                pass
+        if ts_dt:
+            from datetime import timedelta
+            bound_params['ts_start'] = (ts_dt - timedelta(days=2)).strftime('%Y-%m-%d %H:%M:%S')
+            bound_params['ts_end'] = (ts_dt + timedelta(days=2)).strftime('%Y-%m-%d %H:%M:%S')
+            date_bound_sql = " AND created_at >= parseDateTime64BestEffort(%(ts_start)s, 3, 'UTC') AND created_at <= parseDateTime64BestEffort(%(ts_end)s, 3, 'UTC')"
+
         try:
             f_res = storage._query("SELECT feature_name, coalesce(feature_value_text, toString(feature_value_numeric)) "
-                                   "FROM normalized_features WHERE payload_id = %(pid)s "
-                                   "AND (feature_value_numeric IS NOT NULL OR feature_value_text != '')", {'pid': pid})
+                                   f"FROM normalized_features WHERE payload_id = %(pid)s{date_bound_sql} "
+                                   "AND (feature_value_numeric IS NOT NULL OR feature_value_text != '')", bound_params)
             if f_res and hasattr(f_res, 'result_rows'):
                 for fname, fval in f_res.result_rows:
                     if fval is not None and str(fval).lower() != 'none':
@@ -499,7 +541,7 @@ def telemetry_event_detail(storage, event_id: str) -> dict[str, Any] | None:
             pass
         try:
             r_res = storage._query("SELECT risk_level, summary, correlated_signals_json, risk_score "
-                                   "FROM risk_events WHERE payload_id = %(pid)s ORDER BY created_at DESC LIMIT 1", {'pid': pid})
+                                   f"FROM risk_events WHERE payload_id = %(pid)s{date_bound_sql} ORDER BY created_at DESC LIMIT 1", bound_params)
             if r_res and r_res.result_rows:
                 r_fields = ('risk_level', 'summary', 'correlated_signals_json', 'risk_score')
                 risk = dict(zip(r_fields, r_res.result_rows[0]))
@@ -537,7 +579,7 @@ def telemetry_histogram(storage, time_range='1h', interval=None, collector=None,
         '1h': ("INTERVAL 1 HOUR", "toStartOfMinute(timestamp)", "1m"),
         '24h': ("INTERVAL 24 HOUR", "toStartOfInterval(timestamp, INTERVAL 15 MINUTE)", "15m"),
         '7d': ("INTERVAL 7 DAY", "toStartOfInterval(timestamp, INTERVAL 2 HOUR)", "2h"),
-        'all': ("INTERVAL 90 DAY", "toStartOfDay(timestamp)", "1d"),
+        'all': ("INTERVAL 30 DAY", "toStartOfDay(timestamp)", "1d"),
     }
     int_map = {
         '1m': 'toStartOfMinute(timestamp)',
@@ -600,9 +642,10 @@ def telemetry_histogram(storage, time_range='1h', interval=None, collector=None,
             ]
             fb_bucket_fn = bucket_fn.replace('timestamp', 'collector_collected_at')
             fb_where = " WHERE " + " AND ".join(fb_clauses)
+            source_table = "collector_events_v2" if getattr(storage, 'collector_schema_version', 1) == 2 else "collector_results"
             fb_sql = (
                 f"SELECT {fb_bucket_fn} AS t, count() AS c "
-                f"FROM collector_results{fb_where} "
+                f"FROM {source_table}{fb_where} "
                 f"GROUP BY t ORDER BY t"
             )
             res = storage._query(fb_sql, params)

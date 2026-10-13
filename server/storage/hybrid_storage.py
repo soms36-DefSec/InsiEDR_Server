@@ -193,6 +193,8 @@ class HybridStorage(BaseStorage):
         return self.pg.get_telemetry_explorer(**filters)
 
     def get_telemetry_event_detail(self, event_id: str) -> Optional[Dict[str, Any]]:
+        if str(event_id).isdigit():
+            return self.pg.get_telemetry_event_detail(event_id)
         if self.telemetry_read_backend == 'clickhouse' or (self.ch and self.ch.is_connected()):
             if self.ch and self.ch.is_connected():
                 try:

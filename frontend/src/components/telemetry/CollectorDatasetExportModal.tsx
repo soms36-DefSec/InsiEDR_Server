@@ -14,7 +14,7 @@
  *   Export Dataset (CSV with dynamic feature columns)
  */
 
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { Button } from '../ui/Button';
 import {
   fetchAvailableCollectors,
@@ -66,19 +66,36 @@ export const CollectorDatasetExportModal: React.FC<CollectorDatasetExportModalPr
   const [previewError, setPreviewError] = useState<string | null>(null);
   const [isExporting, setIsExporting] = useState<boolean>(false);
 
-  // Initialize collectors and usernames on open
+  const previewAbortRef = useRef<AbortController | null>(null);
+
+  // Initialize collectors and usernames on open with AbortController
   useEffect(() => {
     if (isOpen) {
-      fetchAvailableCollectors()
+      const controller = new AbortController();
+      fetchAvailableCollectors(controller.signal)
         .then((res) => {
+          if (controller.signal.aborted) return;
           if (res.ok) {
             setAvailableCollectors(res.collectors || []);
             setAvailableUsers(res.usernames || []);
           }
         })
         .catch((err) => {
-          console.warn('Failed to load collectors list:', err);
+          if (!controller.signal.aborted) {
+            console.warn('Failed to load collectors list:', err);
+          }
         });
+      return () => {
+        controller.abort();
+      };
+    }
+  }, [isOpen]);
+
+  // Cancel any in-flight preview request when modal closes
+  useEffect(() => {
+    if (!isOpen && previewAbortRef.current) {
+      previewAbortRef.current.abort();
+      previewAbortRef.current = null;
     }
   }, [isOpen]);
 
@@ -102,9 +119,16 @@ export const CollectorDatasetExportModal: React.FC<CollectorDatasetExportModalPr
     }
   }, [dateMode]);
 
-  // Fetch preview matching records
+  // Fetch preview matching records with request cancellation
   const handleLoadPreview = useCallback(async () => {
     if (!selectedCollector) return;
+
+    if (previewAbortRef.current) {
+      previewAbortRef.current.abort();
+    }
+    const controller = new AbortController();
+    previewAbortRef.current = controller;
+
     setIsPreviewLoading(true);
     setPreviewError(null);
 
@@ -115,7 +139,10 @@ export const CollectorDatasetExportModal: React.FC<CollectorDatasetExportModalPr
         endDate: endDate || undefined,
         username: selectedUser.trim() || undefined,
         limit: 50,
+        signal: controller.signal,
       });
+
+      if (controller.signal.aborted) return;
 
       if (res.ok) {
         setPreviewData(res);
@@ -123,10 +150,13 @@ export const CollectorDatasetExportModal: React.FC<CollectorDatasetExportModalPr
         setPreviewError('Failed to fetch preview data');
       }
     } catch (err: unknown) {
+      if (controller.signal.aborted) return;
       const msg = err instanceof Error ? err.message : String(err);
       setPreviewError(msg);
     } finally {
-      setIsPreviewLoading(false);
+      if (!controller.signal.aborted) {
+        setIsPreviewLoading(false);
+      }
     }
   }, [selectedCollector, startDate, endDate, selectedUser]);
 
@@ -319,7 +349,7 @@ export const CollectorDatasetExportModal: React.FC<CollectorDatasetExportModalPr
             <div className="flex items-center justify-between">
               <span className="font-semibold text-slate-700 flex items-center gap-1.5">
                 <Database className="w-3.5 h-3.5 text-indigo-500" />
-                Discovered Columns ({previewData?.columns?.length || 5}) for{' '}
+                Discovered Columns ({previewData?.columns ? previewData.columns.length : '—'}) for{' '}
                 <span className="font-mono text-indigo-700 uppercase font-bold">{selectedCollector}</span>:
               </span>
               {previewData && (
@@ -352,12 +382,25 @@ export const CollectorDatasetExportModal: React.FC<CollectorDatasetExportModalPr
                   </span>
                 ))}
               </div>
+            ) : isPreviewLoading ? (
+              <div className="p-3 rounded-lg bg-slate-50 border border-slate-200 text-slate-500 italic flex items-center gap-2">
+                <RefreshCw className="w-3.5 h-3.5 text-indigo-500 animate-spin" />
+                Analyzing collector feature schema...
+              </div>
+            ) : previewError ? (
+              <div className="p-3 rounded-lg bg-rose-50 border border-rose-200 text-rose-700 flex items-center gap-2">
+                <AlertCircle className="w-3.5 h-3.5 text-rose-500 shrink-0" />
+                Failed to inspect schema: {previewError}
+              </div>
+            ) : previewData ? (
+              <div className="p-3 rounded-lg bg-slate-50 border border-slate-200 text-slate-500 italic flex items-center gap-2">
+                <AlertCircle className="w-3.5 h-3.5 text-slate-400" />
+                No additional feature columns found for this collector. Base columns will be exported.
+              </div>
             ) : (
               <div className="p-3 rounded-lg bg-slate-50 border border-slate-200 text-slate-500 italic flex items-center gap-2">
                 <AlertCircle className="w-3.5 h-3.5 text-slate-400" />
-                {isPreviewLoading
-                  ? 'Analyzing collector feature schema...'
-                  : 'No feature columns discovered yet. Click "Preview" to inspect records.'}
+                Click "Preview" to inspect records.
               </div>
             )}
           </div>
@@ -369,11 +412,31 @@ export const CollectorDatasetExportModal: React.FC<CollectorDatasetExportModalPr
                 <Table className="w-3.5 h-3.5 text-slate-500" />
                 Preview Records (First 50 Rows)
               </span>
-              {previewError && <span className="text-rose-600 font-medium">{previewError}</span>}
+              {previewError && <span className="text-rose-600 font-medium text-xs">{previewError}</span>}
             </div>
 
             <div className="border border-slate-200 rounded-lg overflow-hidden bg-white shadow-2xs max-h-60 overflow-x-auto overflow-y-auto">
-              {previewData?.preview_rows && previewData.preview_rows.length > 0 ? (
+              {isPreviewLoading ? (
+                <div className="p-8 text-center text-slate-500 space-y-2">
+                  <RefreshCw className="w-6 h-6 mx-auto text-indigo-500 animate-spin" />
+                  <p className="text-slate-600 font-medium text-xs">Loading collector preview records...</p>
+                </div>
+              ) : previewError ? (
+                <div className="p-8 text-center text-rose-600 space-y-2">
+                  <AlertCircle className="w-6 h-6 mx-auto text-rose-500" />
+                  <p className="font-semibold text-xs">Failed to load preview records</p>
+                  <p className="text-slate-500 text-[11px] max-w-md mx-auto">{previewError}</p>
+                  <Button
+                    variant="secondary"
+                    size="sm"
+                    onClick={handleLoadPreview}
+                    className="mt-1"
+                    icon={<RefreshCw className="w-3 h-3" />}
+                  >
+                    Retry Preview
+                  </Button>
+                </div>
+              ) : previewData?.preview_rows && previewData.preview_rows.length > 0 ? (
                 <table className="w-full text-left border-collapse text-[11px]">
                   <thead className="bg-slate-50 border-b border-slate-200 sticky top-0 z-10">
                     <tr>
@@ -419,12 +482,20 @@ export const CollectorDatasetExportModal: React.FC<CollectorDatasetExportModalPr
                     ))}
                   </tbody>
                 </table>
+              ) : previewData ? (
+                <div className="p-8 text-center text-slate-400 space-y-2">
+                  <Database className="w-8 h-8 mx-auto text-slate-300" />
+                  <p className="text-slate-500 font-medium text-xs">No records found matching current filters</p>
+                  <p className="text-slate-400 text-[11px]">
+                    Try selecting a different date range or verifying that the collector is active.
+                  </p>
+                </div>
               ) : (
                 <div className="p-8 text-center text-slate-400 space-y-2">
                   <Database className="w-8 h-8 mx-auto text-slate-300" />
-                  <p className="text-slate-500 font-medium">No records found matching current filters</p>
+                  <p className="text-slate-500 font-medium text-xs">No preview loaded</p>
                   <p className="text-slate-400 text-[11px]">
-                    Try selecting a different date range or verifying that the collector is active.
+                    Click "Preview" to inspect matching records before exporting.
                   </p>
                 </div>
               )}

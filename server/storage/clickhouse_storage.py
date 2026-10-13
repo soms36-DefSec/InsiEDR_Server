@@ -851,9 +851,10 @@ class ClickHouseStorage:
         params: Dict[str, Any] = {}
 
         if collector:
-            if exact_collector:
-                where_clauses.append("lower(collector) = lower(%(collector)s)")
-                params["collector"] = collector
+            clean_col = collector.strip().lower()
+            if exact_collector or not any(c in collector for c in ('%', '*')):
+                where_clauses.append("collector = %(collector)s")
+                params["collector"] = clean_col
             else:
                 where_clauses.append("collector ILIKE %(collector)s")
                 params["collector"] = f"%{collector}%"
@@ -922,9 +923,22 @@ class ClickHouseStorage:
         if not self.is_connected():
             return []
         try:
-            table = 'collector_events_v2 FINAL' if self.collector_schema_version == 2 else 'raw_payloads'
-            res = self._query(f"SELECT DISTINCT username FROM {table} WHERE username != ''")
-            return sorted([str(r[0]).strip() for r in res.result_rows if r[0]])
+            version2 = getattr(self, "collector_schema_version", 1) == 2
+            if version2:
+                res = self._query(
+                    "SELECT DISTINCT username FROM collector_events_v2 FINAL "
+                    "WHERE collector_collected_at >= now() - INTERVAL 14 DAY AND username != '' LIMIT 100"
+                )
+                if not res or not getattr(res, "result_rows", None):
+                    res = self._query("SELECT DISTINCT username FROM collector_events_v2 FINAL WHERE username != '' LIMIT 100")
+            else:
+                res = self._query(
+                    "SELECT DISTINCT username FROM raw_payloads "
+                    "WHERE received_at >= now() - INTERVAL 14 DAY AND username != '' LIMIT 100"
+                )
+                if not res or not getattr(res, "result_rows", None):
+                    res = self._query("SELECT DISTINCT username FROM raw_payloads WHERE username != '' LIMIT 100")
+            return sorted([str(r[0]).strip() for r in (res.result_rows if res and hasattr(res, "result_rows") else []) if r[0]])
         except Exception as exc:
             logger.warning("ClickHouse get_distinct_usernames failed: %s", exc)
             return []
@@ -1087,11 +1101,16 @@ class ClickHouseStorage:
         if not self.is_connected():
             return {"logs": 0, "collector_results": 0, "anomalies": 0, "risk_events": 0}
 
+        now = time.monotonic()
+        if hasattr(self, "_stats_cache") and (now - getattr(self, "_stats_cache_ts", 0.0) < 15.0):
+            return dict(self._stats_cache)
+
+        col_table = "collector_events_v2" if self.collector_schema_version == 2 else "collector_results"
         stats: Dict[str, Any] = {}
         try:
             for table, key in [
                 ("raw_payloads", "logs"),
-                ("collector_results", "collector_results"),
+                (col_table, "collector_results"),
                 ("anomalies", "anomalies"),
                 ("risk_events", "risk_events"),
             ]:
@@ -1099,16 +1118,19 @@ class ClickHouseStorage:
                 stats[key] = int(r.result_rows[0][0]) if r.result_rows else 0
 
             # Collector status distribution
-            cr_status = self._query("SELECT status, count() FROM collector_results GROUP BY status")
+            cr_status = self._query(f"SELECT status, count() FROM {col_table} GROUP BY status")
             stats["collector_status"] = {row[0]: int(row[1]) for row in cr_status.result_rows}
 
             # Collector name distribution
-            cr_names = self._query("SELECT collector, count() FROM collector_results GROUP BY collector")
+            cr_names = self._query(f"SELECT collector, count() FROM {col_table} GROUP BY collector")
             stats["collector_counts"] = {row[0]: int(row[1]) for row in cr_names.result_rows}
 
             # Quality distribution
             nf_quality = self._query("SELECT source_quality, count() FROM normalized_features GROUP BY source_quality")
             stats["source_quality"] = {row[0]: int(row[1]) for row in nf_quality.result_rows}
+
+            self._stats_cache = dict(stats)
+            self._stats_cache_ts = now
         except Exception as exc:
             logger.debug("ClickHouse telemetry stats query failed: %s", exc)
 

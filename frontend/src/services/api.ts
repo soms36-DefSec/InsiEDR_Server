@@ -174,7 +174,17 @@ export async function fetchTelemetryExplorer(
   cursor?: string | null,
   collector?: string | null,
   username?: string | null,
-  filters: { search?: string; status?: string; start_time?: string; end_time?: string; agent_id?: string; signal?: AbortSignal } = {},
+  filters: {
+    search?: string;
+    status?: string;
+    start_time?: string;
+    end_time?: string;
+    agent_id?: string;
+    include_total?: boolean;
+    search_scope?: string;
+    offset?: number;
+    signal?: AbortSignal;
+  } = {},
 ): Promise<TelemetryExplorerResponse> {
   const params = new URLSearchParams({ limit: String(limit) });
   if (cursor) params.set('cursor', cursor);
@@ -185,6 +195,9 @@ export async function fetchTelemetryExplorer(
   if (filters.start_time) params.set('start_time', filters.start_time);
   if (filters.end_time) params.set('end_time', filters.end_time);
   if (filters.agent_id) params.set('agent_id', filters.agent_id);
+  if (filters.include_total !== undefined) params.set('include_total', String(filters.include_total));
+  if (filters.search_scope) params.set('search_scope', filters.search_scope);
+  if (filters.offset !== undefined) params.set('offset', String(filters.offset));
 
   return fetchApi<TelemetryExplorerResponse>(`/api/v1/telemetry/explorer?${params.toString()}`, { signal: filters.signal });
 }
@@ -193,8 +206,8 @@ export async function fetchTelemetryExplorer(
  * On-demand deep forensic event payload inspection drawer fetcher.
  * Maps to `GET /api/v1/telemetry/events/{eventId}`.
  */
-export async function fetchTelemetryEventDetail(eventId: string | number): Promise<TelemetryEventDetailResponse> {
-  return fetchApi<TelemetryEventDetailResponse>(`/api/v1/telemetry/events/${encodeURIComponent(String(eventId))}`);
+export async function fetchTelemetryEventDetail(eventId: string | number, signal?: AbortSignal): Promise<TelemetryEventDetailResponse> {
+  return fetchApi<TelemetryEventDetailResponse>(`/api/v1/telemetry/events/${encodeURIComponent(String(eventId))}`, { signal });
 }
 
 /**
@@ -383,8 +396,8 @@ export interface CollectorPreviewResponse {
 /**
  * Fetches the list of available collectors and fleet usernames for dataset export filtering.
  */
-export async function fetchAvailableCollectors(): Promise<{ ok: boolean; collectors: string[]; usernames: string[] }> {
-  return fetchApi<{ ok: boolean; collectors: string[]; usernames: string[] }>('/api/v1/export/collectors');
+export async function fetchAvailableCollectors(signal?: AbortSignal): Promise<{ ok: boolean; collectors: string[]; usernames: string[] }> {
+  return fetchApi<{ ok: boolean; collectors: string[]; usernames: string[] }>('/api/v1/export/collectors', { signal });
 }
 
 /**
@@ -396,6 +409,7 @@ export async function fetchCollectorPreview(options: {
   endDate?: string | null;
   username?: string | null;
   limit?: number;
+  signal?: AbortSignal;
 }): Promise<CollectorPreviewResponse> {
   const params = new URLSearchParams({ collector: options.collector });
   if (options.startDate) params.set('start_date', options.startDate);
@@ -405,7 +419,7 @@ export async function fetchCollectorPreview(options: {
   }
   if (options.limit) params.set('limit', String(options.limit));
 
-  return fetchApi<CollectorPreviewResponse>(`/api/v1/export/collector-preview?${params.toString()}`);
+  return fetchApi<CollectorPreviewResponse>(`/api/v1/export/collector-preview?${params.toString()}`, { signal: options.signal });
 }
 
 /**

@@ -1207,17 +1207,25 @@ class PostgresStorage(BaseStorage):
         return sorted(list(combined))
 
     def get_distinct_usernames(self) -> list[str]:
-        """Return distinct usernames recorded across raw_payloads."""
+        """Return distinct usernames recorded across agents or raw_payloads."""
         usernames = set()
         with self.connection() as conn:
             with closing(conn.cursor()) as cursor:
                 try:
-                    cursor.execute("SELECT DISTINCT username FROM raw_payloads WHERE username IS NOT NULL AND username != '' ORDER BY username")
+                    cursor.execute("SELECT DISTINCT username_last_seen FROM agents WHERE username_last_seen IS NOT NULL AND username_last_seen != ''")
                     for row in cursor.fetchall():
                         if row[0]:
                             usernames.add(str(row[0]).strip())
                 except Exception:
                     pass
+                if not usernames:
+                    try:
+                        cursor.execute("SELECT DISTINCT username FROM raw_payloads WHERE username IS NOT NULL AND username != '' LIMIT 100")
+                        for row in cursor.fetchall():
+                            if row[0]:
+                                usernames.add(str(row[0]).strip())
+                    except Exception:
+                        pass
         return sorted(list(usernames))
 
     def count_collector_results(

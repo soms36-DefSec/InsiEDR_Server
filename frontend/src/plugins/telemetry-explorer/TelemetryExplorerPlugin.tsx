@@ -158,6 +158,9 @@ export const TelemetryExplorerPlugin: React.FC<TelemetryExplorerPluginProps> = (
               search: debouncedSearch || undefined,
               status: statusFilter === 'all' ? undefined : statusFilter,
               start_time: queryStart.current,
+              include_total: false,
+              search_scope: searchScope,
+              offset: 0,
               signal: abort.signal,
             });
           if (abort.signal.aborted || request.current !== abort) return;
@@ -193,9 +196,7 @@ export const TelemetryExplorerPlugin: React.FC<TelemetryExplorerPluginProps> = (
       } catch (error) {
         if (!abort.signal.aborted) {
           const errMsg = error instanceof Error ? error.message : 'Could not load telemetry';
-          if (!background || logs.length === 0) {
-            setLoadError(errMsg);
-          }
+          setLoadError(errMsg);
         }
       } finally {
         if (request.current === abort) {
@@ -318,7 +319,7 @@ export const TelemetryExplorerPlugin: React.FC<TelemetryExplorerPluginProps> = (
     <div className="space-y-6">
       {loadError && (
         <div role="alert" className="rounded-lg border border-amber-200 bg-amber-50 p-3 text-sm text-amber-900">
-          {loadError}. Displaying the last successfully loaded page.
+          {loadError}{logs.length > 0 ? '. Displaying the last successfully loaded page.' : ''}
           <button type="button" onClick={() => loadLogs(currentPage, pageSize)} className="ml-3 underline">Retry</button>
         </div>
       )}

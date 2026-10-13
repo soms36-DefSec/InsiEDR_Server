@@ -89,14 +89,15 @@ test('dashboard: one SSE stream, coalesced updates, filters, stale responses, pa
   await page.route('**/api/**', async route => {
     const url = new URL(route.request().url());
     let body;
-    if (url.pathname.endsWith('/telemetry')) {
+    if (url.pathname.endsWith('/telemetry') || url.pathname.endsWith('/telemetry/explorer')) {
       requests.push(url.searchParams);
       if (url.searchParams.get('search') === 'OLD') await new Promise(resolve => setTimeout(resolve, 650));
       if (fail) { await route.fulfill({ status: 503, json: { error: { message: 'Database busy' } } }); return; }
       const older = url.searchParams.has('cursor');
-      body = { ok: true, total: null, has_more: !older, next_cursor: older ? null : 'test-position', logs: [{ id: version,
+      const rows = [{ id: version, event_id: `ev-${version}`,
         hostname: older ? 'OLDER-PAGE' : url.searchParams.get('search') || `LIVE-${version}`, username: 'alice',
-        collector: 'file-collector', collected_at: new Date().toISOString(), status: 'success', payload: { count: version } }] };
+        collector: 'file-collector', collector_name: 'file-collector', collected_at: new Date().toISOString(), timestamp: new Date().toISOString(), status: 'success', summary_preview: `Test ${version}`, payload: { count: version } }];
+      body = { ok: true, total: null, has_more: !older, next_cursor: older ? null : 'test-position', events: rows, logs: rows };
     } else if (url.pathname.endsWith('/dashboard-summary')) {
       body = { ok: true, pc_status: { total_pcs: 3, online_pcs: 1, offline_pcs: 2, endpoints: [
         { hostname: 'DESKTOP-SOMS', status: 'online', last_seen_at: new Date().toISOString() },

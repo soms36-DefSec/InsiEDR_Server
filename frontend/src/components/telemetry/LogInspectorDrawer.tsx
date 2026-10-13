@@ -13,14 +13,14 @@
  *   - Defensive clipboard fallback for restricted browser security contexts (HTTP/iframes).
  */
 
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { Drawer } from '../ui/Drawer';
 import { Button } from '../ui/Button';
 import { Badge } from '../ui/Badge';
 import type { TelemetryLog } from '../../types/telemetry';
 import { formatDateTime } from '../../utils/formatters';
 import { fetchTelemetryEventDetail } from '../../services/api';
-import { Copy, Check, Terminal, FileCode, ShieldAlert } from 'lucide-react';
+import { Copy, Check, Terminal, FileCode, ShieldAlert, AlertCircle } from 'lucide-react';
 
 export interface LogInspectorDrawerProps {
   log: TelemetryLog | null;
@@ -32,37 +32,84 @@ export const LogInspectorDrawer: React.FC<LogInspectorDrawerProps> = ({ log, onC
   const [copied, setCopied] = useState(false);
   const [detailEvent, setDetailEvent] = useState<TelemetryLog | null>(null);
   const [isLoadingDetail, setIsLoadingDetail] = useState(false);
+  const [detailError, setDetailError] = useState<string | null>(null);
+
+  const eventId = log ? String(log.event_id || log.id || '') : '';
+  const abortControllerRef = useRef<AbortController | null>(null);
+  const lastLoadedIdRef = useRef<string>('');
+
+  const loadDetail = useCallback(async (targetId: string, baseLog: TelemetryLog) => {
+    if (!targetId) return;
+
+    if (abortControllerRef.current) {
+      abortControllerRef.current.abort();
+    }
+    const controller = new AbortController();
+    abortControllerRef.current = controller;
+
+    setIsLoadingDetail(true);
+    setDetailError(null);
+
+    try {
+      const res = await fetchTelemetryEventDetail(targetId, controller.signal);
+      if (controller.signal.aborted) return;
+
+      if (res && res.ok && res.event) {
+        setDetailEvent((prev) => {
+          const currentId = prev ? String(prev.event_id || prev.id || '') : '';
+          if (currentId && currentId !== targetId) return prev;
+          return {
+            ...(prev || baseLog),
+            ...res.event,
+          };
+        });
+      } else {
+        setDetailError('Failed to fetch event detail from telemetry engine.');
+      }
+    } catch (err: unknown) {
+      if (controller.signal.aborted) return;
+      const msg = err instanceof Error ? err.message : String(err);
+      setDetailError(`Failed to fetch event detail: ${msg}`);
+    } finally {
+      if (!controller.signal.aborted) {
+        setIsLoadingDetail(false);
+      }
+    }
+  }, []);
 
   useEffect(() => {
-    if (!log) {
+    if (!log || !eventId) {
+      if (abortControllerRef.current) {
+        abortControllerRef.current.abort();
+        abortControllerRef.current = null;
+      }
+      lastLoadedIdRef.current = '';
       setDetailEvent(null);
+      setDetailError(null);
+      setIsLoadingDetail(false);
       return;
     }
-    setDetailEvent(log);
 
-    // If full payload is not yet loaded, query on-demand detail from ClickHouse / backend
-    const hasPayload = log.payload && typeof log.payload === 'object' && Object.keys(log.payload).length > 0;
-    const eventId = log.event_id || log.id;
+    if (lastLoadedIdRef.current !== eventId) {
+      lastLoadedIdRef.current = eventId;
+      setDetailEvent(log);
+      setDetailError(null);
 
-    if (!hasPayload && eventId) {
-      setIsLoadingDetail(true);
-      fetchTelemetryEventDetail(eventId)
-        .then((res) => {
-          if (res && res.ok && res.event) {
-            setDetailEvent((prev) => ({
-              ...(prev || log),
-              ...res.event,
-            }));
-          }
-        })
-        .catch(() => {
-          // Graceful fallback to initial log projection
-        })
-        .finally(() => {
-          setIsLoadingDetail(false);
-        });
+      const hasPayload = log.payload && typeof log.payload === 'object' && Object.keys(log.payload).length > 0;
+      if (!hasPayload) {
+        loadDetail(eventId, log);
+      } else {
+        setIsLoadingDetail(false);
+      }
     }
-  }, [log]);
+
+    return () => {
+      if (abortControllerRef.current) {
+        abortControllerRef.current.abort();
+        abortControllerRef.current = null;
+      }
+    };
+  }, [eventId, log, loadDetail]);
 
   if (!log) return null;
   const currentEvent = detailEvent || log;
@@ -169,6 +216,22 @@ export const LogInspectorDrawer: React.FC<LogInspectorDrawerProps> = ({ log, onC
         <div className="mb-4 bg-blue-50 border border-blue-200 rounded-lg p-3 text-xs text-blue-700 flex items-center gap-2">
           <span className="w-3.5 h-3.5 border-2 border-blue-400 border-t-blue-700 rounded-full animate-spin shrink-0" />
           <span>Fetching full payload details on-demand...</span>
+        </div>
+      )}
+
+      {detailError && (
+        <div className="mb-4 bg-rose-50 border border-rose-200 rounded-lg p-3 text-xs text-rose-700 flex items-center justify-between gap-2">
+          <div className="flex items-center gap-2 min-w-0">
+            <AlertCircle className="w-4 h-4 text-rose-500 shrink-0" />
+            <span className="truncate">{detailError}</span>
+          </div>
+          <button
+            type="button"
+            onClick={() => log && loadDetail(eventId, log)}
+            className="px-2.5 py-1 bg-white border border-rose-300 rounded text-rose-800 font-medium hover:bg-rose-100 transition-colors shrink-0 cursor-pointer text-xs"
+          >
+            Retry
+          </button>
         </div>
       )}
 

@@ -218,7 +218,7 @@ def test_hybrid_storage_telemetry_detail_and_histogram_routing():
     ch.get_telemetry_histogram.return_value = {"total_events": 100}
     ch.is_connected.return_value = True
 
-    # Connected: Routes to ClickHouse
+    # Connected: Routes to ClickHouse for UUID/string IDs
     hybrid = HybridStorage(postgres_storage=pg, clickhouse_storage=ch)
     assert hybrid.get_telemetry_event_detail("evt-1") == {"event_id": "ch-detail"}
     assert hybrid.get_telemetry_histogram(time_range="1h") == {"total_events": 100}
@@ -226,6 +226,13 @@ def test_hybrid_storage_telemetry_detail_and_histogram_routing():
     ch.get_telemetry_histogram.assert_called_once_with(time_range="1h")
     pg.get_telemetry_event_detail.assert_not_called()
     pg.get_telemetry_histogram.assert_not_called()
+
+    # Connected: Numeric event IDs route directly to PostgreSQL to eliminate ClickHouse table scans
+    ch.reset_mock()
+    pg.reset_mock()
+    assert hybrid.get_telemetry_event_detail("12345") == {"event_id": "pg-detail"}
+    pg.get_telemetry_event_detail.assert_called_once_with("12345")
+    ch.get_telemetry_event_detail.assert_not_called()
 
     # Disconnected: Falls back to Postgres
     ch.reset_mock()

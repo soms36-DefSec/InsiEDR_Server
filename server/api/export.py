@@ -1442,7 +1442,7 @@ def get_export_collectors(
         "collectors": collectors,
         "usernames": usernames,
     }
-    api_cache.set(cache_key, res, ttl=30.0)
+    api_cache.set(cache_key, res, ttl=60.0)
     return res
 
 
@@ -1467,7 +1467,7 @@ def preview_collector_dataset(
     start_iso = _normalize_iso_date_bound(start_date, is_end=False)
     end_iso = _normalize_iso_date_bound(end_date, is_end=True)
 
-    filters: dict[str, Any] = {"collector": collector.strip()}
+    filters: dict[str, Any] = {"collector": collector.strip(), "exact_collector": True}
     if username and username.strip():
         filters["username"] = username.strip()
     if start_iso:
