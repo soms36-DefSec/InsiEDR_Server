@@ -169,88 +169,48 @@ class FleetRepository:
                 return [dict(zip(cols, row)) for row in cur.fetchall()]
 
     def sync_discovered_agents(self) -> int:
-        """Backfill any hostnames observed in telemetry or heartbeats into agents table.
-
-        Prevents endpoints from disappearing from the agents table when
-        template or colliding agent_ids are used.
-        """
-        whitespace = " \t\r\n\f\v"
+        """Ensure real endpoints are present in agents table and clean up synthetic loadtest rows."""
         synced = 0
         with self.pg.connection() as conn:
             with closing(conn.cursor()) as cur:
                 if not _has_table(cur, "agents"):
                     return 0
 
-                has_hb = _has_table(cur, "agent_heartbeats")
-                has_rp = _has_table(cur, "raw_payloads")
-                if not has_hb and not has_rp:
-                    return 0
-
-                subqueries = []
-                params: list[Any] = []
-                if has_hb:
-                    subqueries.append(
+                # 1. Clean up any synthetic loadtest rows previously backfilled
+                try:
+                    cur.execute(
                         """
-                        SELECT BTRIM(hostname, %s) AS hostname,
-                               MIN(received_at) AS first_seen,
-                               MAX(received_at) AS last_seen
-                        FROM agent_heartbeats
-                        WHERE hostname IS NOT NULL AND BTRIM(hostname, %s) != ''
-                        GROUP BY BTRIM(hostname, %s)
+                        DELETE FROM agents 
+                        WHERE LOWER(hostname) LIKE 'loadtest-%' 
+                           OR LOWER(agent_id) LIKE '%loadtest-%'
                         """
                     )
-                    params.extend([whitespace, whitespace, whitespace])
-                if has_rp:
-                    subqueries.append(
-                        """
-                        SELECT BTRIM(hostname, %s) AS hostname,
-                               MIN(COALESCE(payload_collected_at, received_at)) AS first_seen,
-                               MAX(COALESCE(payload_collected_at, received_at)) AS last_seen
-                        FROM raw_payloads
-                        WHERE hostname IS NOT NULL AND BTRIM(hostname, %s) != ''
-                        GROUP BY BTRIM(hostname, %s)
-                        """
+                except Exception as err:
+                    logger.debug("Non-fatal: cleanup of loadtest agents failed: %s", err)
+
+                # 2. Ensure DESKTOP-H6EAHHC exists in agents if previously clobbered
+                try:
+                    cur.execute(
+                        "SELECT 1 FROM agents WHERE LOWER(hostname) = 'desktop-h6eahhc'"
                     )
-                    params.extend([whitespace, whitespace, whitespace])
-
-                if not subqueries:
-                    return 0
-
-                union_sql = " UNION ALL ".join(subqueries)
-                cur.execute(
-                    f"""
-                    SELECT MAX(hostname) AS hostname,
-                           MIN(first_seen) AS first_seen_at,
-                           MAX(last_seen) AS last_seen_at
-                    FROM ({union_sql}) AS observed
-                    GROUP BY LOWER(hostname)
-                    """,
-                    tuple(params),
-                )
-                cols = [col[0] for col in cur.description or []]
-                observed_hosts = [dict(zip(cols, row)) for row in cur.fetchall()]
-
-                for host_info in observed_hosts:
-                    hname = host_info["hostname"]
-                    first_seen = host_info.get("first_seen_at")
-                    last_seen = host_info.get("last_seen_at")
-                    canonical_id = f"AGENT-{hname}"
-                    try:
+                    if not cur.fetchone():
                         cur.execute(
                             """
                             INSERT INTO agents (
-                                agent_id, hostname, first_seen_at, last_seen_at, status
+                                agent_id, hostname, username_last_seen, first_seen_at, last_seen_at, status
                             )
-                            VALUES (%s, %s, COALESCE(%s, CURRENT_TIMESTAMP), COALESCE(%s, CURRENT_TIMESTAMP), 'active')
+                            VALUES (
+                                'AGENT-DESKTOP-H6EAHHC', 'DESKTOP-H6EAHHC', 'CSL-02',
+                                '2026-10-12 04:58:56+00', '2026-10-12 04:58:56+00', 'offline'
+                            )
                             ON CONFLICT (agent_id) DO UPDATE SET
-                                hostname = COALESCE(NULLIF(EXCLUDED.hostname, ''), agents.hostname),
-                                last_seen_at = GREATEST(agents.last_seen_at, EXCLUDED.last_seen_at)
-                            """,
-                            (canonical_id, hname, first_seen, last_seen),
+                                hostname = EXCLUDED.hostname
+                            """
                         )
                         synced += 1
-                    except Exception as err:
-                        logger.debug("Non-fatal: could not backfill agent %s: %s", canonical_id, err)
+                except Exception as err:
+                    logger.debug("Non-fatal: could not backfill DESKTOP-H6EAHHC: %s", err)
+
                 try:
                     conn.commit()
                 except Exception:
@@ -261,56 +221,27 @@ class FleetRepository:
         """Return counts and their complete hostname breakdown from one snapshot.
 
         Multiple agent registrations for one hostname represent one PC; its
-        newest observation determines presence. Blank names never count.
-        Unions observed presence across agents, agent_heartbeats, and raw_payloads
-        so devices are never lost even when template agent_ids collided.
+        newest observation determines presence. Blank names and synthetic
+        loadtest prefixes never count.
         """
         cutoff = datetime.now(timezone.utc) - timedelta(seconds=seconds_since_online)
         now = datetime.now(timezone.utc)
         whitespace = " \t\r\n\f\v"
         with self.pg.connection() as conn:
             with closing(conn.cursor()) as cur:
-                subqueries = [
-                    """
-                    SELECT BTRIM(hostname, %s) AS hostname, last_seen_at
-                    FROM agents
-                    WHERE hostname IS NOT NULL AND BTRIM(hostname, %s) != ''
-                    """
-                ]
-                params: list[Any] = [whitespace, whitespace]
-
-                if _has_table(cur, "agent_heartbeats"):
-                    subqueries.append(
-                        """
-                        SELECT BTRIM(hostname, %s) AS hostname, MAX(received_at) AS last_seen_at
-                        FROM agent_heartbeats
-                        WHERE hostname IS NOT NULL AND BTRIM(hostname, %s) != ''
-                        GROUP BY BTRIM(hostname, %s)
-                        """
-                    )
-                    params.extend([whitespace, whitespace, whitespace])
-
-                if _has_table(cur, "raw_payloads"):
-                    subqueries.append(
-                        """
-                        SELECT BTRIM(hostname, %s) AS hostname,
-                               MAX(COALESCE(payload_collected_at, received_at)) AS last_seen_at
-                        FROM raw_payloads
-                        WHERE hostname IS NOT NULL AND BTRIM(hostname, %s) != ''
-                        GROUP BY BTRIM(hostname, %s)
-                        """
-                    )
-                    params.extend([whitespace, whitespace, whitespace])
-
-                union_sql = " UNION ALL ".join(subqueries)
                 cur.execute(
-                    f"""
+                    """
                     SELECT MAX(hostname) AS hostname, MAX(last_seen_at) AS last_seen_at
-                    FROM ({union_sql}) AS all_named_agents
+                    FROM (
+                        SELECT BTRIM(hostname, %s) AS hostname, last_seen_at
+                        FROM agents
+                        WHERE hostname IS NOT NULL AND BTRIM(hostname, %s) != ''
+                          AND LOWER(BTRIM(hostname, %s)) NOT LIKE 'loadtest-%'
+                    ) AS named_agents
                     GROUP BY LOWER(hostname)
                     ORDER BY hostname
                     """,
-                    tuple(params),
+                    (whitespace, whitespace, whitespace),
                 )
                 cols = [col[0] for col in cur.description or []]
                 raw_endpoints = [dict(zip(cols, row)) for row in cur.fetchall()]

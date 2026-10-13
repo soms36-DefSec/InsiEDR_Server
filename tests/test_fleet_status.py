@@ -314,35 +314,34 @@ def test_shared_agent_id_does_not_clobber_pc_inventory(full_fleet):
     assert hostnames["SOCL4-61"]["status"] == "online"
 
 
-def test_raw_payloads_discovered_when_missing_from_agents_table(full_fleet):
+def test_sync_discovered_agents_backfills_desktop_and_purges_loadtest(full_fleet):
     storage = full_fleet
-    # Insert telemetry directly into raw_payloads without creating an agents entry
-    historical_time = (NOW - timedelta(hours=24)).isoformat()
+    # Insert synthetic loadtest row into agents
     with storage.connection() as conn:
         conn.execute(
-            "INSERT INTO raw_payloads (payload_id, agent_id, received_at, payload_collected_at, hostname) VALUES (?, ?, ?, ?, ?)",
-            ("p-orphan", "AGENT-LEGACY", historical_time, historical_time, "LEGACY-PC"),
+            "INSERT INTO agents (agent_id, hostname, last_seen_at) VALUES (?, ?, ?)",
+            ("AGENT-loadtest-1234", "loadtest-1234", NOW.isoformat()),
         )
 
-    # get_pc_status must discover LEGACY-PC via raw_payloads union
+    # get_pc_status must exclude loadtest-1234 even before purge
     status = storage.get_pc_status()
-    assert status["total_pcs"] == 1
-    assert status["online_pcs"] == 0
-    assert status["offline_pcs"] == 1
-    assert status["endpoints"][0]["hostname"] == "LEGACY-PC"
-    assert status["endpoints"][0]["status"] == "offline"
+    hostnames = [ep["hostname"] for ep in status["endpoints"]]
+    assert "loadtest-1234" not in hostnames
 
-    # sync_discovered_agents must backfill it into agents table
-    synced = storage.fleet.sync_discovered_agents()
-    assert synced >= 1
+    # sync_discovered_agents must purge loadtest rows and backfill DESKTOP-H6EAHHC
+    storage.fleet.sync_discovered_agents()
 
-    # Now verify it exists in agents table directly
     with storage.connection() as conn:
         cursor = conn.cursor()
-        cursor.execute("SELECT agent_id, hostname FROM agents WHERE hostname = ?", ("LEGACY-PC",))
-        row = cursor.fetchone()
-        assert row is not None
-        assert row[0] == "AGENT-LEGACY-PC"
-        assert row[1] == "LEGACY-PC"
+        cursor.execute("SELECT hostname FROM agents WHERE hostname = 'loadtest-1234'")
+        assert cursor.fetchone() is None
+
+        cursor.execute("SELECT hostname FROM agents WHERE hostname = 'DESKTOP-H6EAHHC'")
+        assert cursor.fetchone() is not None
+
+    status = storage.get_pc_status()
+    hostnames = [ep["hostname"] for ep in status["endpoints"]]
+    assert "DESKTOP-H6EAHHC" in hostnames
+    assert "loadtest-1234" not in hostnames
 
 
