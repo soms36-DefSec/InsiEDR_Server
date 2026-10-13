@@ -163,6 +163,9 @@ class HybridStorage(BaseStorage):
     def get_pc_status(self, seconds_since_online: int = 300) -> Dict[str, Any]:
         return self.fleet.get_pc_status(seconds_since_online=seconds_since_online)
 
+    def sync_discovered_agents(self) -> int:
+        return self.fleet.sync_discovered_agents()
+
     def get_telemetry_page(self, **filters) -> Dict[str, Any]:
         # Analytics reads are explicitly opt-in: CH is eventually consistent.
         # Never switch databases within a cursor chain or mix rows and counts.

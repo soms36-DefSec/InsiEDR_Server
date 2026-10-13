@@ -7,6 +7,7 @@ from server.api.responses import api_error
 from server.api.deps import get_storage, require_operator, OperatorPrincipal
 from psycopg2.pool import PoolError
 from psycopg2.errors import QueryCanceled, LockNotAvailable
+from server.config import config
 
 logger = logging.getLogger("insiedr.api.stats")
 
@@ -68,7 +69,8 @@ def dashboard_summary(storage=Depends(get_storage),
 
         pc_failed = False
         try:
-            pc_status = storage.get_pc_status(seconds_since_online=300) if hasattr(storage, "get_pc_status") else {}
+            threshold = getattr(config, "agent_online_threshold_seconds", 300)
+            pc_status = storage.get_pc_status(seconds_since_online=threshold) if hasattr(storage, "get_pc_status") else {}
             if not isinstance(pc_status, dict):
                 pc_status = {}
         except (PoolError, QueryCanceled, LockNotAvailable):

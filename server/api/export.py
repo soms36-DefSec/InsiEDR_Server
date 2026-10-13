@@ -10,6 +10,7 @@ from typing import Any, Generator
 from fastapi import APIRouter, Depends, Query, Request
 from fastapi.responses import JSONResponse, Response, StreamingResponse
 from server.api.deps import get_storage, require_operator, OperatorPrincipal
+from server.config import config
 
 router = APIRouter(prefix="/api", tags=["Streaming Export"])
 bp = router  # Backward compatibility alias
@@ -1529,7 +1530,7 @@ async def export_collector_dataset(
     start_date: str | None = Query(None, description="Start date (YYYY-MM-DD or ISO timestamp)"),
     end_date: str | None = Query(None, description="End date (YYYY-MM-DD or ISO timestamp)"),
     username: str | None = Query(None, description="Filter by user or omit for all"),
-    limit: int = Query(50000, ge=1, le=100000, description="Maximum number of log samples to export"),
+    limit: int | None = Query(None, ge=1, description="Maximum number of log samples to export (omit for full dataset export)"),
     storage=Depends(get_storage),
     operator: OperatorPrincipal = Depends(require_operator("operator:read")),
 ):
@@ -1540,7 +1541,8 @@ async def export_collector_dataset(
     if not collector or not collector.strip():
         return JSONResponse({"ok": False, "error": "Collector parameter is required"}, status_code=400)
 
-    bounded_limit = min(max(1, limit), 200000)
+    max_records = getattr(config, "max_export_records", 500000)
+    bounded_limit = min(max(1, limit), max_records) if limit is not None else max_records
     start_iso = _normalize_iso_date_bound(start_date, is_end=False)
     end_iso = _normalize_iso_date_bound(end_date, is_end=True)
 

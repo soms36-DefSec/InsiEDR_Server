@@ -99,6 +99,16 @@ export const CollectorDatasetExportModal: React.FC<CollectorDatasetExportModalPr
     }
   }, [isOpen]);
 
+  // Cancel any in-flight request and clear preview state when filters change
+  const clearStalePreview = useCallback(() => {
+    if (previewAbortRef.current) {
+      previewAbortRef.current.abort();
+      previewAbortRef.current = null;
+    }
+    setPreviewData(null);
+    setPreviewError(null);
+  }, []);
+
   // Sync date range inputs based on selected mode
   useEffect(() => {
     const today = new Date().toISOString().split('T')[0];
@@ -146,11 +156,14 @@ export const CollectorDatasetExportModal: React.FC<CollectorDatasetExportModalPr
 
       if (res.ok) {
         setPreviewData(res);
+        setPreviewError(null);
       } else {
+        setPreviewData(null);
         setPreviewError('Failed to fetch preview data');
       }
     } catch (err: unknown) {
       if (controller.signal.aborted) return;
+      setPreviewData(null);
       const msg = err instanceof Error ? err.message : String(err);
       setPreviewError(msg);
     } finally {
@@ -256,8 +269,12 @@ export const CollectorDatasetExportModal: React.FC<CollectorDatasetExportModalPr
                 1. Target Collector <span className="text-red-500">*</span>
               </label>
               <select
+                aria-label="Target Collector"
                 value={selectedCollector}
-                onChange={(e) => setSelectedCollector(e.target.value)}
+                onChange={(e) => {
+                  clearStalePreview();
+                  setSelectedCollector(e.target.value);
+                }}
                 className="w-full h-9 bg-white border border-slate-300 rounded-md px-3 text-xs font-medium text-slate-800 outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 cursor-pointer shadow-2xs"
               >
                 {allKnownCollectors.map((col) => (
@@ -277,7 +294,10 @@ export const CollectorDatasetExportModal: React.FC<CollectorDatasetExportModalPr
               <div className="flex gap-1.5">
                 <select
                   value={dateMode}
-                  onChange={(e) => setDateMode(e.target.value as 'all' | 'today' | '7d' | '30d' | 'custom')}
+                  onChange={(e) => {
+                    clearStalePreview();
+                    setDateMode(e.target.value as 'all' | 'today' | '7d' | '30d' | 'custom');
+                  }}
                   className="h-9 bg-white border border-slate-300 rounded-md px-2 text-xs font-medium text-slate-800 outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 cursor-pointer shadow-2xs shrink-0"
                 >
                   <option value="all">All Dates</option>
@@ -292,7 +312,10 @@ export const CollectorDatasetExportModal: React.FC<CollectorDatasetExportModalPr
                     <input
                       type="date"
                       value={startDate}
-                      onChange={(e) => setStartDate(e.target.value)}
+                      onChange={(e) => {
+                        clearStalePreview();
+                        setStartDate(e.target.value);
+                      }}
                       className="w-full h-9 bg-white border border-slate-300 rounded-md px-1.5 text-[11px] font-mono outline-none focus:border-blue-500"
                       title="Start Date"
                     />
@@ -300,7 +323,10 @@ export const CollectorDatasetExportModal: React.FC<CollectorDatasetExportModalPr
                     <input
                       type="date"
                       value={endDate}
-                      onChange={(e) => setEndDate(e.target.value)}
+                      onChange={(e) => {
+                        clearStalePreview();
+                        setEndDate(e.target.value);
+                      }}
                       className="w-full h-9 bg-white border border-slate-300 rounded-md px-1.5 text-[11px] font-mono outline-none focus:border-blue-500"
                       title="End Date"
                     />
@@ -318,7 +344,10 @@ export const CollectorDatasetExportModal: React.FC<CollectorDatasetExportModalPr
               <div className="flex gap-1.5">
                 <select
                   value={selectedUser}
-                  onChange={(e) => setSelectedUser(e.target.value)}
+                  onChange={(e) => {
+                    clearStalePreview();
+                    setSelectedUser(e.target.value);
+                  }}
                   className="flex-1 h-9 bg-white border border-slate-300 rounded-md px-3 text-xs font-medium text-slate-800 outline-none focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500 cursor-pointer shadow-2xs"
                 >
                   <option value="">All Fleet Users</option>
@@ -349,17 +378,17 @@ export const CollectorDatasetExportModal: React.FC<CollectorDatasetExportModalPr
             <div className="flex items-center justify-between">
               <span className="font-semibold text-slate-700 flex items-center gap-1.5">
                 <Database className="w-3.5 h-3.5 text-indigo-500" />
-                Discovered Columns ({previewData?.columns ? previewData.columns.length : '—'}) for{' '}
+                Discovered Columns ({previewData?.columns && !previewError && !isPreviewLoading ? previewData.columns.length : '—'}) for{' '}
                 <span className="font-mono text-indigo-700 uppercase font-bold">{selectedCollector}</span>:
               </span>
-              {previewData && (
+              {previewData && !previewError && !isPreviewLoading && (
                 <span className="text-slate-500">
                   <b className="text-slate-900 font-mono">{previewData.total_samples}</b> sample records found
                 </span>
               )}
             </div>
 
-            {previewData?.feature_columns && previewData.feature_columns.length > 0 ? (
+            {previewData?.feature_columns && !previewError && !isPreviewLoading && previewData.feature_columns.length > 0 ? (
               <div className="flex flex-wrap gap-1.5 max-h-24 overflow-y-auto p-2.5 rounded-lg bg-slate-50 border border-slate-200">
                 <span className="px-2 py-0.5 rounded bg-slate-200 text-slate-700 font-mono text-[10px] font-semibold">
                   timestamp
@@ -388,9 +417,19 @@ export const CollectorDatasetExportModal: React.FC<CollectorDatasetExportModalPr
                 Analyzing collector feature schema...
               </div>
             ) : previewError ? (
-              <div className="p-3 rounded-lg bg-rose-50 border border-rose-200 text-rose-700 flex items-center gap-2">
-                <AlertCircle className="w-3.5 h-3.5 text-rose-500 shrink-0" />
-                Failed to inspect schema: {previewError}
+              <div className="p-3 rounded-lg bg-rose-50 border border-rose-200 text-rose-700 flex items-center justify-between gap-2">
+                <div className="flex items-center gap-2">
+                  <AlertCircle className="w-3.5 h-3.5 text-rose-500 shrink-0" />
+                  <span>Failed to inspect schema: {previewError}</span>
+                </div>
+                <Button
+                  variant="secondary"
+                  size="sm"
+                  onClick={handleLoadPreview}
+                  icon={<RefreshCw className="w-3 h-3" />}
+                >
+                  Retry Preview
+                </Button>
               </div>
             ) : previewData ? (
               <div className="p-3 rounded-lg bg-slate-50 border border-slate-200 text-slate-500 italic flex items-center gap-2">

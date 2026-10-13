@@ -250,3 +250,85 @@ test('fleet status cards: valid counts, empty fleet zero, unavailable fallback, 
     await page.close();
   }
 });
+
+test('collector dataset export modal: preview schema, clears stale data on filter change, and truthful failure states without phantom counts', async () => {
+  const page = await browser.newPage({ viewport: { width: 1600, height: 1000 } });
+  let previewStatus = 200;
+  let previewResponse = {
+    ok: true,
+    collector: 'logon',
+    total_samples: 50,
+    columns: ['timestamp', 'username', 'hostname', 'status', 'auth_type', 'session_id'],
+    feature_columns: ['auth_type', 'session_id'],
+    preview_rows: [
+      { timestamp: '2026-10-13T10:00:00Z', username: 'admin', hostname: 'HOST-01', status: 'success', auth_type: 'Kerberos', session_id: '1001' }
+    ],
+    filename: 'logon_export.csv'
+  };
+
+  await page.route('**/api/**', async route => {
+    const url = new URL(route.request().url());
+    if (url.pathname.includes('/collector-preview')) {
+      if (previewStatus !== 200) {
+        await route.fulfill({ status: previewStatus, json: { error: 'Preview timed out or database error' } });
+      } else {
+        await route.fulfill({ json: previewResponse });
+      }
+    } else if (url.pathname.includes('/collectors')) {
+      await route.fulfill({ json: { ok: true, collectors: ['logon', 'file', 'process'], usernames: ['admin', 'analyst'] } });
+    } else if (url.pathname.endsWith('/dashboard-summary')) {
+      await route.fulfill({ json: { ok: true, pc_status: { total_pcs: 1, online_pcs: 1, offline_pcs: 0, endpoints: [] }, stats: { logs: 100 } } });
+    } else if (url.pathname.endsWith('/telemetry/explorer') || url.pathname.endsWith('/telemetry')) {
+      await route.fulfill({ json: { ok: true, total: null, has_more: false, next_cursor: null, events: [], logs: [] } });
+    } else {
+      await route.fulfill({ json: { ok: true } });
+    }
+  });
+
+  try {
+    await page.goto(base);
+    // 1. Open the Collector Dataset modal
+    const collectorBtn = page.getByRole('button', { name: 'Collector Dataset' });
+    await collectorBtn.waitFor();
+    await collectorBtn.click();
+
+    // 2. Initial preview load succeeds with 50 sample records found
+    await page.getByText('50 sample records found').waitFor();
+    await page.getByText('auth_type', { exact: true }).first().waitFor();
+    await page.getByText('session_id', { exact: true }).first().waitFor();
+
+    // 3. Switch collector to 'file' with backend returning 500/timeout error
+    previewStatus = 500;
+    const collectorSelect = page.getByLabel('Target Collector');
+    await collectorSelect.selectOption('file');
+
+    // 4. Verify stale "50 sample records found" is NOT present, and error alert with Retry button is rendered
+    await page.getByText('Failed to inspect schema').waitFor();
+    assert.equal(await page.getByText('50 sample records found').count(), 0);
+    assert.equal(await page.getByText('session_id', { exact: true }).count(), 0);
+
+    const retryBtn = page.getByRole('button', { name: 'Retry Preview' }).first();
+    assert.ok(await retryBtn.count() > 0);
+
+    // 5. Recovery: backend recovers to 200 and user clicks Retry Preview
+    previewStatus = 200;
+    previewResponse = {
+      ok: true,
+      collector: 'file',
+      total_samples: 12,
+      columns: ['timestamp', 'username', 'hostname', 'status', 'file_path', 'operation'],
+      feature_columns: ['file_path', 'operation'],
+      preview_rows: [
+        { timestamp: '2026-10-13T10:00:00Z', username: 'admin', hostname: 'HOST-01', status: 'success', file_path: 'C:\\test.txt', operation: 'WRITE' }
+      ],
+      filename: 'file_export.csv'
+    };
+    await retryBtn.click();
+    await page.getByText('12 sample records found').waitFor();
+    await page.getByText('file_path', { exact: true }).first().waitFor();
+    assert.equal(await page.getByText('Failed to inspect schema').count(), 0);
+  } finally {
+    await page.close();
+  }
+});
+

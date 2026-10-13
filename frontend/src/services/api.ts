@@ -32,7 +32,14 @@ import type {
   TamperAlertsResponse,
 } from '../types/telemetry';
 
-const DEFAULT_TIMEOUT_MS = 10000;
+export const TIMEOUT_CONFIG = {
+  DEFAULT_READ_MS: 30000,    // 30s for normal queries (dashboard summary, telemetry explorer, stats)
+  PREVIEW_MS: 60000,         // 60s for schema and dataset previews
+  EXPORT_MS: 120000,         // 120s for dataset downloads and streaming exports
+  HEALTH_MS: 15000,          // 15s for liveness and health probes
+};
+
+const DEFAULT_TIMEOUT_MS = TIMEOUT_CONFIG.DEFAULT_READ_MS;
 
 export async function fetchApi<T>(url: string, options?: RequestInit & { timeoutMs?: number }): Promise<T> {
   const timeoutMs = options?.timeoutMs ?? DEFAULT_TIMEOUT_MS;
@@ -92,7 +99,7 @@ export async function fetchApi<T>(url: string, options?: RequestInit & { timeout
  * Maps to `GET /api/dashboard-summary`.
  */
 export async function fetchDashboardSummary(signal?: AbortSignal): Promise<DashboardSummary> {
-  return fetchApi<DashboardSummary>('/api/dashboard-summary', { signal });
+  return fetchApi<DashboardSummary>('/api/dashboard-summary', { signal, timeoutMs: TIMEOUT_CONFIG.DEFAULT_READ_MS });
 }
 
 /**
@@ -101,7 +108,7 @@ export async function fetchDashboardSummary(signal?: AbortSignal): Promise<Dashb
  * Maps to `GET /api/health`.
  */
 export async function fetchHealth(signal?: AbortSignal): Promise<SystemHealth> {
-  return fetchApi<SystemHealth>('/api/health', { signal });
+  return fetchApi<SystemHealth>('/api/health', { signal, timeoutMs: TIMEOUT_CONFIG.HEALTH_MS });
 }
 
 /**
@@ -162,7 +169,7 @@ export async function fetchTelemetry(
     if (filters[key]) params.set(key, filters[key]);
   }
 
-  return fetchApi<TelemetryResponse>(`/api/telemetry?${params.toString()}`, { signal: filters.signal });
+  return fetchApi<TelemetryResponse>(`/api/telemetry?${params.toString()}`, { signal: filters.signal, timeoutMs: TIMEOUT_CONFIG.DEFAULT_READ_MS });
 }
 
 /**
@@ -199,7 +206,7 @@ export async function fetchTelemetryExplorer(
   if (filters.search_scope) params.set('search_scope', filters.search_scope);
   if (filters.offset !== undefined) params.set('offset', String(filters.offset));
 
-  return fetchApi<TelemetryExplorerResponse>(`/api/v1/telemetry/explorer?${params.toString()}`, { signal: filters.signal });
+  return fetchApi<TelemetryExplorerResponse>(`/api/v1/telemetry/explorer?${params.toString()}`, { signal: filters.signal, timeoutMs: TIMEOUT_CONFIG.DEFAULT_READ_MS });
 }
 
 /**
@@ -397,7 +404,7 @@ export interface CollectorPreviewResponse {
  * Fetches the list of available collectors and fleet usernames for dataset export filtering.
  */
 export async function fetchAvailableCollectors(signal?: AbortSignal): Promise<{ ok: boolean; collectors: string[]; usernames: string[] }> {
-  return fetchApi<{ ok: boolean; collectors: string[]; usernames: string[] }>('/api/v1/export/collectors', { signal });
+  return fetchApi<{ ok: boolean; collectors: string[]; usernames: string[] }>('/api/v1/export/collectors', { signal, timeoutMs: TIMEOUT_CONFIG.PREVIEW_MS });
 }
 
 /**
@@ -419,7 +426,7 @@ export async function fetchCollectorPreview(options: {
   }
   if (options.limit) params.set('limit', String(options.limit));
 
-  return fetchApi<CollectorPreviewResponse>(`/api/v1/export/collector-preview?${params.toString()}`, { signal: options.signal });
+  return fetchApi<CollectorPreviewResponse>(`/api/v1/export/collector-preview?${params.toString()}`, { signal: options.signal, timeoutMs: TIMEOUT_CONFIG.PREVIEW_MS });
 }
 
 /**

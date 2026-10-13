@@ -1135,13 +1135,11 @@ class PostgresStorage(BaseStorage):
                 cursor.execute(
                     f"""
                     SELECT cr.payload_id, cr.agent_id, cr.collector, cr.collector_collected_at, cr.hostname,
-                           cr.status, cr.payload_json, rp.username, rp.received_at, re.risk_level, re.summary, re.correlated_signals_json, re.risk_score,
-                           rp.encrypted_envelope_json, rp.crypto_scheme
+                           cr.status, cr.payload_json, rp.username, rp.received_at
                     FROM collector_results cr
                     LEFT JOIN raw_payloads rp ON cr.payload_id = rp.payload_id
-                    LEFT JOIN risk_events re ON cr.payload_id = re.payload_id
                     {where_clause}
-                    ORDER BY cr.collector_collected_at DESC NULLS LAST
+                    ORDER BY cr.collector_collected_at DESC NULLS LAST, cr.id DESC
                     LIMIT %s OFFSET %s
                     """,
                     tuple(params)
@@ -1159,12 +1157,12 @@ class PostgresStorage(BaseStorage):
                         "payload": payload,
                         "username": row[7],
                         "received_at": row[8],
-                        "risk_level": row[9],
-                        "summary": row[10],
-                        "correlated_signals_json": row[11],
-                        "risk_score": row[12],
-                        "encrypted_envelope_json": row[13],
-                        "crypto_scheme": row[14],
+                        "risk_level": None,
+                        "summary": None,
+                        "correlated_signals_json": None,
+                        "risk_score": None,
+                        "encrypted_envelope_json": None,
+                        "crypto_scheme": None,
                     })
                 return results
 
@@ -1220,7 +1218,7 @@ class PostgresStorage(BaseStorage):
                     pass
                 if not usernames:
                     try:
-                        cursor.execute("SELECT DISTINCT username FROM raw_payloads WHERE username IS NOT NULL AND username != '' LIMIT 100")
+                        cursor.execute("SELECT DISTINCT username FROM raw_payloads WHERE username IS NOT NULL AND username != '' LIMIT 1000")
                         for row in cursor.fetchall():
                             if row[0]:
                                 usernames.add(str(row[0]).strip())
@@ -1358,9 +1356,26 @@ class PostgresStorage(BaseStorage):
                         ("risk_events", "risk_events"),
                     ):
                         try:
-                            cursor.execute(f"SELECT COUNT(*) FROM {table}")
-                            row = cursor.fetchone()
-                            stats[key] = row[0] if row else 0
+                            # For PostgreSQL, use fast reltuples estimation for large tables (> 50k rows)
+                            # to avoid blocking sequential scans on multi-million row deployments.
+                            if not self._is_sqlite:
+                                cursor.execute(
+                                    f"""
+                                    SELECT CASE 
+                                        WHEN c.reltuples > 50000 THEN c.reltuples::bigint 
+                                        ELSE (SELECT COUNT(*) FROM {table})
+                                    END
+                                    FROM pg_class c
+                                    WHERE c.relname = %s
+                                    """,
+                                    (table,),
+                                )
+                                row = cursor.fetchone()
+                                stats[key] = row[0] if row and row[0] is not None else 0
+                            else:
+                                cursor.execute(f"SELECT COUNT(*) FROM {table}")
+                                row = cursor.fetchone()
+                                stats[key] = row[0] if row else 0
                         except Exception:
                             try:
                                 conn.rollback()
@@ -1368,7 +1383,7 @@ class PostgresStorage(BaseStorage):
                                 pass
                             stats[key] = 0
                     try:
-                        cursor.execute("SELECT status, COUNT(*) FROM collector_results GROUP BY status")
+                        cursor.execute("SELECT status, COUNT(*) FROM collector_results GROUP BY status LIMIT 50")
                         stats["collector_status"] = {row[0]: row[1] for row in cursor.fetchall()}
                     except Exception:
                         try:
@@ -1377,7 +1392,7 @@ class PostgresStorage(BaseStorage):
                             pass
                         stats["collector_status"] = {}
                     try:
-                        cursor.execute("SELECT collector, COUNT(*) FROM collector_results GROUP BY collector")
+                        cursor.execute("SELECT collector, COUNT(*) FROM collector_results GROUP BY collector LIMIT 100")
                         stats["collector_counts"] = {row[0]: row[1] for row in cursor.fetchall()}
                     except Exception:
                         try:
@@ -1385,15 +1400,8 @@ class PostgresStorage(BaseStorage):
                         except Exception:
                             pass
                         stats["collector_counts"] = {}
-                    try:
-                        cursor.execute("SELECT source_quality, COUNT(*) FROM normalized_features GROUP BY source_quality")
-                        stats["source_quality"] = {row[0]: row[1] for row in cursor.fetchall()}
-                    except Exception:
-                        try:
-                            conn.rollback()
-                        except Exception:
-                            pass
-                        stats["source_quality"] = {}
+                    # source_quality aggregation removed: not consumed by dashboard and causes multi-second table scans
+                    stats["source_quality"] = {}
                 else:
                     stats.update({
                         "logs": 0,

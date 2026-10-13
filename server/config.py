@@ -268,6 +268,22 @@ class ServerConfig:
             return 2.0
 
     @property
+    def agent_online_threshold_seconds(self) -> int:
+        """Configurable window (in seconds) to consider an agent online since last heartbeat/observation."""
+        try:
+            return int(os.environ.get("INSIEDR_AGENT_ONLINE_THRESHOLD_SECONDS", "300"))
+        except (ValueError, TypeError):
+            return 300
+
+    @property
+    def max_export_records(self) -> int:
+        """Configurable ceiling on export dataset record streaming to prevent unconstrained resource saturation."""
+        try:
+            return int(os.environ.get("INSIEDR_MAX_EXPORT_RECORDS", "500000"))
+        except (ValueError, TypeError):
+            return 500000
+
+    @property
     def redis_ssl(self) -> bool:
         return self._env_bool("INSIEDR_REDIS_SSL", False)
 
