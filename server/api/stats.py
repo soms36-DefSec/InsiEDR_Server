@@ -66,10 +66,32 @@ def dashboard_summary(storage=Depends(get_storage),
         if cached is not None:
             return cached
 
-        pc_status = storage.get_pc_status(seconds_since_online=300) if hasattr(storage, "get_pc_status") else {}
-        agents = storage.list_agents(limit=500, offset=0) if hasattr(storage, "list_agents") else []
+        try:
+            pc_status = storage.get_pc_status(seconds_since_online=300) if hasattr(storage, "get_pc_status") else {}
+            if not isinstance(pc_status, dict):
+                pc_status = {}
+        except (PoolError, QueryCanceled, LockNotAvailable):
+            raise
+        except Exception as pc_err:
+            logger.warning("Non-fatal: get_pc_status error: %s", pc_err)
+            pc_status = {"total_pcs": 0, "online_pcs": 0, "offline_pcs": 0, "endpoints": []}
+
+        try:
+            agents = storage.list_agents(limit=500, offset=0) if hasattr(storage, "list_agents") else []
+            if not isinstance(agents, list):
+                agents = []
+        except (PoolError, QueryCanceled, LockNotAvailable):
+            raise
+        except Exception as agents_err:
+            logger.warning("Non-fatal: list_agents error: %s", agents_err)
+            agents = []
+
         try:
             stats = _fleet_stats(storage) if hasattr(storage, "get_stats") else {}
+            if not isinstance(stats, dict):
+                stats = {}
+        except (PoolError, QueryCanceled, LockNotAvailable):
+            raise
         except Exception as stats_err:
             logger.warning("Non-fatal: fleet stats calculation error: %s", stats_err)
             stats = {"ok": False, "error": str(stats_err)}
@@ -83,8 +105,13 @@ def dashboard_summary(storage=Depends(get_storage),
             "risk_events": [],
             "anomalies": [],
         }
-        api_cache.set(cache_key, res, ttl=4.0)
-        return res
+        try:
+            api_cache.set(cache_key, res, ttl=4.0)
+        except Exception as cache_err:
+            logger.debug("Non-fatal: dashboard_summary cache set failed: %s", cache_err)
+
+        from fastapi.encoders import jsonable_encoder
+        return jsonable_encoder(res)
     except (PoolError, QueryCanceled, LockNotAvailable):
         raise  # Central handler returns a retryable 503, not a generic 500.
     except Exception:

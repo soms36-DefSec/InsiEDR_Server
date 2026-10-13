@@ -166,7 +166,16 @@ class FleetRepository:
                     (limit, offset),
                 )
                 cols = [col[0] for col in cur.description or []]
-                return [dict(zip(cols, row)) for row in cur.fetchall()]
+                rows = cur.fetchall()
+                results = []
+                for row in rows:
+                    item = dict(zip(cols, row))
+                    if isinstance(item.get("first_seen_at"), datetime):
+                        item["first_seen_at"] = item["first_seen_at"].isoformat()
+                    if isinstance(item.get("last_seen_at"), datetime):
+                        item["last_seen_at"] = item["last_seen_at"].isoformat()
+                    results.append(item)
+                return results
 
     def sync_discovered_agents(self) -> int:
         """Ensure real endpoints are present in agents table and clean up synthetic loadtest rows."""
@@ -239,7 +248,7 @@ class FleetRepository:
                           AND LOWER(BTRIM(hostname, %s)) NOT LIKE 'loadtest-%'
                     ) AS named_agents
                     GROUP BY LOWER(hostname)
-                    ORDER BY hostname
+                    ORDER BY 1
                     """,
                     (whitespace, whitespace, whitespace),
                 )
@@ -264,12 +273,18 @@ class FleetRepository:
             # Clamp future timestamp to server current time
             if seen_dt and seen_dt > now:
                 seen_dt = now
-                raw_seen = now.isoformat() if isinstance(raw_seen, str) else now
+
+            if isinstance(raw_seen, datetime):
+                iso_seen = seen_dt.isoformat() if seen_dt else None
+            elif isinstance(raw_seen, str):
+                iso_seen = seen_dt.isoformat() if (seen_dt and seen_dt >= now) else raw_seen
+            else:
+                iso_seen = None
 
             is_online = bool(seen_dt and seen_dt > cutoff)
             endpoints.append({
                 "hostname": hname,
-                "last_seen_at": raw_seen,
+                "last_seen_at": iso_seen,
                 "status": "online" if is_online else "offline",
             })
 
@@ -618,6 +633,11 @@ class FleetRepository:
                 cols = [col[0] for col in cur.description or []]
                 row = cur.fetchone()
                 if row:
-                    return dict(zip(cols, row))
+                    item = dict(zip(cols, row))
+                    if isinstance(item.get("first_seen_at"), datetime):
+                        item["first_seen_at"] = item["first_seen_at"].isoformat()
+                    if isinstance(item.get("last_seen_at"), datetime):
+                        item["last_seen_at"] = item["last_seen_at"].isoformat()
+                    return item
                 return None
 
