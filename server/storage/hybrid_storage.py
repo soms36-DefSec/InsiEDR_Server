@@ -53,7 +53,7 @@ class HybridStorage(BaseStorage):
         self.telemetry_read_backend = telemetry_read_backend
 
         # Domain Repositories
-        self.fleet = FleetRepository(self.pg)
+        self.fleet = FleetRepository(self.pg, self.ch)
         self.telemetry = TelemetryRepository(self.pg, self.ch)
         self.threat = ThreatRepository(self.pg, self.ch)
 

@@ -943,6 +943,46 @@ class ClickHouseStorage:
             logger.warning("ClickHouse get_distinct_usernames failed: %s", exc)
             return []
 
+    def get_discovered_hosts(self) -> Dict[str, Dict[str, Any]]:
+        """Discover active and historical endpoint computers from ClickHouse telemetry."""
+        if not self.is_connected():
+            return {}
+        discovered: Dict[str, Dict[str, Any]] = {}
+        try:
+            col_table = "collector_events_v2" if self.collector_schema_version == 2 else "collector_results"
+            for table, time_col in [
+                (col_table, "collector_collected_at"),
+                ("raw_payloads", "received_at"),
+                ("telemetry_events", "timestamp"),
+            ]:
+                try:
+                    res = self._query(
+                        f"SELECT hostname, max({time_col}) AS last_seen, any(agent_id) AS aid "
+                        f"FROM {table} "
+                        f"WHERE hostname != '' AND notLike(lower(hostname), 'loadtest-%') "
+                        f"GROUP BY hostname"
+                    )
+                    for row in (res.result_rows if res and hasattr(res, "result_rows") else []):
+                        h = str(row[0] or "").strip()
+                        if h:
+                            hl = h.lower()
+                            seen = row[1]
+                            aid = str(row[2] or f"AGENT-{h}")
+                            if hl in discovered:
+                                if seen and (not discovered[hl]["last_seen_at"] or str(seen) > str(discovered[hl]["last_seen_at"])):
+                                    discovered[hl]["last_seen_at"] = seen
+                            else:
+                                discovered[hl] = {
+                                    "hostname": h,
+                                    "last_seen_at": seen,
+                                    "agent_id": aid,
+                                }
+                except Exception as t_err:
+                    logger.debug("ClickHouse get_discovered_hosts on %s failed: %s", table, t_err)
+        except Exception as exc:
+            logger.warning("ClickHouse get_discovered_hosts failed: %s", exc)
+        return discovered
+
     def count_collector_results(
         self,
         collector: str | None = None,

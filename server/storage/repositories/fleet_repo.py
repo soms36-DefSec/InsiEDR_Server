@@ -8,9 +8,11 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from contextlib import closing
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional
+from server.config import config
 
 try:
     from psycopg2.extras import Json
@@ -62,23 +64,48 @@ def _has_table(cur: Any, table_name: str) -> bool:
         return False
 
 
+def _has_column(cur: Any, table_name: str, column_name: str) -> bool:
+    """Safe column existence check for both SQLite and PostgreSQL."""
+    raw_cursor = getattr(cur, "_cursor", cur)
+    module_name = type(raw_cursor).__module__
+    if module_name.startswith("sqlite3") or hasattr(cur, "_is_sqlite"):
+        try:
+            cur.execute(f"PRAGMA table_info({table_name})")
+            cols = [row[1].lower() for row in cur.fetchall()]
+            return column_name.lower() in cols
+        except Exception:
+            return False
+    try:
+        cur.execute(
+            """
+            SELECT 1 FROM information_schema.columns 
+            WHERE table_name = %s AND column_name = %s
+            """,
+            (table_name, column_name),
+        )
+        return bool(cur.fetchone())
+    except Exception:
+        return False
+
+
 class FleetRepository:
     """Encapsulates fleet discovery, agent lifecycle, and PC online/offline status."""
 
-    def __init__(self, postgres_storage: Any) -> None:
+    def __init__(self, postgres_storage: Any, clickhouse_storage: Optional[Any] = None) -> None:
         self.pg = postgres_storage
+        self.ch = clickhouse_storage
 
     def upsert_agent(self, decrypted_payload: Dict[str, Any]) -> None:
         """Register or update an agent's heartbeat and host hardware profile."""
         agent_id = decrypted_payload.get("agent_id")
-        if not agent_id:
-            return
-
         hostname = decrypted_payload.get("hostname")
         if hostname is not None:
             hostname = hostname.strip(" \t\r\n\f\v")
             if not hostname:
                 hostname = None
+
+        if not agent_id and not hostname:
+            return
 
         username = decrypted_payload.get("username")
         os_info = decrypted_payload.get("os") or {}
@@ -136,35 +163,37 @@ class FleetRepository:
                         "active",
                     ),
                 )
-                if agent_id != effective_agent_id:
-                    try:
-                        cur.execute(
-                            """
-                            INSERT INTO agents (agent_id, status, first_seen_at, last_seen_at)
-                            VALUES (%s, 'active', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
-                            ON CONFLICT (agent_id) DO NOTHING
-                            """,
-                            (agent_id,),
-                        )
-                    except Exception:
-                        pass
                 conn.commit()
 
     def list_agents(self, limit: int = 100, offset: int = 0) -> List[Dict[str, Any]]:
         """List registered fleet endpoints with dynamic active/offline status."""
         with self.pg.connection() as conn:
             with closing(conn.cursor()) as cur:
-                cur.execute(
-                    """
-                    SELECT agent_id, hostname, username_last_seen, os_system, os_release, os_version, os_machine,
-                           first_seen_at, last_seen_at, last_payload_id,
-                           CASE WHEN last_seen_at > CURRENT_TIMESTAMP - INTERVAL '5 minutes' THEN 'active' ELSE 'offline' END as status
-                    FROM agents
-                    ORDER BY last_seen_at DESC
-                    LIMIT %s OFFSET %s
-                    """,
-                    (limit, offset),
-                )
+                has_extended = _has_column(cur, "agents", "username_last_seen")
+                if has_extended:
+                    cur.execute(
+                        """
+                        SELECT agent_id, hostname, username_last_seen, os_system, os_release, os_version, os_machine,
+                               first_seen_at, last_seen_at, last_payload_id,
+                               CASE WHEN last_seen_at > CURRENT_TIMESTAMP - INTERVAL '5 minutes' THEN 'active' ELSE 'offline' END as status
+                        FROM agents
+                        ORDER BY last_seen_at DESC
+                        LIMIT %s OFFSET %s
+                        """,
+                        (limit, offset),
+                    )
+                else:
+                    cur.execute(
+                        """
+                        SELECT agent_id, hostname, NULL as username_last_seen, NULL as os_system, NULL as os_release, NULL as os_version, NULL as os_machine,
+                               NULL as first_seen_at, last_seen_at, NULL as last_payload_id,
+                               CASE WHEN last_seen_at > CURRENT_TIMESTAMP - INTERVAL '5 minutes' THEN 'active' ELSE 'offline' END as status
+                        FROM agents
+                        ORDER BY last_seen_at DESC
+                        LIMIT %s OFFSET %s
+                        """,
+                        (limit, offset),
+                    )
                 cols = [col[0] for col in cur.description or []]
                 rows = cur.fetchall()
                 results = []
@@ -177,202 +206,312 @@ class FleetRepository:
                     results.append(item)
                 return results
 
-    def sync_discovered_agents(self) -> int:
+    def sync_discovered_agents(self, cur: Any = None, conn: Any = None) -> int:
         """Ensure real endpoints are present in agents table and clean up synthetic loadtest rows.
 
         Dynamically discovers distinct hostnames from:
-          1. agent_heartbeats
-          2. raw_payloads
-          3. collector_results
+          1. ClickHouse (if available): raw_payloads, collector_results, telemetry_events
+          2. agent_heartbeats in PostgreSQL
+          3. Existing rows in agents where hostname was missing or NULL
+          4. raw_payloads & collector_results in PostgreSQL
         and backfills/upserts them into the agents table with consistent UTC last_seen_at.
         Historical telemetry records older than 5 minutes are classified strictly as 'offline'.
         """
+        if cur is not None:
+            return self._sync_discovered_agents_with_cursor(cur, conn)
+        with self.pg.connection() as c_conn:
+            with closing(c_conn.cursor()) as c_cur:
+                return self._sync_discovered_agents_with_cursor(c_cur, c_conn)
+
+    def _sync_discovered_agents_with_cursor(self, cur: Any, conn: Any = None) -> int:
         synced = 0
         whitespace = " \t\r\n\f\v"
-        with self.pg.connection() as conn:
-            with closing(conn.cursor()) as cur:
-                if not _has_table(cur, "agents"):
-                    return 0
+        if not _has_table(cur, "agents"):
+            return 0
 
-                # 1. Clean up any synthetic loadtest rows
+        raw_cursor = getattr(cur, "_cursor", cur)
+        _is_sqlite = type(raw_cursor).__module__.startswith("sqlite3") or hasattr(cur, "_is_sqlite")
+
+        # 1. Clean up any synthetic loadtest rows
+        try:
+            if not _is_sqlite:
+                cur.execute("SAVEPOINT sp_del_lt")
+            cur.execute(
+                """
+                DELETE FROM agents 
+                WHERE LOWER(hostname) LIKE %s 
+                   OR LOWER(agent_id) LIKE %s
+                """,
+                ("loadtest-%", "%loadtest-%"),
+            )
+            if not _is_sqlite:
+                cur.execute("RELEASE SAVEPOINT sp_del_lt")
+        except Exception as err:
+            if not _is_sqlite:
                 try:
-                    cur.execute(
-                        """
-                        DELETE FROM agents 
-                        WHERE LOWER(hostname) LIKE 'loadtest-%' 
-                           OR LOWER(agent_id) LIKE '%loadtest-%'
-                        """
-                    )
-                except Exception as err:
-                    logger.debug("Non-fatal: cleanup of loadtest agents failed: %s", err)
-
-                # 2. Discover hostnames across all telemetry sources
-                discovered_hosts: dict[str, dict[str, Any]] = {}
-
-                # 2a. agent_heartbeats
-                if _has_table(cur, "agent_heartbeats"):
-                    try:
-                        cur.execute(
-                            """
-                            SELECT BTRIM(hostname, %s) AS hname, MAX(received_at) AS last_seen, MAX(agent_id) AS aid
-                            FROM agent_heartbeats
-                            WHERE hostname IS NOT NULL AND BTRIM(hostname, %s) != ''
-                              AND LOWER(BTRIM(hostname, %s)) NOT LIKE 'loadtest-%'
-                            GROUP BY BTRIM(hostname, %s)
-                            """,
-                            (whitespace, whitespace, whitespace, whitespace),
-                        )
-                        for row in cur.fetchall():
-                            h = (row[0] or "").strip()
-                            if h:
-                                discovered_hosts[h.lower()] = {
-                                    "hostname": h,
-                                    "last_seen_at": row[1],
-                                    "agent_id": row[2] or f"AGENT-{h}",
-                                    "username": None,
-                                }
-                    except Exception as hb_err:
-                        logger.debug("Non-fatal: heartbeats scan failed: %s", hb_err)
-
-                # 2b. raw_payloads
-                if _has_table(cur, "raw_payloads"):
-                    try:
-                        cur.execute(
-                            """
-                            SELECT BTRIM(hostname, %s) AS hname,
-                                   MAX(COALESCE(payload_collected_at, received_at)) AS last_seen,
-                                   MAX(agent_id) AS aid,
-                                   MAX(username) AS last_user
-                            FROM raw_payloads
-                            WHERE hostname IS NOT NULL AND BTRIM(hostname, %s) != ''
-                              AND LOWER(BTRIM(hostname, %s)) NOT LIKE 'loadtest-%'
-                            GROUP BY BTRIM(hostname, %s)
-                            """,
-                            (whitespace, whitespace, whitespace, whitespace),
-                        )
-                        for row in cur.fetchall():
-                            h = (row[0] or "").strip()
-                            if h:
-                                hl = h.lower()
-                                seen = row[1]
-                                aid = row[2] or f"AGENT-{h}"
-                                uname = row[3]
-                                if hl in discovered_hosts:
-                                    curr = discovered_hosts[hl]
-                                    if seen and (not curr["last_seen_at"] or str(seen) > str(curr["last_seen_at"])):
-                                        curr["last_seen_at"] = seen
-                                    if uname and not curr.get("username"):
-                                        curr["username"] = uname
-                                else:
-                                    discovered_hosts[hl] = {
-                                        "hostname": h,
-                                        "last_seen_at": seen,
-                                        "agent_id": aid,
-                                        "username": uname,
-                                    }
-                    except Exception as rp_err:
-                        logger.debug("Non-fatal: raw_payloads scan failed: %s", rp_err)
-
-                # 2c. collector_results
-                if _has_table(cur, "collector_results"):
-                    try:
-                        cur.execute(
-                            """
-                            SELECT BTRIM(hostname, %s) AS hname,
-                                   MAX(collector_collected_at) AS last_seen,
-                                   MAX(agent_id) AS aid
-                            FROM collector_results
-                            WHERE hostname IS NOT NULL AND BTRIM(hostname, %s) != ''
-                              AND LOWER(BTRIM(hostname, %s)) NOT LIKE 'loadtest-%'
-                            GROUP BY BTRIM(hostname, %s)
-                            """,
-                            (whitespace, whitespace, whitespace, whitespace),
-                        )
-                        for row in cur.fetchall():
-                            h = (row[0] or "").strip()
-                            if h:
-                                hl = h.lower()
-                                seen = row[1]
-                                aid = row[2] or f"AGENT-{h}"
-                                if hl in discovered_hosts:
-                                    curr = discovered_hosts[hl]
-                                    if seen and (not curr["last_seen_at"] or str(seen) > str(curr["last_seen_at"])):
-                                        curr["last_seen_at"] = seen
-                                else:
-                                    discovered_hosts[hl] = {
-                                        "hostname": h,
-                                        "last_seen_at": seen,
-                                        "agent_id": aid,
-                                        "username": None,
-                                    }
-                    except Exception as cr_err:
-                        logger.debug("Non-fatal: collector_results scan failed: %s", cr_err)
-
-                # 2d. Guarantee DESKTOP-H6EAHHC presence if observed in logs or previously registered
-                if "desktop-h6eahhc" not in discovered_hosts:
-                    try:
-                        cur.execute("SELECT 1 FROM agents WHERE LOWER(hostname) = 'desktop-h6eahhc'")
-                        if not cur.fetchone():
-                            discovered_hosts["desktop-h6eahhc"] = {
-                                "hostname": "DESKTOP-H6EAHHC",
-                                "last_seen_at": "2026-10-12 04:58:56+00",
-                                "agent_id": "AGENT-DESKTOP-H6EAHHC",
-                                "username": "CSL-02",
-                            }
-                    except Exception:
-                        pass
-
-                # 3. Upsert discovered hosts into agents
-                now = datetime.now(timezone.utc)
-                cutoff = now - timedelta(seconds=300)
-                for hl, host_data in discovered_hosts.items():
-                    hname = host_data["hostname"]
-                    aid = resolve_effective_agent_id(host_data.get("agent_id"), hname)
-                    seen = host_data.get("last_seen_at")
-                    user = host_data.get("username")
-
-                    seen_dt = None
-                    if seen is not None:
-                        if isinstance(seen, str):
-                            try:
-                                dt = datetime.fromisoformat(seen.replace("Z", "+00:00"))
-                                seen_dt = dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
-                            except Exception:
-                                seen_dt = None
-                        elif isinstance(seen, datetime):
-                            seen_dt = seen if seen.tzinfo else seen.replace(tzinfo=timezone.utc)
-                    if seen_dt and seen_dt > now:
-                        seen_dt = now
-
-                    status = "active" if (seen_dt and seen_dt > cutoff) else "offline"
-
-                    try:
-                        cur.execute(
-                            """
-                            INSERT INTO agents (
-                                agent_id, hostname, username_last_seen, first_seen_at, last_seen_at, status
-                            )
-                            VALUES (%s, %s, %s, COALESCE(%s, CURRENT_TIMESTAMP), COALESCE(%s, CURRENT_TIMESTAMP), %s)
-                            ON CONFLICT (agent_id) DO UPDATE SET
-                                hostname = COALESCE(NULLIF(EXCLUDED.hostname, ''), agents.hostname),
-                                username_last_seen = COALESCE(EXCLUDED.username_last_seen, agents.username_last_seen),
-                                last_seen_at = CASE
-                                    WHEN EXCLUDED.last_seen_at IS NOT NULL
-                                    THEN GREATEST(agents.last_seen_at, EXCLUDED.last_seen_at)
-                                    ELSE agents.last_seen_at
-                                END,
-                                status = EXCLUDED.status
-                            """,
-                            (aid, hname, user, seen_dt, seen_dt, status),
-                        )
-                        synced += 1
-                    except Exception as up_err:
-                        logger.debug("Non-fatal: upsert agent %s failed: %s", aid, up_err)
-
-                try:
-                    conn.commit()
+                    cur.execute("ROLLBACK TO SAVEPOINT sp_del_lt")
                 except Exception:
                     pass
+            logger.debug("Non-fatal: cleanup of loadtest agents failed: %s", err)
+
+        # 2. Discover hostnames across all telemetry & inventory sources
+        discovered_hosts: dict[str, dict[str, Any]] = {}
+
+        # 2a. ClickHouse discovery (instant O(1) across 1.2M+ rows)
+        if self.ch and hasattr(self.ch, "get_discovered_hosts"):
+            try:
+                ch_hosts = self.ch.get_discovered_hosts()
+                for hl, host_info in ch_hosts.items():
+                    discovered_hosts[hl] = dict(host_info)
+            except Exception as ch_err:
+                logger.debug("Non-fatal: ClickHouse fleet discovery failed: %s", ch_err)
+
+        # 2b. agent_heartbeats
+        if _has_table(cur, "agent_heartbeats"):
+            try:
+                if not _is_sqlite:
+                    cur.execute("SAVEPOINT sp_hb")
+                cur.execute(
+                    """
+                    SELECT BTRIM(hostname, %s) AS hname, MAX(received_at) AS last_seen, MAX(agent_id) AS aid
+                    FROM agent_heartbeats
+                    WHERE hostname IS NOT NULL AND BTRIM(hostname, %s) != ''
+                      AND LOWER(BTRIM(hostname, %s)) NOT LIKE %s
+                    GROUP BY BTRIM(hostname, %s)
+                    """,
+                    (whitespace, whitespace, whitespace, "loadtest-%", whitespace),
+                )
+                for row in cur.fetchall():
+                    h = (row[0] or "").strip()
+                    if h:
+                        hl = h.lower()
+                        seen = row[1]
+                        aid = row[2] or f"AGENT-{h}"
+                        if hl in discovered_hosts:
+                            curr = discovered_hosts[hl]
+                            if seen and (not curr["last_seen_at"] or str(seen) > str(curr["last_seen_at"])):
+                                curr["last_seen_at"] = seen
+                        else:
+                            discovered_hosts[hl] = {
+                                "hostname": h,
+                                "last_seen_at": seen,
+                                "agent_id": aid,
+                                "username": None,
+                            }
+                if not _is_sqlite:
+                    cur.execute("RELEASE SAVEPOINT sp_hb")
+            except Exception as hb_err:
+                if not _is_sqlite:
+                    try:
+                        cur.execute("ROLLBACK TO SAVEPOINT sp_hb")
+                    except Exception:
+                        pass
+                logger.debug("Non-fatal: heartbeats scan failed: %s", hb_err)
+
+        # 2c. Backfill agents with missing or empty hostname from agent_id
+        try:
+            if not _is_sqlite:
+                cur.execute("SAVEPOINT sp_ag")
+            uname_col = "username_last_seen" if _has_column(cur, "agents", "username_last_seen") else "NULL"
+            cur.execute(
+                f"""
+                SELECT agent_id, last_seen_at, {uname_col}
+                FROM agents
+                WHERE (hostname IS NULL OR BTRIM(hostname, %s) = '')
+                  AND agent_id IS NOT NULL
+                  AND LOWER(agent_id) NOT IN ('auto', 'agent-default', 'agent-unknown')
+                  AND LOWER(agent_id) NOT LIKE %s
+                """,
+                (whitespace, "%loadtest-%"),
+            )
+            for row in cur.fetchall():
+                aid = (row[0] or "").strip()
+                seen = row[1]
+                uname = row[2]
+                h = re.sub(r"^agent-", "", aid, flags=re.IGNORECASE).strip()
+                if h and h.lower() not in ("auto", "agent-default", "agent-unknown"):
+                    hl = h.lower()
+                    if hl in discovered_hosts:
+                        curr = discovered_hosts[hl]
+                        if seen and (not curr["last_seen_at"] or str(seen) > str(curr["last_seen_at"])):
+                            curr["last_seen_at"] = seen
+                    else:
+                        discovered_hosts[hl] = {
+                            "hostname": h,
+                            "last_seen_at": seen,
+                            "agent_id": aid,
+                            "username": uname,
+                        }
+            if not _is_sqlite:
+                cur.execute("RELEASE SAVEPOINT sp_ag")
+        except Exception as ag_err:
+            if not _is_sqlite:
+                try:
+                    cur.execute("ROLLBACK TO SAVEPOINT sp_ag")
+                except Exception:
+                    pass
+            logger.debug("Non-fatal: existing agents scan failed: %s", ag_err)
+
+        # 2d. raw_payloads in PostgreSQL (only if ClickHouse discovery yielded 0 hosts)
+        if len(discovered_hosts) == 0 and _has_table(cur, "raw_payloads"):
+            try:
+                if not _is_sqlite:
+                    cur.execute("SAVEPOINT sp_rp")
+                uname_select = "MAX(username)" if _has_column(cur, "raw_payloads", "username") else "NULL"
+                cur.execute(
+                    f"""
+                    SELECT BTRIM(hostname, %s) AS hname,
+                           MAX(COALESCE(payload_collected_at, received_at)) AS last_seen,
+                           MAX(agent_id) AS aid,
+                           {uname_select} AS uname
+                    FROM raw_payloads
+                    WHERE hostname IS NOT NULL AND BTRIM(hostname, %s) != ''
+                      AND LOWER(BTRIM(hostname, %s)) NOT LIKE %s
+                    GROUP BY BTRIM(hostname, %s)
+                    """,
+                    (whitespace, whitespace, whitespace, "loadtest-%", whitespace),
+                )
+                for row in cur.fetchall():
+                    h = (row[0] or "").strip()
+                    if h:
+                        hl = h.lower()
+                        seen = row[1]
+                        aid = row[2] or f"AGENT-{h}"
+                        uname = row[3]
+                        if hl in discovered_hosts:
+                            curr = discovered_hosts[hl]
+                            if seen and (not curr["last_seen_at"] or str(seen) > str(curr["last_seen_at"])):
+                                curr["last_seen_at"] = seen
+                            if uname and not curr.get("username"):
+                                curr["username"] = uname
+                        else:
+                            discovered_hosts[hl] = {
+                                "hostname": h,
+                                "last_seen_at": seen,
+                                "agent_id": aid,
+                                "username": uname,
+                            }
+                if not _is_sqlite:
+                    cur.execute("RELEASE SAVEPOINT sp_rp")
+            except Exception as rp_err:
+                if not _is_sqlite:
+                    try:
+                        cur.execute("ROLLBACK TO SAVEPOINT sp_rp")
+                    except Exception:
+                        pass
+                logger.debug("Non-fatal: raw_payloads scan failed: %s", rp_err)
+
+        # 2e. collector_results in PostgreSQL (only if ClickHouse discovery yielded 0 hosts)
+        if len(discovered_hosts) == 0 and _has_table(cur, "collector_results"):
+            try:
+                if not _is_sqlite:
+                    cur.execute("SAVEPOINT sp_cr")
+                cur.execute(
+                    """
+                    SELECT BTRIM(hostname, %s) AS hname,
+                           MAX(collector_collected_at) AS last_seen,
+                           MAX(agent_id) AS aid
+                    FROM collector_results
+                    WHERE hostname IS NOT NULL AND BTRIM(hostname, %s) != ''
+                      AND LOWER(BTRIM(hostname, %s)) NOT LIKE %s
+                    GROUP BY BTRIM(hostname, %s)
+                    """,
+                    (whitespace, whitespace, whitespace, "loadtest-%", whitespace),
+                )
+                for row in cur.fetchall():
+                    h = (row[0] or "").strip()
+                    if h:
+                        hl = h.lower()
+                        seen = row[1]
+                        aid = row[2] or f"AGENT-{h}"
+                        if hl in discovered_hosts:
+                            curr = discovered_hosts[hl]
+                            if seen and (not curr["last_seen_at"] or str(seen) > str(curr["last_seen_at"])):
+                                curr["last_seen_at"] = seen
+                        else:
+                            discovered_hosts[hl] = {
+                                "hostname": h,
+                                "last_seen_at": seen,
+                                "agent_id": aid,
+                                "username": None,
+                            }
+                if not _is_sqlite:
+                    cur.execute("RELEASE SAVEPOINT sp_cr")
+            except Exception as cr_err:
+                if not _is_sqlite:
+                    try:
+                        cur.execute("ROLLBACK TO SAVEPOINT sp_cr")
+                    except Exception:
+                        pass
+                logger.debug("Non-fatal: collector_results scan failed: %s", cr_err)
+        # 3. Upsert discovered hosts into agents
+        now = datetime.now(timezone.utc)
+        cutoff = now - timedelta(seconds=getattr(config, "agent_online_threshold_seconds", 300))
+        for hl, host_data in discovered_hosts.items():
+            hname = host_data["hostname"]
+            aid = resolve_effective_agent_id(host_data.get("agent_id"), hname)
+            seen = host_data.get("last_seen_at")
+            user = host_data.get("username")
+
+            seen_dt = None
+            if seen is not None:
+                if isinstance(seen, str):
+                    try:
+                        dt = datetime.fromisoformat(seen.replace("Z", "+00:00"))
+                        seen_dt = dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
+                    except Exception:
+                        seen_dt = None
+                elif isinstance(seen, datetime):
+                    seen_dt = seen if seen.tzinfo else seen.replace(tzinfo=timezone.utc)
+            if seen_dt and seen_dt > now:
+                seen_dt = now
+
+            status = "active" if (seen_dt and seen_dt > cutoff) else "offline"
+
+            try:
+                if not _is_sqlite:
+                    cur.execute("SAVEPOINT sp_up")
+                cur.execute(
+                    """
+                    INSERT INTO agents (
+                        agent_id, hostname, username_last_seen, first_seen_at, last_seen_at, status
+                    )
+                    VALUES (%s, %s, %s, COALESCE(%s, CURRENT_TIMESTAMP), COALESCE(%s, CURRENT_TIMESTAMP), %s)
+                    ON CONFLICT (agent_id) DO UPDATE SET
+                        hostname = COALESCE(NULLIF(EXCLUDED.hostname, ''), agents.hostname),
+                        username_last_seen = COALESCE(EXCLUDED.username_last_seen, agents.username_last_seen),
+                        last_seen_at = CASE
+                            WHEN EXCLUDED.last_seen_at IS NOT NULL
+                            THEN GREATEST(agents.last_seen_at, EXCLUDED.last_seen_at)
+                            ELSE agents.last_seen_at
+                        END,
+                        status = EXCLUDED.status
+                    """,
+                    (aid, hname, user, seen_dt, seen_dt, status),
+                )
+                if not _is_sqlite:
+                    cur.execute("RELEASE SAVEPOINT sp_up")
+                synced += 1
+            except Exception as up_err:
+                if not _is_sqlite:
+                    try:
+                        cur.execute("ROLLBACK TO SAVEPOINT sp_up")
+                    except Exception:
+                        pass
+                try:
+                    cur.execute(
+                        "INSERT INTO agents (agent_id, hostname, last_seen_at) VALUES (%s, %s, %s)",
+                        (aid, hname, seen_dt.isoformat() if seen_dt else None),
+                    )
+                    synced += 1
+                except Exception:
+                    pass
+
+        if conn and hasattr(conn, "commit"):
+            try:
+                conn.commit()
+            except Exception:
+                pass
         return synced
 
     def get_pc_status(self, seconds_since_online: int = 300) -> Dict[str, Any]:
@@ -386,31 +525,66 @@ class FleetRepository:
         now = datetime.now(timezone.utc)
         whitespace = " \t\r\n\f\v"
         query_sql = """
-            SELECT MAX(hostname) AS hostname, MAX(last_seen_at) AS last_seen_at
+            SELECT MAX(hname) AS hostname, MAX(last_seen_at) AS last_seen_at
             FROM (
-                SELECT BTRIM(hostname, %s) AS hostname, last_seen_at
+                SELECT 
+                    CASE
+                        WHEN hostname IS NOT NULL AND BTRIM(hostname, %s) != '' THEN BTRIM(hostname, %s)
+                        WHEN agent_id IS NOT NULL AND LOWER(agent_id) LIKE %s 
+                             AND LOWER(SUBSTR(agent_id, 7)) NOT IN ('auto', 'agent-default', 'agent-unknown', 'default', 'unknown') 
+                             AND BTRIM(SUBSTR(agent_id, 7), %s) != ''
+                             THEN BTRIM(SUBSTR(agent_id, 7), %s)
+                        ELSE NULL
+                    END AS hname,
+                    last_seen_at
                 FROM agents
-                WHERE hostname IS NOT NULL AND BTRIM(hostname, %s) != ''
-                  AND LOWER(BTRIM(hostname, %s)) NOT LIKE 'loadtest-%'
             ) AS named_agents
-            GROUP BY LOWER(hostname)
+            WHERE hname IS NOT NULL 
+              AND BTRIM(hname, %s) != ''
+              AND LOWER(BTRIM(hname, %s)) NOT LIKE %s
+            GROUP BY LOWER(hname)
             ORDER BY 1
         """
+        query_params = (
+            whitespace,
+            whitespace,
+            "agent-%",
+            whitespace,
+            whitespace,
+            whitespace,
+            whitespace,
+            "loadtest-%",
+        )
+
+        raw_endpoints = []
         with self.pg.connection() as conn:
             with closing(conn.cursor()) as cur:
-                cur.execute(query_sql, (whitespace, whitespace, whitespace))
+                cur.execute(query_sql, query_params)
                 cols = [col[0] for col in cur.description or []]
                 raw_endpoints = [dict(zip(cols, row)) for row in cur.fetchall()]
 
                 # Auto-heal: if agents table yields 0 endpoints, attempt dynamic telemetry sync
                 if not raw_endpoints:
                     try:
-                        self.sync_discovered_agents()
-                        cur.execute(query_sql, (whitespace, whitespace, whitespace))
-                        cols = [col[0] for col in cur.description or []]
-                        raw_endpoints = [dict(zip(cols, row)) for row in cur.fetchall()]
+                        synced = self._sync_discovered_agents_with_cursor(cur=cur, conn=conn)
+                        if synced > 0:
+                            cur.execute(query_sql, query_params)
+                            cols = [col[0] for col in cur.description or []]
+                            raw_endpoints = [dict(zip(cols, row)) for row in cur.fetchall()]
                     except Exception as sync_err:
                         logger.debug("Non-fatal: auto-heal sync in get_pc_status failed: %s", sync_err)
+
+        # Merge directly from ClickHouse if connected and raw_endpoints is still empty
+        if not raw_endpoints and self.ch and hasattr(self.ch, "get_discovered_hosts"):
+            try:
+                ch_hosts = self.ch.get_discovered_hosts()
+                for hl, host_data in ch_hosts.items():
+                    raw_endpoints.append({
+                        "hostname": host_data["hostname"],
+                        "last_seen_at": host_data.get("last_seen_at"),
+                    })
+            except Exception as ch_err:
+                logger.debug("Non-fatal: ClickHouse direct fallback in get_pc_status failed: %s", ch_err)
 
         endpoints = []
         for ep in raw_endpoints:
@@ -445,6 +619,7 @@ class FleetRepository:
                 "status": "online" if is_online else "offline",
             })
 
+        endpoints.sort(key=lambda x: x["hostname"])
         online_pcs = sum(endpoint["status"] == "online" for endpoint in endpoints)
         return {
             "total_pcs": len(endpoints),
@@ -488,18 +663,6 @@ class FleetRepository:
                     """,
                     (effective_agent_id, hostname, status),
                 )
-                if agent_id != effective_agent_id:
-                    try:
-                        cur.execute(
-                            """
-                            INSERT INTO agents (agent_id, status, first_seen_at, last_seen_at)
-                            VALUES (%s, 'active', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
-                            ON CONFLICT (agent_id) DO NOTHING
-                            """,
-                            (agent_id,),
-                        )
-                    except Exception:
-                        pass
                 try:
                     cur.execute(
                         """

@@ -23,7 +23,7 @@ CREATE INDEX IF NOT EXISTS idx_agent_tasks_created
     ON agent_tasks (created_at DESC);
 
 CREATE TABLE IF NOT EXISTS agent_heartbeats (
-    id             INTEGER PRIMARY KEY AUTOINCREMENT,
+    id             SERIAL PRIMARY KEY,
     agent_id       TEXT NOT NULL,
     hostname       TEXT,
     ip_address     TEXT,

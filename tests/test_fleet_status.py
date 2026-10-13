@@ -168,7 +168,8 @@ def full_fleet(monkeypatch):
             agent_id TEXT,
             received_at TEXT,
             payload_collected_at TEXT,
-            hostname TEXT
+            hostname TEXT,
+            username TEXT
         )
     """)
 
@@ -316,8 +317,12 @@ def test_shared_agent_id_does_not_clobber_pc_inventory(full_fleet):
 
 def test_sync_discovered_agents_backfills_desktop_and_purges_loadtest(full_fleet):
     storage = full_fleet
-    # Insert synthetic loadtest row into agents
+    # Insert synthetic loadtest row into agents and real telemetry into raw_payloads
     with storage.connection() as conn:
+        conn.execute(
+            "INSERT INTO raw_payloads (payload_id, agent_id, received_at, payload_collected_at, hostname) VALUES (?, ?, ?, ?, ?)",
+            ("p-desktop-1", "AGENT-DESKTOP-H6EAHHC", NOW.isoformat(), NOW.isoformat(), "DESKTOP-H6EAHHC"),
+        )
         conn.execute(
             "INSERT INTO agents (agent_id, hostname, last_seen_at) VALUES (?, ?, ?)",
             ("AGENT-loadtest-1234", "loadtest-1234", NOW.isoformat()),
