@@ -167,3 +167,86 @@ test('dashboard: one SSE stream, coalesced updates, filters, stale responses, pa
     assert.deepEqual(errors, []);
   } finally { await page.close(); }
 });
+
+test('fleet status cards: valid counts, empty fleet zero, unavailable fallback, and scoped stale indication on failure', async () => {
+  const page = await browser.newPage({ viewport: { width: 1600, height: 1000 } });
+  let summaryResponse = {
+    ok: true,
+    pc_status: { total_pcs: 3, online_pcs: 1, offline_pcs: 2, endpoints: [
+      { hostname: 'HOST-A', status: 'online', last_seen_at: new Date().toISOString() },
+      { hostname: 'HOST-B', status: 'offline', last_seen_at: '2026-10-01T00:00:00Z' },
+      { hostname: 'HOST-C', status: 'offline', last_seen_at: null },
+    ] },
+    agents: [], risk_counts: {}, risk_events: [], stats: { collector_results: 500 }
+  };
+  let summaryStatus = 200;
+
+  await page.addInitScript(() => {
+    window.streams = [];
+    window.EventSource = class extends EventTarget {
+      constructor(url) {
+        super(); this.url = url; this.closed = false; window.streams.push(this);
+        setTimeout(() => { if (!this.closed) this.onopen?.(); }, 0);
+      }
+      close() { this.closed = true; }
+    };
+    window.emitFleetUpdate = () => window.streams.filter(s => !s.closed)
+      .forEach(s => s.dispatchEvent(new MessageEvent('agent_status', { data: '{}' })));
+  });
+
+  await page.route('**/api/**', async route => {
+    const url = new URL(route.request().url());
+    if (url.pathname.endsWith('/dashboard-summary')) {
+      if (summaryStatus !== 200) {
+        await route.fulfill({ status: summaryStatus, json: { error: 'Backend error' } });
+      } else {
+        await route.fulfill({ json: summaryResponse });
+      }
+    } else if (url.pathname.endsWith('/telemetry/explorer') || url.pathname.endsWith('/telemetry')) {
+      await route.fulfill({ json: { ok: true, total: null, has_more: false, next_cursor: null, events: [], logs: [] } });
+    } else {
+      await route.fulfill({ json: { ok: true, status: 'ok', database: 'ok' } });
+    }
+  });
+
+  try {
+    await page.goto(base);
+    // 1. Initial valid nonzero counts
+    const totalBtn = page.getByRole('button', { name: /^Total PCs/ }).last();
+    await totalBtn.waitFor();
+    assert.ok((await totalBtn.textContent()).includes('3'));
+    assert.ok(!(await totalBtn.textContent()).includes('stale'));
+
+    // 2. Refresh failure after success: retain previous values with stale indication
+    summaryStatus = 503;
+    await page.evaluate(() => window.emitFleetUpdate());
+    await page.waitForTimeout(800);
+    assert.ok((await totalBtn.textContent()).includes('3'));
+    assert.ok((await totalBtn.textContent()).includes('stale'));
+
+    // 3. Recovery after failure: updates to new counts and removes stale
+    summaryStatus = 200;
+    summaryResponse = {
+      ok: true,
+      pc_status: { total_pcs: 5, online_pcs: 3, offline_pcs: 2, endpoints: [] },
+      agents: [], risk_counts: {}, risk_events: [], stats: { collector_results: 600 }
+    };
+    await page.evaluate(() => window.emitFleetUpdate());
+    await page.waitForTimeout(800);
+    assert.ok((await totalBtn.textContent()).includes('5'));
+    assert.ok(!(await totalBtn.textContent()).includes('stale'));
+
+    // 4. Valid empty inventory: confirms zero (not unavailable)
+    summaryResponse = {
+      ok: true,
+      pc_status: { total_pcs: 0, online_pcs: 0, offline_pcs: 0, endpoints: [] },
+      agents: [], risk_counts: {}, risk_events: [], stats: { collector_results: 700 }
+    };
+    await page.evaluate(() => window.emitFleetUpdate());
+    await page.waitForTimeout(800);
+    assert.ok((await totalBtn.textContent()).includes('0'));
+    assert.ok(!(await totalBtn.textContent()).includes('stale'));
+  } finally {
+    await page.close();
+  }
+});

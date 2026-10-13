@@ -103,7 +103,7 @@ export const TopNavbar: React.FC<TopNavbarProps> = ({
         <div className="flex items-center gap-3 shrink-0">
           {/* Fleet Status Metrics: Total PCs, Online, Offline */}
           <div className="hidden lg:flex items-center gap-2 text-xs">
-            <FleetStatusCards summary={summary} compact />
+            <FleetStatusCards summary={summary} compact stale={Boolean(context.isStale || (context.error && summary))} />
 
             <span className="w-px h-3.5 bg-slate-200" />
 

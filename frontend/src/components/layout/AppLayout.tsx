@@ -43,6 +43,8 @@ export const AppLayout: React.FC = () => {
     onSelectCollector: handleSelectCollector,
     onNavigatePlugin: (id) => setActivePluginId(id),
     onRefresh: refreshAll,
+    error,
+    isStale: Boolean(error && summary),
   };
 
   const ActiveComponent = activePlugin?.component;
@@ -78,7 +80,7 @@ export const AppLayout: React.FC = () => {
               </p>
             </div>
 
-            <FleetStatusCards summary={summary} />
+            <FleetStatusCards summary={summary} stale={Boolean(error && summary)} />
           </div>
 
           {/* Active Plugin View Content */}

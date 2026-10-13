@@ -37,25 +37,68 @@ function fleetEndpoints(summary: DashboardSummary | null): FleetEndpoint[] {
   return [...hosts.values()].sort((a, b) => a.hostname.localeCompare(b.hostname));
 }
 
-export function FleetStatusCards({ summary, compact = false }: {
+function parseCount(val: unknown): number | null {
+  if (typeof val === 'number' && Number.isFinite(val) && val >= 0) {
+    return val;
+  }
+  if (typeof val === 'string' && val.trim() !== '') {
+    const parsed = Number(val);
+    if (Number.isFinite(parsed) && parsed >= 0) return parsed;
+  }
+  return null;
+}
+
+export function FleetStatusCards({ summary, compact = false, stale = false }: {
   summary: DashboardSummary | null;
   compact?: boolean;
+  stale?: boolean;
 }) {
   const [open, setOpen] = useState<FleetFilter | null>(null);
   const [query, setQuery] = useState('');
   const root = useRef<HTMLDivElement>(null);
   const buttons = useRef<Partial<Record<FleetFilter, HTMLButtonElement | null>>>({});
   const id = useId();
+
+  const [lastValidCounts, setLastValidCounts] = useState<{ total: number; online: number; offline: number } | null>(null);
+  const [lastValidEndpoints, setLastValidEndpoints] = useState<FleetEndpoint[] | null>(null);
+
   const status = summary?.pc_status;
+  const rawTotal = status?.total_pcs ?? status?.total_count;
+  const rawOnline = status?.online_pcs ?? status?.online_count;
+  const rawOffline = status?.offline_pcs ?? status?.offline_count;
+
+  const parsedTotal = parseCount(rawTotal);
+  const parsedOnline = parseCount(rawOnline);
+  const parsedOffline = parseCount(rawOffline);
+
+  const hasValidCounts = parsedTotal !== null && parsedOnline !== null && parsedOffline !== null;
+
+  useEffect(() => {
+    if (hasValidCounts) {
+      setLastValidCounts({ total: parsedTotal, online: parsedOnline, offline: parsedOffline });
+      const currentEndpoints = fleetEndpoints(summary);
+      if (currentEndpoints.length > 0 || parsedTotal === 0) {
+        setLastValidEndpoints(currentEndpoints);
+      }
+    }
+  }, [hasValidCounts, parsedTotal, parsedOnline, parsedOffline, summary]);
+
+  const effectiveValid = hasValidCounts
+    ? { total: parsedTotal, online: parsedOnline, offline: parsedOffline }
+    : lastValidCounts;
+
+  const isStale = (Boolean(stale) && effectiveValid !== null) || (!hasValidCounts && lastValidCounts !== null);
+
   const totalEvents = summary?.stats?.collector_results ?? summary?.stats?.logs;
   const counts: Record<FleetFilter, number | string | undefined> = {
-    total: status?.total_pcs ?? status?.total_count,
-    online: status?.online_pcs ?? status?.online_count,
-    offline: status?.offline_pcs ?? status?.offline_count,
+    total: effectiveValid?.total,
+    online: effectiveValid?.online,
+    offline: effectiveValid?.offline,
     logs: totalEvents !== undefined ? Number(totalEvents).toLocaleString() : undefined,
   };
 
-  const endpoints = fleetEndpoints(summary);
+  const rawEndpoints = fleetEndpoints(summary);
+  const endpoints = rawEndpoints.length > 0 ? rawEndpoints : (lastValidEndpoints ?? []);
   const selected = endpoints.filter((endpoint) => open === 'total' || endpoint.status === open);
   const visibleEndpoints = selected.filter((endpoint) => endpoint.hostname.toLowerCase().includes(query.trim().toLowerCase()));
 
@@ -100,6 +143,7 @@ export function FleetStatusCards({ summary, compact = false }: {
         {visibleMetrics.map(({ key, label }) => {
           const online = key === 'online';
           const isLogs = key === 'logs';
+          const cardStale = isStale && !isLogs;
           return (
             <button
               key={key}
@@ -108,8 +152,14 @@ export function FleetStatusCards({ summary, compact = false }: {
               type="button"
               aria-expanded={open === key}
               aria-controls={open === key ? `${id}-endpoints` : undefined}
-              aria-label={`${label}: ${counts[key] ?? 'unavailable'}. Show details`}
-              title={isLogs ? 'All-Time Raw Payloads across entire history' : undefined}
+              aria-label={`${label}: ${counts[key] ?? 'unavailable'}${cardStale ? ' (stale)' : ''}. Show details`}
+              title={
+                isLogs
+                  ? 'All-Time Raw Payloads across entire history'
+                  : cardStale
+                  ? 'Metrics may be stale: refresh failed or unavailable'
+                  : undefined
+              }
               onClick={() => {
                 setOpen(open === key ? null : key);
                 setQuery('');
@@ -142,6 +192,15 @@ export function FleetStatusCards({ summary, compact = false }: {
                     <span aria-hidden="true" className={`w-1.5 h-1.5 rounded-full shrink-0 ${online ? 'bg-emerald-500 motion-safe:animate-pulse' : 'bg-slate-400'}`} />
                   )}
                   {label}
+                  {cardStale && (
+                    <span
+                      className={`uppercase tracking-normal font-medium px-1 rounded ${
+                        compact ? 'text-[9px] bg-amber-100 text-amber-700' : 'text-[9px] bg-amber-50 text-amber-600 border border-amber-200/60'
+                      }`}
+                    >
+                      stale
+                    </span>
+                  )}
                 </span>
                 <span className={`font-semibold tabular-nums leading-none ${compact ? 'text-xs' : 'text-xl'} ${
                   online ? 'text-emerald-700' : isLogs ? 'text-blue-900 font-mono' : 'text-slate-900'
@@ -163,7 +222,7 @@ export function FleetStatusCards({ summary, compact = false }: {
         >
           <div className="flex items-start justify-between gap-3 px-4 pt-4 pb-3">
             <div>
-              <h2 className="text-sm font-semibold">{selectedLabel} · {counts[open] ?? '—'}</h2>
+              <h2 className="text-sm font-semibold">{selectedLabel} · {counts[open] ?? '—'}{isStale && open !== 'logs' ? ' (stale)' : ''}</h2>
               <p className="mt-1 text-xs text-slate-500">
                 {open === 'logs' ? 'All-time raw payload envelope volume across all collectors' : 'Online = seen within the last 5 minutes.'}
               </p>

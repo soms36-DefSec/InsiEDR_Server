@@ -345,3 +345,59 @@ def test_sync_discovered_agents_backfills_desktop_and_purges_loadtest(full_fleet
     assert "loadtest-1234" not in hostnames
 
 
+def test_summary_pc_error_returns_unavailable_not_zero():
+    """Unavailable inventory must NOT be presented as a confirmed zero."""
+    from unittest.mock import Mock
+    from server.api.cache import api_cache
+    api_cache.clear()
+
+    storage = Mock()
+    storage.get_pc_status.side_effect = RuntimeError("Database connection lost")
+    storage.list_agents.return_value = []
+    storage.get_stats.return_value = {"collector_results": 1000}
+
+    app = FastAPI()
+    app.include_router(router)
+    app.dependency_overrides[get_storage] = lambda: storage
+
+    client = TestClient(app)
+    resp = client.get("/api/dashboard-summary")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["ok"] is True
+    pc = body["pc_status"]
+    assert pc["total_pcs"] is None
+    assert pc["online_pcs"] is None
+    assert pc["offline_pcs"] is None
+    assert pc["status"] == "unavailable"
+
+    # Verify failed pc_status is NOT cached, allowing immediate recovery
+    storage.get_pc_status.side_effect = None
+    storage.get_pc_status.return_value = {"total_pcs": 2, "online_pcs": 1, "offline_pcs": 1, "endpoints": []}
+    recovery_resp = client.get("/api/dashboard-summary")
+    assert recovery_resp.status_code == 200
+    rec_pc = recovery_resp.json()["pc_status"]
+    assert rec_pc["total_pcs"] == 2
+    assert rec_pc["online_pcs"] == 1
+    assert rec_pc["offline_pcs"] == 1
+
+
+def test_summary_valid_empty_inventory_returns_confirmed_zero(fleet):
+    """A valid successful response confirming an empty eligible inventory should display zero."""
+    storage, _ = fleet
+    app = FastAPI()
+    app.include_router(router)
+    app.dependency_overrides[get_storage] = lambda: storage
+
+    client = TestClient(app)
+    resp = client.get("/api/dashboard-summary")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["ok"] is True
+    pc = body["pc_status"]
+    assert pc["total_pcs"] == 0
+    assert pc["online_pcs"] == 0
+    assert pc["offline_pcs"] == 0
+
+
+

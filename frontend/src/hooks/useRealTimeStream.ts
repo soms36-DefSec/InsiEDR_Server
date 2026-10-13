@@ -17,18 +17,22 @@ export function useRealTimeStream() {
   const [autoRefresh, setAutoRefresh] = useState(true);
   const inFlight = useRef<Promise<void> | null>(null);
   const controller = useRef<AbortController | null>(null);
+  const requestSeq = useRef(0);
+  const latestAppliedSeq = useRef(0);
 
   const refreshAll = useCallback((): Promise<void> => {
     if (inFlight.current) return inFlight.current;
     const abort = new AbortController();
     controller.current = abort;
+    const seq = ++requestSeq.current;
     const run = async () => {
       try {
         const [summaryResult, healthResult] = await Promise.allSettled([
           fetchDashboardSummary(abort.signal),
           fetchHealth(abort.signal),
         ]);
-        if (abort.signal.aborted) return;
+        if (abort.signal.aborted || seq < latestAppliedSeq.current) return;
+        latestAppliedSeq.current = seq;
 
         if (healthResult.status === 'fulfilled') {
           setHealth(healthResult.value);
@@ -45,9 +49,9 @@ export function useRealTimeStream() {
           setError(reason instanceof Error ? reason.message : 'Telemetry sync failed');
         }
       } catch (err) {
-        if (!abort.signal.aborted) setError(err instanceof Error ? err.message : 'Telemetry sync failed');
+        if (!abort.signal.aborted && seq >= latestAppliedSeq.current) setError(err instanceof Error ? err.message : 'Telemetry sync failed');
       } finally {
-        if (!abort.signal.aborted) setIsLoading(false);
+        if (!abort.signal.aborted && seq >= latestAppliedSeq.current) setIsLoading(false);
       }
     };
     const promise = run().finally(() => {
