@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import type { DashboardSummary, SystemHealth, RiskEvent, TelemetryLog } from '../types/telemetry';
-import { fetchDashboardSummary, fetchHealth, fetchTelemetry } from '../services/api';
+import { fetchApi, fetchDashboardSummary, fetchHealth, fetchTelemetry } from '../services/api';
 import { notifyTelemetry } from '../services/telemetryStream';
 
 // One multiplexed SSE connection; views subscribe without re-rendering the shell
@@ -22,7 +22,7 @@ export function useRealTimeStream() {
   const [liveThreats, setLiveThreats] = useState<RiskEvent[]>([]);
   const [connectionMode, setConnectionMode] = useState<'sse' | 'polling' | 'disconnected'>('polling');
   const [lastUpdated, setLastUpdated] = useState<Date | null>(null);
-  const [isLoading, setIsLoading] = useState(true);
+  const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [autoRefresh, setAutoRefresh] = useState(true);
   const inFlight = useRef<Promise<void> | null>(null);
@@ -37,29 +37,27 @@ export function useRealTimeStream() {
     const seq = ++requestSeq.current;
     const run = async () => {
       try {
-        const [summaryResult, healthResult] = await Promise.allSettled([
-          fetchDashboardSummary(abort.signal),
-          fetchHealth(abort.signal),
+        await Promise.allSettled([
+          fetchDashboardSummary(abort.signal).then(value => {
+            if (abort.signal.aborted || seq < latestAppliedSeq.current) return;
+            latestAppliedSeq.current = seq;
+            setSummary(previous => ({ ...value, stats: previous?.stats ?? value.stats }));
+            setLastUpdated(new Date());
+            setError(null);
+            setIsLoading(false);
+          }).catch((reason: unknown) => {
+            if (!abort.signal.aborted) {
+              console.warn('Fleet refresh deferred', reason);
+              setError(reason instanceof Error ? reason.message : 'Fleet refresh failed');
+              setIsLoading(false);
+            }
+          }),
+          fetchHealth(abort.signal).then(value => {
+            if (!abort.signal.aborted) setHealth(value);
+          }).catch(() => {}),
         ]);
-        if (abort.signal.aborted || seq < latestAppliedSeq.current) return;
-        latestAppliedSeq.current = seq;
-
-        if (healthResult.status === 'fulfilled') {
-          setHealth(healthResult.value);
-        } else {
-          setHealth({ status: 'unknown' });
-        }
-
-        if (summaryResult.status === 'fulfilled') {
-          setSummary(summaryResult.value);
-          setLastUpdated(new Date());
-          setError(null);
-        } else {
-          const reason = summaryResult.reason;
-          setError(reason instanceof Error ? reason.message : 'Telemetry sync failed');
-        }
       } catch (err) {
-        if (!abort.signal.aborted && seq >= latestAppliedSeq.current) setError(err instanceof Error ? err.message : 'Telemetry sync failed');
+        if (!abort.signal.aborted && seq >= latestAppliedSeq.current) console.warn('Telemetry sync deferred', err);
       } finally {
         if (!abort.signal.aborted && seq >= latestAppliedSeq.current) setIsLoading(false);
       }
@@ -70,6 +68,24 @@ export function useRealTimeStream() {
     inFlight.current = promise;
     return promise;
   }, []);
+
+  // Large historical aggregates refresh independently of the fleet cards.
+  useEffect(() => {
+    const abort = new AbortController();
+    let running = false;
+    const refreshStats = async () => {
+      if (running || document.visibilityState !== 'visible') return;
+      running = true;
+      try {
+        const stats = await fetchApi<NonNullable<DashboardSummary['stats']>>('/api/stats', { signal: abort.signal });
+        if (!abort.signal.aborted && stats.ok !== false) setSummary(previous => previous ? { ...previous, stats } : previous);
+      } catch (reason) { if (!abort.signal.aborted) console.warn('Statistics refresh deferred', reason); }
+      finally { running = false; }
+    };
+    void refreshStats();
+    const timer = autoRefresh ? window.setInterval(() => { void refreshStats(); }, 30000) : undefined;
+    return () => { abort.abort(); window.clearInterval(timer); };
+  }, [autoRefresh]);
 
   const refreshLogs = useCallback(async (collector?: string | null, username?: string | null) => {
     const response = await fetchTelemetry(50, 0, collector, username);
@@ -102,7 +118,7 @@ export function useRealTimeStream() {
         notifyTelemetry(); // Reconnect also recovers events missed while offline.
       };
       source.onerror = () => setConnectionMode('polling');
-      source.addEventListener('telemetry_changed', notifyTelemetry);
+      source.addEventListener('telemetry_changed', () => { notifyTelemetry(); scheduleSummary(); });
       source.addEventListener('agent_status', scheduleSummary);
       source.addEventListener('resync', () => { notifyTelemetry(); scheduleSummary(); });
       source.addEventListener('threat_alert', (event) => {
@@ -132,7 +148,7 @@ export function useRealTimeStream() {
   useEffect(() => {
     if (!autoRefresh) return;
     // Calm periodic polling: 45s when in SSE mode, 25s when fallback polling
-    const timer = window.setInterval(() => { void refreshAll(); }, connectionMode === 'sse' ? 45000 : 25000);
+    const timer = window.setInterval(() => { void refreshAll(); }, connectionMode === 'sse' ? 30000 : 15000);
     return () => window.clearInterval(timer);
   }, [autoRefresh, connectionMode, refreshAll]);
 

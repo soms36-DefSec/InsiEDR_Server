@@ -2,7 +2,7 @@ import React, { useState } from 'react';
 import type { EDRPlugin, PluginContextData } from '../../plugins/registry';
 import { FleetStatusCards } from './FleetStatusCards';
 import { Button } from '../ui/Button';
-import { RefreshCw, Download, ChevronDown, FileCode, Database, Sparkles } from 'lucide-react';
+import { RefreshCw, Download, ChevronDown, FileCode, Sparkles, Database } from 'lucide-react';
 import { triggerServerExport } from '../../services/api';
 import { ExportTrainingDatasetModal } from '../telemetry/ExportTrainingDatasetModal';
 
@@ -33,8 +33,6 @@ export const TopNavbar: React.FC<TopNavbarProps> = ({
   const [showTrainingModal, setShowTrainingModal] = useState(false);
 
   const summary = context.summary;
-  const databaseReady = context.health?.database === 'ok';
-  const analyticsStatus = context.health?.analytics as string | undefined;
   const handleRefresh = async () => {
     setIsRefreshing(true);
     try {
@@ -104,54 +102,6 @@ export const TopNavbar: React.FC<TopNavbarProps> = ({
           {/* Fleet Status Metrics: Total PCs, Online, Offline */}
           <div className="hidden lg:flex items-center gap-2 text-xs">
             <FleetStatusCards summary={summary} compact stale={Boolean(context.isStale || (context.error && summary))} />
-
-            <span className="w-px h-3.5 bg-slate-200" />
-
-            {/* PostgreSQL OLTP Status */}
-            <div
-              className="flex items-center gap-1.5 text-slate-600"
-              title="PostgreSQL OLTP Engine: Persists fleet metadata, baselines, and outbox queue"
-            >
-              <Database className={`w-3.5 h-3.5 ${databaseReady ? 'text-emerald-600' : 'text-amber-600'}`} />
-              <span className={`font-semibold uppercase text-[10px] ${databaseReady ? 'text-emerald-700' : 'text-amber-700'}`}>
-                {databaseReady ? 'DB READY' : context.health?.database === 'error' ? 'DB ERROR' : 'DB UNKNOWN'}
-              </span>
-            </div>
-
-            {/* ClickHouse OLAP Analytics Status */}
-            {analyticsStatus !== 'disabled' && (
-              <div
-                className="flex items-center gap-1.5 text-slate-600"
-                title={
-                  analyticsStatus === 'ok'
-                    ? 'ClickHouse OLAP Engine: High-velocity telemetry queries and server-side aggregation operational'
-                    : analyticsStatus === 'unavailable'
-                    ? 'ClickHouse OLAP Engine unreachable: High-volume queries temporarily falling back to PostgreSQL'
-                    : 'ClickHouse OLAP Engine status unknown: Probing analytics engine...'
-                }
-              >
-                <span
-                  className={`w-2 h-2 rounded-full ${
-                    analyticsStatus === 'ok'
-                      ? 'bg-emerald-500'
-                      : analyticsStatus === 'unavailable'
-                      ? 'bg-red-500 animate-pulse'
-                      : 'bg-amber-400'
-                  }`}
-                />
-                <span
-                  className={`font-semibold uppercase text-[10px] ${
-                    analyticsStatus === 'ok'
-                      ? 'text-emerald-700'
-                      : analyticsStatus === 'unavailable'
-                      ? 'text-red-700'
-                      : 'text-amber-700'
-                  }`}
-                >
-                  {analyticsStatus === 'ok' ? 'CH READY' : analyticsStatus === 'unavailable' ? 'CH UNAVAIL' : 'CH UNKNOWN'}
-                </span>
-              </div>
-            )}
           </div>
 
           {/* Real-time Stream Status */}
@@ -161,8 +111,8 @@ export const TopNavbar: React.FC<TopNavbarProps> = ({
               connectionMode === 'sse'
                 ? 'Server-Sent Events (SSE) active: Live cache invalidation and notification channel connected (does not reflect database query health)'
                 : connectionMode === 'polling'
-                ? 'HTTP Polling active: Polling server endpoints every 3 seconds'
-                : 'Live stream disconnected: Metrics may be stale'
+                ? 'Periodic refresh active'
+                : 'Automatic refresh paused'
             }
           >
             <span

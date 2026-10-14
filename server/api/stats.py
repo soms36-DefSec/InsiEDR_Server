@@ -59,7 +59,7 @@ def get_stats(request: Request, storage=Depends(get_storage),
 
 @router.get("/dashboard-summary")
 @router.get("/v1/dashboard-summary")
-def dashboard_summary(storage=Depends(get_storage),
+def dashboard_summary(include_stats: bool = True, storage=Depends(get_storage),
                       operator: OperatorPrincipal = Depends(require_operator("operator:read"))):
     """Fleet overview with a complete hostname snapshot in pc_status.endpoints.
 
@@ -79,7 +79,7 @@ def dashboard_summary(storage=Depends(get_storage),
 
     try:
         actor = getattr(operator, "actor", "anon")
-        cache_key = f"dashboard_summary:{actor}:{id(storage)}"
+        cache_key = f"dashboard_summary:{actor}:{id(storage)}:{include_stats}"
         cached = api_cache.get(cache_key)
         if cached is not None:
             return cached
@@ -117,7 +117,7 @@ def dashboard_summary(storage=Depends(get_storage),
 
         stats_failed = False
         try:
-            stats = _fleet_stats(storage) if hasattr(storage, "get_stats") else {}
+            stats = _fleet_stats(storage) if include_stats and hasattr(storage, "get_stats") else {}
             if not isinstance(stats, dict):
                 stats = {}
         except (PoolError, QueryCanceled, LockNotAvailable):

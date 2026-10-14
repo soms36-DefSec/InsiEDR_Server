@@ -144,6 +144,7 @@ export function FleetStatusCards({ summary, compact = false, stale = false }: {
           const online = key === 'online';
           const isLogs = key === 'logs';
           const cardStale = isStale && !isLogs;
+
           return (
             <button
               key={key}
@@ -155,7 +156,7 @@ export function FleetStatusCards({ summary, compact = false, stale = false }: {
               aria-label={`${label}: ${counts[key] ?? 'unavailable'}${cardStale ? ' (stale)' : ''}. Show details`}
               title={
                 isLogs
-                  ? 'All-Time Raw Payloads across entire history'
+                  ? 'All-time collector events'
                   : cardStale
                   ? 'Metrics may be stale: refresh failed or unavailable'
                   : undefined
@@ -222,7 +223,7 @@ export function FleetStatusCards({ summary, compact = false, stale = false }: {
         >
           <div className="flex items-start justify-between gap-3 px-4 pt-4 pb-3">
             <div>
-              <h2 className="text-sm font-semibold">{selectedLabel} · {counts[open] ?? '—'}{isStale && open !== 'logs' ? ' (stale)' : ''}</h2>
+              <h2 className="text-sm font-semibold">{selectedLabel} · {counts[open] ?? '—'}</h2>
               <p className="mt-1 text-xs text-slate-500">
                 {open === 'logs' ? 'All-time raw payload envelope volume across all collectors' : 'Online = seen within the last 5 minutes.'}
               </p>

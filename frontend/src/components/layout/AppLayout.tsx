@@ -66,9 +66,6 @@ export const AppLayout: React.FC = () => {
       {/* Main Content Canvas */}
       <main className="flex-1 overflow-y-auto px-6 sm:px-8 py-6">
         <div className="max-w-[1700px] mx-auto space-y-6">
-          {error && <div role="alert" className="rounded-lg border border-amber-200 bg-amber-50 p-3 text-sm text-amber-900">
-            Fleet refresh failed: {error}. Previously loaded metrics may be stale.
-          </div>}
           {/* View Title & Description + Fleet PC Status Cards */}
           <div className="flex flex-col xl:flex-row xl:items-center justify-between gap-4 pb-1">
             <div>

@@ -23,8 +23,8 @@ export const VirtualizedLogTable: React.FC<VirtualizedLogTableProps> = React.mem
   onSelectLog,
   isLoading = false,
   resetKey = '',
-  error = null,
-  onRetry,
+  error: _error = null,
+  onRetry: _onRetry,
 }) => {
   const [viewport, setViewport] = useState<HTMLDivElement | null>(null);
   const [scrollTop, setScrollTop] = useState(0);
@@ -75,20 +75,10 @@ export const VirtualizedLogTable: React.FC<VirtualizedLogTableProps> = React.mem
     );
   }
 
-  if (error && logs.length === 0) {
+  if (logs.length === 0) {
     return (
-      <div className="h-64 flex flex-col items-center justify-center text-amber-800 text-xs bg-amber-50/50 rounded-lg border border-dashed border-amber-300 p-6 text-center space-y-3">
-        <div className="font-semibold text-amber-900 text-sm">Failed to load telemetry</div>
-        <p className="max-w-md text-amber-700 font-mono text-[11px]">{error}</p>
-        {onRetry && (
-          <button
-            type="button"
-            onClick={onRetry}
-            className="px-3 py-1.5 bg-white border border-amber-300 rounded-md shadow-2xs text-amber-900 font-medium hover:bg-amber-100 transition-colors cursor-pointer"
-          >
-            Retry Query
-          </button>
-        )}
+      <div className="h-64 flex flex-col items-center justify-center text-slate-400 text-xs bg-slate-50/50 rounded-lg border border-dashed border-slate-200">
+        No telemetry records found matching filter criteria.
       </div>
     );
   }

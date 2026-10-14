@@ -105,6 +105,7 @@ export const TelemetryExplorerPlugin: React.FC<TelemetryExplorerPluginProps> = (
   const scheduleRefresh = useRef<() => void>(() => {});
   const pageCursors = useRef<(string | undefined)[]>([undefined]);
   const queryStart = useRef<string | undefined>(undefined);
+  const displayedQuery = useRef('');
   const [source, setSource] = useState('postgres');
   const [isExportingStream, setIsExportingStream] = useState<boolean>(false);
 
@@ -133,6 +134,14 @@ export const TelemetryExplorerPlugin: React.FC<TelemetryExplorerPluginProps> = (
   const loadLogs = useCallback(
     async (pageToLoad = 1, currentSize = pageSize, background = false) => {
       if (background && request.current) { queuedRefresh.current = true; return; }
+      const key = JSON.stringify([activeCollector, debouncedSearch, statusFilter, timeRange, currentSize, searchScope]);
+      if (displayedQuery.current !== key) {
+        setLogs([]);
+        setLastUpdated(null);
+        setCurrentPage(1);
+        setHasMore(false);
+        displayedQuery.current = key;
+      }
       request.current?.abort();
       const abort = new AbortController();
       request.current = abort;
@@ -228,7 +237,7 @@ export const TelemetryExplorerPlugin: React.FC<TelemetryExplorerPluginProps> = (
     const unsubscribe = subscribeTelemetry(schedule);
     // SSE carries invalidations, not complete rows. Coalesce them, and recover
     // missed notifications at a bounded rate only while disconnected.
-    const poll = context.isConnected ? undefined : window.setInterval(schedule, 30000);
+    const poll = window.setInterval(schedule, context.isConnected ? 30000 : 15000);
     const onVisible = () => { if (document.visibilityState === 'visible') schedule(); };
     document.addEventListener('visibilitychange', onVisible);
     return () => {
@@ -326,6 +335,7 @@ export const TelemetryExplorerPlugin: React.FC<TelemetryExplorerPluginProps> = (
 
       {/* Server-Side Event Frequency Histogram (ClickHouse Aggregation) */}
       <TelemetryHistogram
+        refreshVersion={lastUpdated ? Math.floor(lastUpdated.getTime() / 15000) : undefined}
         timeRange={timeRange}
         activeCollector={activeCollector}
         statusFilter={statusFilter}
@@ -565,7 +575,7 @@ export const TelemetryExplorerPlugin: React.FC<TelemetryExplorerPluginProps> = (
         resetKey={`${activeCollector}:${debouncedSearch}:${statusFilter}:${timeRange}:${currentPage}:${pageSize}`}
         onSelectLog={(log) => setSelectedLog(log)}
         isLoading={isLoading}
-        error={loadError}
+        error={null}
         onRetry={() => loadLogs(currentPage, pageSize)}
       />
 
