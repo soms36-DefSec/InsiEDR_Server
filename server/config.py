@@ -33,10 +33,69 @@ from shared.crypto_utils import (
 )
 
 
+# ==============================================================================
+# Master Telemetry Log Ingestion Switch
+# ==============================================================================
+# Change ENABLE_LOG_INGESTION to False to STOP receiving/storing logs on the server:
+#   ENABLE_LOG_INGESTION = False
+#
+# Change back to True to resume receiving logs:
+#   ENABLE_LOG_INGESTION = True
+#
+# Alternatively, set in .env or docker-compose:
+#   INSIEDR_ENABLE_LOG_INGESTION=false
+#
+# Or create a pause flag file without restarting the server:
+#   touch .pause_logs
+# ==============================================================================
+ENABLE_LOG_INGESTION: bool = True
+
+
 class ServerConfig:
     @staticmethod
     def _env_bool(name: str, default: bool = False) -> bool:
         return os.environ.get(name, str(default)).lower() in ("1", "true", "yes", "on")
+
+    @property
+    def enable_log_ingestion(self) -> bool:
+        """Master toggle for telemetry log ingestion.
+        
+        Controls whether the server receives, decrypts, and persists telemetry logs.
+        - To stop receiving logs: edit ENABLE_LOG_INGESTION = False above
+          OR set INSIEDR_ENABLE_LOG_INGESTION=false in your .env file
+          OR create a file named '.pause_logs' in the project root.
+        - To resume receiving logs: set ENABLE_LOG_INGESTION = True (and remove .pause_logs).
+        """
+        global ENABLE_LOG_INGESTION
+        if not ENABLE_LOG_INGESTION:
+            return False
+        if not self._env_bool("INSIEDR_ENABLE_LOG_INGESTION", default=True):
+            return False
+        if not self._env_bool("INSIEDR_RECEIVE_LOGS", default=True):
+            return False
+        for flag in (".pause_logs", "server/.pause_logs", "/app/.pause_logs"):
+            try:
+                if Path(flag).exists():
+                    return False
+            except Exception:
+                pass
+        return True
+
+    def set_ingestion_enabled(self, enabled: bool) -> None:
+        """Runtime toggle for telemetry log ingestion."""
+        global ENABLE_LOG_INGESTION
+        ENABLE_LOG_INGESTION = enabled
+        for flag_name in (".pause_logs", "server/.pause_logs", "/app/.pause_logs"):
+            try:
+                p = Path(flag_name)
+                if not enabled:
+                    p.touch()
+                    break
+                else:
+                    if p.exists():
+                        p.unlink()
+            except Exception:
+                pass
 
     @property
     def aes_key_env(self) -> str | None:

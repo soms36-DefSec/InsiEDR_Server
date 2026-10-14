@@ -7,6 +7,7 @@ from datetime import datetime, timezone
 from fastapi import APIRouter, Depends, Query, Request
 from fastapi.responses import JSONResponse
 
+from server.config import config
 from server.api.ingest import process_encrypted_request, IngestError
 from server.api.deps import get_storage, require_operator, OperatorPrincipal
 
@@ -52,6 +53,16 @@ async def get_collector_states(
 @router.post("/logs")
 @router.post("/v1/logs")
 async def post_logs(request: Request):
+    if not config.enable_log_ingestion:
+        return JSONResponse(
+            content={
+                "ok": True,
+                "status": "paused",
+                "message": "Telemetry log ingestion is paused on this server (ENABLE_LOG_INGESTION=False).",
+                "ingested": 0,
+            },
+            status_code=200,
+        )
     try:
         status_code, body = await process_encrypted_request(request)
         return JSONResponse(content=body, status_code=status_code)

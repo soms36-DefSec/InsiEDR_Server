@@ -178,6 +178,15 @@ def _check_duplicate_policy(storage, envelope: dict[str, Any], payload: dict[str
 
 
 async def process_encrypted_request(req) -> tuple[int, dict[str, Any]]:
+    # 0. Master Ingestion Switch Check (Early Exit)
+    if not config.enable_log_ingestion:
+        return 200, {
+            "ok": True,
+            "status": "paused",
+            "message": "Telemetry log ingestion is paused on this server (ENABLE_LOG_INGESTION=False).",
+            "ingested": 0,
+        }
+
     # 1. Transport Security (HTTPS) Enforcement & Request Admission
     content_len = req.headers.get("content-length")
     if content_len:

@@ -3,6 +3,7 @@ from __future__ import annotations
 from fastapi import APIRouter, Depends, Request
 from fastapi.responses import JSONResponse
 
+from server.config import config
 from server.plugin_registry import registry
 from server.api.events import broadcaster
 from server.api.deps import get_storage, get_task_queue, require_operator, OperatorPrincipal
@@ -136,7 +137,8 @@ def health(
         "crypto_schemes": schemes,
         "plaintext_crypto": plaintext,
         "migrations": "ok" if storage is not None else "not_configured",
-        "telemetry_collection": "ok",
+        "telemetry_collection": "ok" if config.enable_log_ingestion else "paused",
+        "log_ingestion_enabled": config.enable_log_ingestion,
         "queue_backend": queue_backend,
         "queue_status": queue_status,
         "sse_subscribers": sse_subscribers,
@@ -144,6 +146,32 @@ def health(
     }
     status_code = 200 if status_ok else 503
     return JSONResponse(content=resp_body, status_code=status_code)
+
+
+@router.post("/operations/pause-ingestion")
+@router.post("/v1/operations/pause-ingestion")
+def pause_ingestion(operator: OperatorPrincipal = Depends(require_operator("operator:write"))):
+    """Dynamically pause telemetry log ingestion on this server."""
+    config.set_ingestion_enabled(False)
+    return {
+        "ok": True,
+        "log_ingestion_enabled": False,
+        "status": "paused",
+        "message": "Telemetry log ingestion has been paused.",
+    }
+
+
+@router.post("/operations/resume-ingestion")
+@router.post("/v1/operations/resume-ingestion")
+def resume_ingestion(operator: OperatorPrincipal = Depends(require_operator("operator:write"))):
+    """Dynamically resume telemetry log ingestion on this server."""
+    config.set_ingestion_enabled(True)
+    return {
+        "ok": True,
+        "log_ingestion_enabled": True,
+        "status": "active",
+        "message": "Telemetry log ingestion has been resumed.",
+    }
 
 
 @router.get("/v1/queue/metrics")

@@ -556,3 +556,77 @@ def test_keystrokes_export_excel(client):
     assert "Mean Dwell (ms)" in headers
     assert "Typing Speed (CPM)" in headers
 
+
+def test_master_log_ingestion_toggle_drops_incoming_logs(client, mock_storage, monkeypatch):
+    """Verify that setting ENABLE_LOG_INGESTION = False drops incoming logs and prevents DB writes."""
+    import server.config as config_module
+    from server.config import config
+    
+    # Store initial state
+    orig_state = config_module.ENABLE_LOG_INGESTION
+    try:
+        # 1. Turn OFF log ingestion
+        config_module.ENABLE_LOG_INGESTION = False
+        assert config.enable_log_ingestion is False
+
+        stored_payloads = []
+        mock_storage.store_raw_payload = lambda env, payload: stored_payloads.append(payload)
+
+        headers = {
+            "X-Crypto-Scheme": "aes-256-gcm",
+            "X-Protocol-Version": "2.0",
+            "X-Agent-ID": "test-agent-01",
+            "X-Payload-ID": "test-payload-paused-01",
+            "Content-Type": "application/json",
+        }
+        body = {"test": "dummy"}
+
+        # Post to /api/logs
+        resp = client.post("/api/logs", json=body, headers=headers)
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["ok"] is True
+        assert data["status"] == "paused"
+        assert "paused" in data["message"].lower()
+
+        # Verify nothing was written to storage
+        assert len(stored_payloads) == 0
+
+        # Verify health check reflects paused status
+        health_resp = client.get("/api/health")
+        assert health_resp.status_code == 200
+        health_data = health_resp.json()
+        assert health_data["telemetry_collection"] == "paused"
+        assert health_data["log_ingestion_enabled"] is False
+
+    finally:
+        # Restore original state
+        config_module.ENABLE_LOG_INGESTION = orig_state
+        assert config.enable_log_ingestion is True
+
+
+def test_runtime_file_pause_flag_drops_incoming_logs(client, mock_storage, tmp_path, monkeypatch):
+    """Verify that creating .pause_logs flag pauses ingestion without code edits."""
+    from server.config import config
+    from pathlib import Path
+    
+    flag = Path(".pause_logs")
+    try:
+        flag.touch()
+        assert config.enable_log_ingestion is False
+
+        headers = {
+            "X-Crypto-Scheme": "aes-256-gcm",
+            "X-Protocol-Version": "2.0",
+            "X-Agent-ID": "test-agent-01",
+            "X-Payload-ID": "test-payload-flag-01",
+            "Content-Type": "application/json",
+        }
+        resp = client.post("/api/v1/logs", json={}, headers=headers)
+        assert resp.status_code == 200
+        assert resp.json()["status"] == "paused"
+    finally:
+        if flag.exists():
+            flag.unlink()
+        assert config.enable_log_ingestion is True
+
