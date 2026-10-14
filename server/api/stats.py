@@ -14,24 +14,38 @@ logger = logging.getLogger("insiedr.api.stats")
 router = APIRouter(prefix="/api", tags=["System & Observability"])
 bp = router  # Backward compatibility alias
 
+_LAST_KNOWN_FLEET_STATS = None
+_LAST_KNOWN_DASHBOARD_SUMMARY = None
+
 
 def _fleet_stats(storage):
+    global _LAST_KNOWN_FLEET_STATS
     # Dashboard refreshes must not repeat full-table aggregate counts for every
-    # SSE notification. Scope cache entries to this storage instance.
+    # SSE notification. Scope cache entries to this storage instance with 30s TTL.
     key = f"fleet_stats:{id(storage)}"
     cached = api_cache.get(key)
     if cached is not None:
         return cached
-    result = storage.get_stats()
-    api_cache.set(key, result, ttl=5.0)
-    return result
+    try:
+        result = storage.get_stats()
+        if isinstance(result, dict) and result.get("ok", True):
+            _LAST_KNOWN_FLEET_STATS = dict(result)
+        api_cache.set(key, result, ttl=30.0)
+        return result
+    except (PoolError, QueryCanceled, LockNotAvailable):
+        raise
+    except Exception as exc:
+        logger.warning("fleet stats calculation failed: %s", exc)
+        if _LAST_KNOWN_FLEET_STATS:
+            return dict(_LAST_KNOWN_FLEET_STATS)
+        return {"ok": False, "error": str(exc)}
 
 
 @router.get("/stats")
 @router.get("/v1/stats")
 def get_stats(request: Request, storage=Depends(get_storage),
               operator: OperatorPrincipal = Depends(require_operator("operator:read"))):
-    """Returns aggregated fleet overview stats, protected by 5s in-memory TTL caching."""
+    """Returns aggregated fleet overview stats, protected by 30s in-memory TTL caching."""
     if storage is None:
         return api_error(
             code="STORAGE_UNAVAILABLE",
@@ -51,7 +65,10 @@ def dashboard_summary(storage=Depends(get_storage),
 
     The separate agents array remains a bounded list of agent registrations;
     fleet card drill-downs use the same unique-host snapshot as their counts.
+    Protected by 30s caching so stored data is served instantly.
     """
+    global _LAST_KNOWN_DASHBOARD_SUMMARY
+
     if storage is None:
         return api_error(
             code="STORAGE_UNAVAILABLE",
@@ -127,9 +144,11 @@ def dashboard_summary(storage=Depends(get_storage),
             "risk_events": [],
             "anomalies": [],
         }
+
         if not pc_failed:
+            _LAST_KNOWN_DASHBOARD_SUMMARY = res
             try:
-                api_cache.set(cache_key, res, ttl=4.0)
+                api_cache.set(cache_key, res, ttl=30.0)
             except Exception as cache_err:
                 logger.debug("Non-fatal: dashboard_summary cache set failed: %s", cache_err)
 

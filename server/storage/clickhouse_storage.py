@@ -1139,10 +1139,12 @@ class ClickHouseStorage:
     def get_telemetry_stats(self) -> Dict[str, Any]:
         """Aggregate telemetry counts and quality distributions via ClickHouse."""
         if not self.is_connected():
+            if hasattr(self, "_stats_cache"):
+                return dict(self._stats_cache)
             return {"logs": 0, "collector_results": 0, "anomalies": 0, "risk_events": 0}
 
         now = time.monotonic()
-        if hasattr(self, "_stats_cache") and (now - getattr(self, "_stats_cache_ts", 0.0) < 15.0):
+        if hasattr(self, "_stats_cache") and (now - getattr(self, "_stats_cache_ts", 0.0) < 45.0):
             return dict(self._stats_cache)
 
         col_table = "collector_events_v2" if self.collector_schema_version == 2 else "collector_results"
@@ -1172,6 +1174,8 @@ class ClickHouseStorage:
             self._stats_cache = dict(stats)
             self._stats_cache_ts = now
         except Exception as exc:
-            logger.debug("ClickHouse telemetry stats query failed: %s", exc)
+            logger.debug("ClickHouse telemetry stats query failed: %s; serving cache if available", exc)
+            if hasattr(self, "_stats_cache"):
+                return dict(self._stats_cache)
 
         return stats

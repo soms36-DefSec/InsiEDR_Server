@@ -6,7 +6,17 @@ import { notifyTelemetry } from '../services/telemetryStream';
 // One multiplexed SSE connection; views subscribe without re-rendering the shell
 // for every telemetry event. REST is the authoritative recovery path.
 export function useRealTimeStream() {
-  const [summary, setSummary] = useState<DashboardSummary | null>(null);
+  const [summary, setSummary] = useState<DashboardSummary | null>(() => {
+    try {
+      if (typeof window !== 'undefined' && window.sessionStorage) {
+        const cached = window.sessionStorage.getItem('insiedr_cached_dashboard_summary');
+        if (cached) return JSON.parse(cached);
+      }
+    } catch {
+      // Ignore
+    }
+    return null;
+  });
   const [health, setHealth] = useState<SystemHealth | null>(null);
   const [logs, setLogs] = useState<TelemetryLog[]>([]);
   const [liveThreats, setLiveThreats] = useState<RiskEvent[]>([]);
@@ -121,7 +131,8 @@ export function useRealTimeStream() {
 
   useEffect(() => {
     if (!autoRefresh) return;
-    const timer = window.setInterval(() => { void refreshAll(); }, connectionMode === 'sse' ? 30000 : 3000);
+    // Calm periodic polling: 45s when in SSE mode, 25s when fallback polling
+    const timer = window.setInterval(() => { void refreshAll(); }, connectionMode === 'sse' ? 45000 : 25000);
     return () => window.clearInterval(timer);
   }, [autoRefresh, connectionMode, refreshAll]);
 
