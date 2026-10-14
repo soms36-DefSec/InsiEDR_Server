@@ -2,9 +2,10 @@ import React, { useState } from 'react';
 import type { EDRPlugin, PluginContextData } from '../../plugins/registry';
 import { FleetStatusCards } from './FleetStatusCards';
 import { Button } from '../ui/Button';
-import { RefreshCw, Download, ChevronDown, FileCode, Sparkles, Database } from 'lucide-react';
+import { RefreshCw, Download, ChevronDown, FileCode, Sparkles, Database, Layers } from 'lucide-react';
 import { triggerServerExport } from '../../services/api';
 import { ExportTrainingDatasetModal } from '../telemetry/ExportTrainingDatasetModal';
+import { CollectorDatasetExportModal } from '../telemetry/CollectorDatasetExportModal';
 
 export interface TopNavbarProps {
   plugins: EDRPlugin[];
@@ -31,6 +32,7 @@ export const TopNavbar: React.FC<TopNavbarProps> = ({
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [showExportMenu, setShowExportMenu] = useState(false);
   const [showTrainingModal, setShowTrainingModal] = useState(false);
+  const [showCollectorModal, setShowCollectorModal] = useState(false);
 
   const summary = context.summary;
   const handleRefresh = async () => {
@@ -188,6 +190,26 @@ export const TopNavbar: React.FC<TopNavbarProps> = ({
                     </div>
                   </button>
 
+                  {/* Collector-Specific Dataset Option (5+ Lakhs) */}
+                  <button
+                    onClick={() => {
+                      setShowCollectorModal(true);
+                      setShowExportMenu(false);
+                    }}
+                    className="w-full text-left px-3 py-2 text-slate-800 hover:bg-indigo-50/70 flex items-center gap-2.5 transition-colors cursor-pointer border-b border-slate-100"
+                  >
+                    <Layers className="w-4 h-4 text-indigo-600 shrink-0" />
+                    <div>
+                      <div className="font-semibold text-slate-900 text-xs flex items-center gap-1.5">
+                        Collector Dataset Export
+                        <span className="text-[9px] bg-indigo-100 text-indigo-700 font-bold px-1.5 py-0.2 rounded-full">
+                          5+ Lakhs
+                        </span>
+                      </div>
+                      <div className="text-[10px] text-slate-500">Unrolled feature columns per collector (CSV)</div>
+                    </div>
+                  </button>
+
                   <div className="my-1 border-t border-slate-100" />
                   <div className="px-3 py-1 text-[10px] font-semibold uppercase tracking-wider text-slate-400">
                     Raw Telemetry Streams
@@ -224,6 +246,12 @@ export const TopNavbar: React.FC<TopNavbarProps> = ({
         isOpen={showTrainingModal}
         onClose={() => setShowTrainingModal(false)}
         availableUsers={summary?.users || []}
+      />
+
+      {/* Collector-Specific Dataset Export Modal (5+ Lakhs high throughput) */}
+      <CollectorDatasetExportModal
+        isOpen={showCollectorModal}
+        onClose={() => setShowCollectorModal(false)}
       />
     </nav>
   );

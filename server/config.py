@@ -279,9 +279,9 @@ class ServerConfig:
     def max_export_records(self) -> int:
         """Configurable ceiling on export dataset record streaming to prevent unconstrained resource saturation."""
         try:
-            return int(os.environ.get("INSIEDR_MAX_EXPORT_RECORDS", "500000"))
+            return int(os.environ.get("INSIEDR_MAX_EXPORT_RECORDS", "2000000"))
         except (ValueError, TypeError):
-            return 500000
+            return 2000000
 
     @property
     def redis_ssl(self) -> bool:

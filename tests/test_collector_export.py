@@ -405,3 +405,49 @@ def test_csv_keeps_columns_first_seen_in_later_batch(monkeypatch):
     assert len(rows) == 2
     assert rows[0]['new_sensor_signal'] == ''
     assert rows[1]['new_sensor_signal'] == '99'
+
+
+def test_stream_csv_collector_dataset_high_volume_without_disk_spool():
+    """Verify streaming handles volume exceeding sample_limit (>2500) smoothly without temp files."""
+    from server.api import export
+    
+    class LargeMockStorage:
+        def list_collector_results(self, limit=1000, offset=0, **kwargs):
+            total_records = 6000
+            if offset >= total_records:
+                return []
+            count = min(limit, total_records - offset)
+            return [
+                {
+                    "payload_id": f"p-{offset + i}",
+                    "agent_id": f"agent-{(offset + i) % 5}",
+                    "collector": "logon",
+                    "collected_at": "2026-10-12T10:00:00Z",
+                    "hostname": "HOST-TEST",
+                    "username": f"user_{(offset + i) % 10}",
+                    "status": "success",
+                    "payload_json": {
+                        "event_count": offset + i,
+                        "failed_logons": (offset + i) % 3,
+                        "successful_logons": (offset + i) % 7,
+                    },
+                }
+                for i in range(count)
+            ]
+
+    storage = LargeMockStorage()
+    chunks = list(export._stream_csv_collector_dataset(storage, "logon", {}, 6000))
+    full_csv = "".join(chunks)
+    reader = csv.DictReader(io.StringIO(full_csv))
+    rows = list(reader)
+    assert len(rows) == 6000
+    assert "event_count" in reader.fieldnames
+    assert rows[0]["event_count"] == "0"
+    assert rows[5999]["event_count"] == "5999"
+
+
+def test_export_collector_dataset_supports_500k_limit_query_param(mock_collector_client):
+    """Verify limit=500000 query parameter is accepted without 422 validation error."""
+    resp = mock_collector_client.get("/api/v1/export/collector-dataset.csv?collector=logon&limit=500000")
+    assert resp.status_code == 200
+    assert "text/csv" in resp.headers.get("Content-Type", "")

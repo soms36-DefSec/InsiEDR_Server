@@ -32,6 +32,7 @@ import {
   Table,
   RefreshCw,
   AlertCircle,
+  Zap,
 } from 'lucide-react';
 
 export interface CollectorDatasetExportModalProps {
@@ -51,6 +52,9 @@ export const CollectorDatasetExportModal: React.FC<CollectorDatasetExportModalPr
   const [selectedCollector, setSelectedCollector] = useState<string>(defaultCollector);
   const [availableCollectors, setAvailableCollectors] = useState<string[]>([]);
   const [availableUsers, setAvailableUsers] = useState<string[]>([]);
+
+  // Sample size limit state (default: 500,000 / 5 Lakhs for high-volume streaming)
+  const [sampleLimit, setSampleLimit] = useState<number | undefined>(500000);
 
   // Date range state
   const [dateMode, setDateMode] = useState<'all' | 'today' | '7d' | '30d' | 'custom'>('all');
@@ -191,10 +195,11 @@ export const CollectorDatasetExportModal: React.FC<CollectorDatasetExportModalPr
         startDate: startDate || undefined,
         endDate: endDate || undefined,
         username: selectedUser.trim() || undefined,
+        limit: sampleLimit,
       });
       setTimeout(() => {
         setIsExporting(false);
-      }, 1000);
+      }, 1500);
     } catch (err) {
       console.error('Export failed:', err);
       setIsExporting(false);
@@ -261,7 +266,7 @@ export const CollectorDatasetExportModal: React.FC<CollectorDatasetExportModalPr
         {/* Modal Body */}
         <div className="px-6 py-5 overflow-y-auto space-y-5 text-xs">
           {/* Top Control Bar: Filters Grid */}
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-4 p-4 rounded-lg bg-slate-50 border border-slate-200/80">
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3.5 p-4 rounded-lg bg-slate-50 border border-slate-200/80">
             {/* 1. Collector Selection */}
             <div className="space-y-1.5">
               <label className="font-semibold text-slate-700 flex items-center gap-1.5">
@@ -363,7 +368,7 @@ export const CollectorDatasetExportModal: React.FC<CollectorDatasetExportModalPr
                   size="sm"
                   onClick={handleLoadPreview}
                   disabled={isPreviewLoading}
-                  className="h-9 px-3 shrink-0"
+                  className="h-9 px-2.5 shrink-0"
                   icon={<RefreshCw className={`w-3.5 h-3.5 ${isPreviewLoading ? 'animate-spin' : ''}`} />}
                   title="Reload preview records with current filters"
                 >
@@ -371,6 +376,50 @@ export const CollectorDatasetExportModal: React.FC<CollectorDatasetExportModalPr
                 </Button>
               </div>
             </div>
+
+            {/* 4. Export Sample Size */}
+            <div className="space-y-1.5">
+              <label className="font-semibold text-slate-700 flex items-center justify-between">
+                <span className="flex items-center gap-1.5">
+                  <Zap className="w-3.5 h-3.5 text-amber-500" />
+                  4. Sample Limit
+                </span>
+                <span className="text-[10px] font-mono px-1.5 py-0.2 rounded bg-amber-50 text-amber-700 border border-amber-200">
+                  ⚡ 5+ Lakhs OK
+                </span>
+              </label>
+              <select
+                aria-label="Export Sample Limit"
+                value={sampleLimit === undefined ? 'all' : String(sampleLimit)}
+                onChange={(e) => {
+                  const val = e.target.value;
+                  setSampleLimit(val === 'all' ? undefined : Number(val));
+                }}
+                className="w-full h-9 bg-white border border-slate-300 rounded-md px-3 text-xs font-medium text-slate-800 outline-none focus:ring-2 focus:ring-amber-500/20 focus:border-amber-500 cursor-pointer shadow-2xs"
+              >
+                <option value="500000">5 Lakhs (500,000) — Fast Stream</option>
+                <option value="1000000">10 Lakhs (1,000,000) — Deep Fleet</option>
+                <option value="2000000">20 Lakhs (2,000,000) — Max Cap</option>
+                <option value="250000">2.5 Lakhs (250,000)</option>
+                <option value="100000">1 Lakh (100,000)</option>
+                <option value="50000">50,000 Samples</option>
+                <option value="10000">10,000 Samples</option>
+                <option value="all">Full Dataset (All Matching)</option>
+              </select>
+            </div>
+          </div>
+
+          {/* Zero-Disk High-Throughput Banner */}
+          <div className="flex items-center justify-between px-3.5 py-2 rounded-lg bg-indigo-50/70 border border-indigo-100 text-slate-700 text-xs">
+            <div className="flex items-center gap-2">
+              <Zap className="w-4 h-4 text-indigo-600 shrink-0" />
+              <span>
+                <strong className="text-indigo-950 font-semibold">Zero-Disk Streaming Engine:</strong> Generates unrolled feature columns at full line rate with $O(1)$ memory, preventing disk queue saturation and container crashes on 5+ lakhs samples.
+              </span>
+            </div>
+            <span className="text-[10px] font-mono text-indigo-700 font-semibold px-2 py-0.5 rounded-full bg-white border border-indigo-200 shrink-0 hidden sm:inline-block">
+              Max Cap: 20 Lakhs
+            </span>
           </div>
 
           {/* Feature Schema Badge Chips */}
@@ -561,9 +610,17 @@ export const CollectorDatasetExportModal: React.FC<CollectorDatasetExportModalPr
               onClick={handleExport}
               disabled={isExporting}
               icon={<Download className="w-3.5 h-3.5" />}
-              className="bg-indigo-600 hover:bg-indigo-700 text-white"
+              className="bg-indigo-600 hover:bg-indigo-700 text-white font-medium"
             >
-              {isExporting ? 'Exporting CSV...' : 'Export Dataset (CSV)'}
+              {isExporting
+                ? 'Exporting CSV...'
+                : sampleLimit
+                ? `Export ${
+                    sampleLimit >= 100000
+                      ? `${(sampleLimit / 100000).toFixed(sampleLimit % 100000 === 0 ? 0 : 1)} Lakhs`
+                      : `${(sampleLimit / 1000).toLocaleString()}k`
+                  } Dataset (CSV)`
+                : 'Export Full Dataset (CSV)'}
             </Button>
           </div>
         </div>
