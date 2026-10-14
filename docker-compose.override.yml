@@ -1,0 +1,19 @@
+# Temporary, reversible Compose override for InsiEDR backend health mitigation
+# Usage:
+#   docker compose -f docker-compose.yml -f docker-compose.override.yml up -d --no-deps backend
+# Rollback:
+#   Remove this file and run `docker compose up -d --no-deps backend`
+
+services:
+  backend:
+    healthcheck:
+      # Extend probe-internal timeout from 8s to 20s to prevent false-alarm exits
+      # when PostgreSQL connection pool wait (INSIEDR_PG_POOL_WAIT_SECONDS=10) is active.
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:5000/api/health/ready', timeout=20)"]
+      interval: 60s
+      timeout: 25s
+      retries: 5
+      start_period: 0s
+    environment:
+      # Align ClickHouse analytics query timeout to allow complex dashboard aggregations to complete
+      INSIEDR_CLICKHOUSE_QUERY_TIMEOUT: "60"
