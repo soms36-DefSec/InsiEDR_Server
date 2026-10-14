@@ -1,10 +1,17 @@
 # Temporary, reversible Compose override for InsiEDR backend health mitigation
 # Usage:
-#   docker compose -f docker-compose.yml -f docker-compose.override.yml up -d --no-deps backend
+#   docker compose -f docker-compose.yml -f docker-compose.override.yml up -d
 # Rollback:
-#   Remove this file and run `docker compose up -d --no-deps backend`
+#   Remove this file and run `docker compose up -d`
 
 services:
+  db:
+    healthcheck:
+      # Extend start_period to 600s to allow PostgreSQL crash recovery (WAL replay)
+      # to finish cleanly on mechanical HDD without Docker prematurely failing the container
+      start_period: 600s
+      retries: 10
+
   backend:
     healthcheck:
       # Extend probe-internal timeout from 8s to 20s to prevent false-alarm exits
