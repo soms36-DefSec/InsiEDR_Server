@@ -344,7 +344,7 @@ def test_queue_metrics_endpoint(client):
 # ------------------------------------------------------------------------------
 # 8. Agent Telemetry Ingestion Backward Compatibility Tests
 # ------------------------------------------------------------------------------
-def test_agent_telemetry_ingestion_backward_compatibility(client, mock_storage):
+def test_agent_telemetry_ingestion_backward_compatibility(client, mock_storage, monkeypatch):
     """Verify both /api/logs and /api/v1/logs accept AES-GCM encrypted telemetry and return 202 Accepted."""
     from datetime import datetime, timezone
     import os
@@ -353,6 +353,9 @@ def test_agent_telemetry_ingestion_backward_compatibility(client, mock_storage):
     from shared.crypto_utils import b64encode
     from server.plugin_registry import registry
     from server.crypto.aesgcm_plugin import AESGCMPlugin, AES_GCM_AAD
+    import server.config as config_module
+
+    monkeypatch.setattr(config_module, "ENABLE_LOG_INGESTION", True)
 
     # Register test AES-GCM plugin with a random 32-byte key
     test_key = os.urandom(32)
@@ -562,10 +565,9 @@ def test_master_log_ingestion_toggle_drops_incoming_logs(client, mock_storage, m
     import server.config as config_module
     from server.config import config
     
-    # Store initial state
     orig_state = config_module.ENABLE_LOG_INGESTION
     try:
-        # 1. Turn OFF log ingestion
+        # 1. Test when explicitly False
         config_module.ENABLE_LOG_INGESTION = False
         assert config.enable_log_ingestion is False
 
@@ -599,17 +601,24 @@ def test_master_log_ingestion_toggle_drops_incoming_logs(client, mock_storage, m
         assert health_data["telemetry_collection"] == "paused"
         assert health_data["log_ingestion_enabled"] is False
 
-    finally:
-        # Restore original state
-        config_module.ENABLE_LOG_INGESTION = orig_state
+        # 2. Test when toggled back to True
+        config_module.ENABLE_LOG_INGESTION = True
         assert config.enable_log_ingestion is True
+        health_resp_on = client.get("/api/health")
+        assert health_resp_on.json()["log_ingestion_enabled"] is True
+
+    finally:
+        config_module.ENABLE_LOG_INGESTION = orig_state
 
 
 def test_runtime_file_pause_flag_drops_incoming_logs(client, mock_storage, tmp_path, monkeypatch):
     """Verify that creating .pause_logs flag pauses ingestion without code edits."""
+    import server.config as config_module
     from server.config import config
     from pathlib import Path
     
+    orig_state = config_module.ENABLE_LOG_INGESTION
+    config_module.ENABLE_LOG_INGESTION = True
     flag = Path(".pause_logs")
     try:
         flag.touch()
@@ -628,5 +637,5 @@ def test_runtime_file_pause_flag_drops_incoming_logs(client, mock_storage, tmp_p
     finally:
         if flag.exists():
             flag.unlink()
-        assert config.enable_log_ingestion is True
+        config_module.ENABLE_LOG_INGESTION = orig_state
 

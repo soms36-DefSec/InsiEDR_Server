@@ -48,7 +48,7 @@ from shared.crypto_utils import (
 # Or create a pause flag file without restarting the server:
 #   touch .pause_logs
 # ==============================================================================
-ENABLE_LOG_INGESTION: bool = True
+ENABLE_LOG_INGESTION: bool = False
 
 
 class ServerConfig:
