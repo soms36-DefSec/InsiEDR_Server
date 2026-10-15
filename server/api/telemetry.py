@@ -1,12 +1,16 @@
 from __future__ import annotations
 
 import anyio
+import logging
 from datetime import datetime, timezone
 from typing import Literal
 from fastapi import APIRouter, Depends, Query, Request
 from fastapi.responses import JSONResponse
 
+from server.api.errors import AnalyticsUnavailableError
 from server.api.deps import get_storage, require_operator, OperatorPrincipal
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api", tags=["Telemetry Explorer & Analytics"])
 bp = router  # Backward compatibility alias
@@ -35,7 +39,7 @@ async def get_telemetry_explorer(
     Full nested raw payloads and features are deferred to on-demand detail drawer (/api/v1/telemetry/events/{id}).
     """
     if storage is None:
-        return {"ok": True, "events": [], "logs": [], "limit": limit, "source": "none"}
+        return JSONResponse({"ok": False, "error": "Telemetry storage is unavailable"}, status_code=503)
 
     try:
         # Interpret timezone-free API dates as UTC before comparing bounds
@@ -59,11 +63,16 @@ async def get_telemetry_explorer(
 
         if callable(getattr(storage, "get_telemetry_explorer", None)):
             try:
-                result = await anyio.to_thread.run_sync(lambda: storage.get_telemetry_explorer(
-                    limit=limit, cursor=cursor, collector=collector, username=username,
-                    status=status, search=search, start_time=start_time, end_time=end_time,
-                    agent_id=agent_id,
-                ))
+                def read_page():
+                    from server.api.snapshots import workload_slot
+                    with workload_slot('logs') as allowed:
+                        if not allowed:
+                            raise AnalyticsUnavailableError('Telemetry reader is busy; retry shortly')
+                        return storage.get_telemetry_explorer(
+                            limit=limit, cursor=cursor, collector=collector, username=username,
+                            status=status, search=search, start_time=start_time, end_time=end_time,
+                            agent_id=agent_id)
+                result = await anyio.to_thread.run_sync(read_page)
                 res = {
                     "ok": True,
                     "events": result.get("events", []),
@@ -73,10 +82,10 @@ async def get_telemetry_explorer(
                     "limit": limit,
                     "source": result.get("source", "clickhouse"),
                 }
-                api_cache.set(cache_key, res, ttl=30.0)
+                api_cache.set(cache_key, res, ttl=5.0)
                 return res
             except Exception as exc:
-                logger.warning("ClickHouse telemetry explorer query failed: %s; falling back to PostgreSQL page", exc)
+                raise AnalyticsUnavailableError("Telemetry query is temporarily unavailable") from exc
 
         # Fallback to get_telemetry_page if explorer query is not implemented or failed
         if callable(getattr(storage, "get_telemetry_page", None)):
@@ -88,7 +97,7 @@ async def get_telemetry_explorer(
                 ))
             except Exception as pg_exc:
                 logger.warning("PostgreSQL get_telemetry_page fallback also failed: %s", pg_exc)
-                return {"ok": True, "events": [], "logs": [], "limit": limit, "source": "fallback"}
+                raise AnalyticsUnavailableError("Telemetry query is temporarily unavailable") from pg_exc
             logs = page.get("logs", [])
             from server.storage.clickhouse_telemetry_queries import extract_summary_preview
             projected = []
@@ -119,7 +128,7 @@ async def get_telemetry_explorer(
                 "limit": limit,
                 "source": page.get("source", "postgres"),
             }
-            api_cache.set(cache_key, res, ttl=30.0)
+            api_cache.set(cache_key, res, ttl=5.0)
             return res
 
         return {"ok": True, "events": [], "logs": [], "limit": limit, "source": "none"}
@@ -186,9 +195,6 @@ async def get_telemetry_event_detail(
         return JSONResponse({"ok": False, "error": str(exc)}, status_code=422)
 
 
-_HISTOGRAM_FALLBACK_CACHE: dict[str, Any] = {}
-
-
 @router.get("/telemetry/histogram")
 @router.get("/v1/telemetry/histogram")
 async def get_telemetry_histogram(
@@ -200,51 +206,13 @@ async def get_telemetry_histogram(
     storage=Depends(get_storage),
     operator: OperatorPrincipal = Depends(require_operator("operator:read")),
 ):
-    """
-    Server-Side Telemetry Frequency Histogram Aggregation.
-    Runs fast columnar time-bucket group counts in ClickHouse (< 5ms over millions of rows).
-    Returns lightweight coordinates array for SVG/Canvas chart visualization.
-    """
-    if storage is None:
-        return {"ok": True, "time_range": time_range, "interval": interval or "1m", "total_events": 1511377, "histogram": []}
-
-    try:
-        from server.api.cache import api_cache
-        actor = getattr(operator, "actor", "anon")
-        cache_key = f"telemetry:histogram:{actor}:{time_range}:{interval or ''}:{collector or ''}:{status or ''}:{agent_id or ''}"
-        hit = api_cache.get(cache_key)
-        if hit is not None:
-            return hit
-
-        if callable(getattr(storage, "get_telemetry_histogram", None)):
-            try:
-                res = await anyio.to_thread.run_sync(lambda: storage.get_telemetry_histogram(
-                    time_range=time_range, interval=interval, collector=collector,
-                    status=status, agent_id=agent_id,
-                ))
-                hist_res = {
-                    "ok": True,
-                    "time_range": res.get("time_range", time_range),
-                    "interval": res.get("interval", interval or "1m"),
-                    "total_events": res.get("total_events", 1511377),
-                    "histogram": res.get("histogram", []),
-                }
-                api_cache.set(cache_key, hist_res, ttl=60.0)
-                _HISTOGRAM_FALLBACK_CACHE[cache_key] = hist_res
-                return hist_res
-            except Exception as exc:
-                logger.warning("ClickHouse histogram query failed: %s; serving graceful fallback", exc)
-                if cache_key in _HISTOGRAM_FALLBACK_CACHE:
-                    return _HISTOGRAM_FALLBACK_CACHE[cache_key]
-                return {
-                    "ok": True,
-                    "time_range": time_range,
-                    "interval": interval or "1m",
-                    "total_events": 1511377,
-                    "histogram": [],
-                }
-
-        return {"ok": True, "time_range": time_range, "interval": "1m", "total_events": 1511377, "histogram": []}
-    except Exception as exc:
-        logger.warning("Unhandled error in get_telemetry_histogram: %s; returning empty histogram", exc)
-        return {"ok": True, "time_range": time_range, "interval": "1m", "total_events": 1511377, "histogram": []}
+    """Timestamped histogram snapshot; one bounded refresh across API workers."""
+    from server.api.snapshots import snapshot
+    if storage is None or not callable(getattr(storage, 'get_telemetry_histogram', None)):
+        raise AnalyticsUnavailableError('Telemetry storage is unavailable')
+    filters = dict(time_range=time_range, interval=interval, collector=collector,
+                   status=status, agent_id=agent_id)
+    actor = getattr(operator, 'actor', 'anon')
+    return await anyio.to_thread.run_sync(lambda: snapshot(
+        storage, actor, 'histogram', lambda: storage.get_telemetry_histogram(**filters),
+        filters=filters, fresh_seconds=90, group='analytics'))

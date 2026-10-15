@@ -33,7 +33,7 @@ import type {
 } from '../types/telemetry';
 
 export const TIMEOUT_CONFIG = {
-  DEFAULT_READ_MS: 60000,    // 60s generous tolerance for slow mechanical HDD
+  DEFAULT_READ_MS: 15000,    // Bound interactive waits; views retain timestamped data
   PREVIEW_MS: 120000,        // 120s for schema and dataset previews
   EXPORT_MS: 180000,         // 180s for dataset downloads and streaming exports
   HEALTH_MS: 15000,          // 15s for liveness and health probes
@@ -41,24 +41,8 @@ export const TIMEOUT_CONFIG = {
 
 const DEFAULT_TIMEOUT_MS = TIMEOUT_CONFIG.DEFAULT_READ_MS;
 
-// In-memory & sessionStorage cache for instant presentation of already stored data
-const _apiResponseCache = new Map<string, any>();
-try {
-  if (typeof window !== 'undefined' && window.sessionStorage) {
-    const saved = window.sessionStorage.getItem('insiedr_cached_dashboard_summary');
-    if (saved) {
-      const parsed = JSON.parse(saved);
-      _apiResponseCache.set('/api/dashboard-summary?include_stats=false', parsed);
-      _apiResponseCache.set('/api/dashboard-summary', parsed);
-    }
-  }
-} catch {
-  // Session storage unavailable
-}
-
 export async function fetchApi<T>(url: string, options?: RequestInit & { timeoutMs?: number }): Promise<T> {
   const timeoutMs = options?.timeoutMs ?? DEFAULT_TIMEOUT_MS;
-  const isGet = !options?.method || options.method.toUpperCase() === 'GET';
 
   const controller = new AbortController();
   let timedOut = false;
@@ -99,22 +83,12 @@ export async function fetchApi<T>(url: string, options?: RequestInit & { timeout
       throw new Error(`API request failed [${res.status}]: ${errorDetail}`);
     }
     const data = (await res.json()) as T;
-    if (isGet) {
-      _apiResponseCache.set(url, data);
-      if (url.includes('dashboard-summary') && typeof window !== 'undefined' && window.sessionStorage) {
-        try { window.sessionStorage.setItem('insiedr_cached_dashboard_summary', JSON.stringify(data)); } catch {}
-      }
-    }
     return data;
   } catch (err: unknown) {
     if (callerSignal?.aborted) {
       throw err;
     }
     if (timedOut) {
-      if (isGet && _apiResponseCache.has(url)) {
-        console.warn(`Serving cached presentation for ${url} after timeout`);
-        return _apiResponseCache.get(url) as T;
-      }
       throw new Error(`API request timed out after ${timeoutMs}ms: ${url}`);
     }
     throw err;

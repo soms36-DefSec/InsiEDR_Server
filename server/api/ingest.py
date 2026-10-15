@@ -3,6 +3,8 @@ from __future__ import annotations
 import hashlib
 import json
 import inspect
+import os
+import threading
 from datetime import datetime, timezone, timedelta
 from typing import Any
 
@@ -177,15 +179,24 @@ def _check_duplicate_policy(storage, envelope: dict[str, Any], payload: dict[str
     return True
 
 
+_ingest_slots = threading.BoundedSemaphore(max(1, int(os.environ.get('INSIEDR_INGEST_CONCURRENCY', '2'))))
+
+
 async def process_encrypted_request(req) -> tuple[int, dict[str, Any]]:
+    # Admission precedes buffering/decrypting a request. There is no unbounded
+    # in-process queue; agents retain their durable spool until a successful ACK.
+    if not _ingest_slots.acquire(blocking=False):
+        raise StorageUnavailableError('Ingestion is busy; retain payload and retry')
+    try:
+        return await _process_encrypted_request(req)
+    finally:
+        _ingest_slots.release()
+
+
+async def _process_encrypted_request(req) -> tuple[int, dict[str, Any]]:
     # 0. Master Ingestion Switch Check (Early Exit)
     if not config.enable_log_ingestion:
-        return 200, {
-            "ok": True,
-            "status": "paused",
-            "message": "Telemetry log ingestion is paused on this server (ENABLE_LOG_INGESTION=False).",
-            "ingested": 0,
-        }
+        raise StorageUnavailableError('Telemetry ingestion is paused; retain payload and retry')
 
     # 1. Transport Security (HTTPS) Enforcement & Request Admission
     content_len = req.headers.get("content-length")
@@ -313,14 +324,8 @@ async def process_encrypted_request(req) -> tuple[int, dict[str, Any]]:
             if _check_duplicate_policy(storage, envelope, payload):
                 return False
             storage.store_raw_payload(envelope, payload)
-            try:
-                from server.api.cache import api_cache
-                api_cache.clear_pattern("telemetry:*")
-                api_cache.clear_pattern("logs:*")
-                api_cache.clear_pattern("dashboard_summary:*")
-                api_cache.clear_pattern("fleet_stats:*")
-            except Exception:
-                pass
+            # Read caches expire on short TTLs. Scanning/deleting Redis keys for
+            # every envelope destroys caching and adds synchronous disk work.
             return True
 
         persisted = await anyio.to_thread.run_sync(_persist)
@@ -340,6 +345,14 @@ async def process_encrypted_request(req) -> tuple[int, dict[str, Any]]:
             })
         except Exception:
             pass
+
+        # Evaluate heuristics and risk scoring asynchronously
+        try:
+            from server.risk.pipeline import process_telemetry_risk
+            await anyio.to_thread.run_sync(process_telemetry_risk, storage, payload)
+        except Exception as risk_err:
+            logging.getLogger("insiedr.api.ingest").warning("Risk evaluation non-fatal notice: %s", risk_err)
+
 
 
     except Exception as exc:

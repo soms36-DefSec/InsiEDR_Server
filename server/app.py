@@ -49,6 +49,7 @@ load_env()
 
 from server.config import config
 from server.api.agents import router as agents_bp
+from server.api.analysis import router as analysis_bp
 from server.api.health import router as health_bp
 from server.api.logs import router as logs_bp
 from server.api.stats import router as stats_bp
@@ -257,6 +258,7 @@ def create_app(*, storage=None, apply_migrations: bool = True) -> FastAPI:
 
     # Register API routers (REST, SSE, Export, Docs, Dashboard)
     app.include_router(agents_bp)
+    app.include_router(analysis_bp)
     app.include_router(logs_bp)
     app.include_router(health_bp)
     app.include_router(stats_bp)

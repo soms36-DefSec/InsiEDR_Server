@@ -181,8 +181,8 @@ class Redis7CacheProvider:
         redis_url: str,
         namespace: str = "insiedr:cache:",
         default_ttl: float = 5.0,
-        socket_timeout: float = 2.0,
-        socket_connect_timeout: float = 2.0,
+        socket_timeout: float = 0.25,
+        socket_connect_timeout: float = 0.25,
     ) -> None:
         self.redis_url = redis_url
         self.namespace = namespace
@@ -202,7 +202,7 @@ class Redis7CacheProvider:
                 max_connections=32,
                 socket_timeout=self.socket_timeout,
                 socket_connect_timeout=self.socket_connect_timeout,
-                retry_on_timeout=True,
+                retry_on_timeout=False,
                 decode_responses=False,
             )
             self._client = redis.Redis(connection_pool=pool)
@@ -211,7 +211,7 @@ class Redis7CacheProvider:
             logger.info("Connected to Redis 7 cache at %s", self.redis_url.split("@")[-1])
         except Exception as exc:
             self._is_connected = False
-            self._client = None
+            # Retain the client/pool so a temporary startup outage can recover.
             logger.warning("Redis 7 cache unavailable (%s). Operating in local fallback mode.", exc)
 
     def _prefixed_key(self, key: str) -> str:
@@ -276,7 +276,8 @@ class Redis7CacheProvider:
         if not self._client:
             return False
         try:
-            return bool(self._client.ping())
+            self._is_connected = bool(self._client.ping())
+            return self._is_connected
         except Exception:
             return False
 

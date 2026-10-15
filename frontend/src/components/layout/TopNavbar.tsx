@@ -1,11 +1,35 @@
+/**
+ * InsiEDR Top Navigation Bar
+ * ==========================
+ *
+ * Professional, human-crafted command header providing:
+ * - Brand identity with subtle security monogram
+ * - Contextual security plugin tabs with live severity badges
+ * - Fleet endpoint inventory overview
+ * - Live real-time connection status
+ * - Consolidated operations & forensic export menu
+ */
+
 import React, { useState } from 'react';
 import type { EDRPlugin, PluginContextData } from '../../plugins/registry';
 import { FleetStatusCards } from './FleetStatusCards';
 import { Button } from '../ui/Button';
-import { RefreshCw, Download, ChevronDown, FileCode, Sparkles, Database, Layers } from 'lucide-react';
-import { triggerServerExport } from '../../services/api';
+import {
+  RefreshCw,
+  Download,
+  ChevronDown,
+  FileCode,
+  Database,
+  Layers,
+  Shield,
+  ShieldAlert,
+  FileSpreadsheet,
+} from 'lucide-react';
+import { triggerServerExport, exportFleetRiskCSV } from '../../services/api';
 import { ExportTrainingDatasetModal } from '../telemetry/ExportTrainingDatasetModal';
 import { CollectorDatasetExportModal } from '../telemetry/CollectorDatasetExportModal';
+import type { EndpointRow, RiskEvent } from '../../types/telemetry';
+import { getRiskLevel } from '../../utils/formatters';
 
 export interface TopNavbarProps {
   plugins: EDRPlugin[];
@@ -35,6 +59,7 @@ export const TopNavbar: React.FC<TopNavbarProps> = ({
   const [showCollectorModal, setShowCollectorModal] = useState(false);
 
   const summary = context.summary;
+
   const handleRefresh = async () => {
     setIsRefreshing(true);
     try {
@@ -44,26 +69,64 @@ export const TopNavbar: React.FC<TopNavbarProps> = ({
     }
   };
 
+  const handleExportFleetRisk = () => {
+    if (!summary?.agents) return;
+    const now = Date.now();
+    const latestRiskMap: Record<string, RiskEvent> = {};
+    (summary.risk_events || []).forEach((ev) => {
+      if (ev.username && !latestRiskMap[ev.username]) latestRiskMap[ev.username] = ev;
+    });
+
+    const rows: EndpointRow[] = summary.agents.map((agent) => {
+      const user = agent.username_last_seen || '—';
+      const hostname = agent.hostname || '—';
+      const agentId = agent.agent_id || `${hostname}_${user}`;
+      const risk = latestRiskMap[user] || latestRiskMap[hostname];
+      const score = risk ? parseFloat(String(risk.risk_score || 0)) : 0;
+      const isOnline =
+        agent.status === 'active' ||
+        (agent.last_seen_at && now - new Date(agent.last_seen_at).getTime() < 300000);
+
+      return {
+        agentId,
+        hostname,
+        user,
+        score,
+        level: getRiskLevel(score),
+        isDecayed: false,
+        scenarios: [],
+        lastSeen: agent.last_seen_at,
+        isOnline: Boolean(isOnline),
+      };
+    });
+
+    exportFleetRiskCSV(rows);
+    setShowExportMenu(false);
+  };
+
   return (
-    <nav className="bg-white text-slate-800 border-b border-slate-200 sticky top-0 z-40 select-none shadow-[0_1px_2px_rgba(0,0,0,0.03)]">
-      <div className="max-w-[1700px] mx-auto px-6 h-14 flex items-center justify-between gap-4">
-        {/* Brand & Logo */}
+    <nav className="bg-white text-slate-800 border-b border-slate-200/90 sticky top-0 z-40 select-none shadow-[0_1px_2px_rgba(0,0,0,0.03)]">
+      <div className="max-w-[1700px] mx-auto px-4 sm:px-6 lg:px-8 h-14 flex items-center justify-between gap-4">
+        {/* Brand & Identity */}
         <div className="flex items-center gap-3 shrink-0">
-          <div className="w-7 h-7 rounded-md bg-blue-600 flex items-center justify-center text-white font-bold text-xs tracking-tight shadow-xs">
-            IE
+          <div className="w-7 h-7 rounded-md bg-slate-900 flex items-center justify-center text-white font-bold text-xs tracking-tight shadow-xs border border-slate-800">
+            <Shield className="w-4 h-4 text-slate-100" />
           </div>
           <div>
             <div className="flex items-center gap-1.5">
-              <span className="text-sm font-semibold text-slate-900 tracking-tight">InsiEDR</span>
+              <span className="text-sm font-bold text-slate-900 tracking-tight">InsiEDR</span>
+              <span className="text-[10px] font-semibold text-slate-500 bg-slate-100 px-1.5 py-0.2 rounded border border-slate-200">
+                v2.1
+              </span>
             </div>
-            <div className="text-[11px] text-slate-500 font-normal leading-none mt-0.5">
-              Telemetry & Dataset Collection
+            <div className="text-[10px] text-slate-500 font-normal leading-none mt-0.5 hidden sm:block">
+              Threat Operations & Telemetry Console
             </div>
           </div>
         </div>
 
-        {/* Navigation Tabs in Top Bar */}
-        <div className="flex items-center gap-1.5 overflow-x-auto py-1">
+        {/* Operational Navigation Tabs */}
+        <div role="tablist" aria-label="Security Modules" className="flex items-center gap-1 overflow-x-auto py-1">
           {plugins.map((plugin) => {
             const isActive = plugin.id === activePluginId;
             const Icon = plugin.icon;
@@ -72,23 +135,25 @@ export const TopNavbar: React.FC<TopNavbarProps> = ({
             return (
               <button
                 key={plugin.id}
+                role="tab"
+                aria-selected={isActive}
                 onClick={() => onSelectPlugin(plugin.id)}
-                className={`flex items-center gap-2 px-3 py-1.5 rounded-md text-xs transition-colors cursor-pointer whitespace-nowrap ${
+                className={`flex items-center gap-2 px-3 py-1.5 rounded-md text-xs transition-all cursor-pointer whitespace-nowrap ${
                   isActive
-                    ? 'bg-blue-50 text-blue-700 font-medium border border-blue-200'
-                    : 'text-slate-600 hover:bg-slate-100 hover:text-slate-900 border border-transparent font-normal'
+                    ? 'bg-slate-900 text-white font-medium shadow-xs'
+                    : 'text-slate-600 hover:bg-slate-100 hover:text-slate-900 font-normal'
                 }`}
               >
                 <Icon
-                  className={`w-3.5 h-3.5 ${isActive ? 'text-blue-600' : 'text-slate-400'}`}
+                  className={`w-3.5 h-3.5 ${isActive ? 'text-white' : 'text-slate-400'}`}
                 />
                 <span>{plugin.name}</span>
                 {badgeVal !== null && badgeVal !== undefined && (
                   <span
-                    className={`text-[10px] px-1.5 py-0.2 rounded-full font-medium ${
-                      typeof badgeVal === 'number' && badgeVal > 0
-                        ? 'bg-red-50 text-red-700 border border-red-200'
-                        : 'bg-slate-100 text-slate-600'
+                    className={`text-[10px] px-1.5 py-0.2 rounded-full font-bold tabular-nums ${
+                      isActive
+                        ? 'bg-rose-500 text-white'
+                        : 'bg-rose-50 text-rose-700 border border-rose-200'
                     }`}
                   >
                     {badgeVal}
@@ -99,43 +164,39 @@ export const TopNavbar: React.FC<TopNavbarProps> = ({
           })}
         </div>
 
-        {/* Right Section: Fleet Status & Action Controls */}
-        <div className="flex items-center gap-3 shrink-0">
+        {/* Right Controls: Fleet Status & Export Menu */}
+        <div className="flex items-center gap-2.5 shrink-0">
           {/* Fleet Status Metrics: Total PCs, Online, Offline */}
-          <div className="hidden lg:flex items-center gap-2 text-xs">
+          <div className="hidden xl:flex items-center gap-2 text-xs">
             <FleetStatusCards summary={summary} compact stale={Boolean(context.isStale || (context.error && summary))} />
           </div>
 
-          {/* Real-time Stream Status */}
+          {/* Real-time Connection Status */}
           <div
-            className="flex items-center gap-2 px-2.5 py-1.5 rounded-md border border-slate-200 bg-slate-50 text-xs"
+            className="flex items-center gap-2 px-2.5 py-1.5 rounded-md border border-slate-200/90 bg-slate-50/80 text-xs"
             title={
               connectionMode === 'sse'
-                ? 'Server-Sent Events (SSE) active: Live cache invalidation and notification channel connected (does not reflect database query health)'
+                ? 'Server-Sent Events connected: Live telemetry invalidation and threat alerts active'
                 : connectionMode === 'polling'
-                ? 'Periodic refresh active'
-                : 'Automatic refresh paused'
+                ? 'Periodic polling active'
+                : 'Refresh paused'
             }
           >
             <span
               className={`w-2 h-2 rounded-full ${
-                !autoRefresh ? 'bg-slate-400' : connectionMode === 'sse'
-                  ? 'bg-emerald-600 animate-pulse-subtle'
-                  : connectionMode === 'polling'
-                  ? 'bg-amber-500'
-                  : 'bg-slate-400'
+                !autoRefresh
+                  ? 'bg-slate-400'
+                  : connectionMode === 'sse'
+                  ? 'bg-emerald-600'
+                  : 'bg-amber-500'
               }`}
             />
-            <span className="text-slate-600 text-[11px] font-normal hidden sm:inline">
-              {!autoRefresh ? 'Paused' : connectionMode === 'sse'
-                ? 'Event Stream Active'
-                : autoRefresh
-                ? 'Polling 3s'
-                : 'Paused'}
+            <span className="text-slate-600 text-[11px] font-normal hidden md:inline">
+              {!autoRefresh ? 'Paused' : connectionMode === 'sse' ? 'Live Stream' : 'Polling'}
             </span>
             <button
               onClick={onToggleAutoRefresh}
-              className="text-[11px] font-medium text-blue-600 hover:text-blue-800 cursor-pointer"
+              className="text-[11px] font-medium text-slate-700 hover:text-slate-900 cursor-pointer underline ml-0.5"
             >
               {autoRefresh ? 'Pause' : 'Resume'}
             </button>
@@ -145,8 +206,8 @@ export const TopNavbar: React.FC<TopNavbarProps> = ({
           <button
             onClick={handleRefresh}
             disabled={isRefreshing}
-            className="p-2 rounded-md bg-white hover:bg-slate-50 text-slate-600 hover:text-slate-900 border border-slate-200 shadow-2xs transition-colors cursor-pointer disabled:opacity-50"
-            title="Refresh telemetry"
+            className="p-1.5 rounded-md bg-white hover:bg-slate-50 text-slate-600 hover:text-slate-900 border border-slate-200 shadow-2xs transition-colors cursor-pointer disabled:opacity-50"
+            title="Refresh current state"
           >
             <RefreshCw className={`w-3.5 h-3.5 ${isRefreshing ? 'animate-spin' : ''}`} />
           </button>
@@ -154,14 +215,14 @@ export const TopNavbar: React.FC<TopNavbarProps> = ({
           {/* Export Dropdown */}
           <div className="relative">
             <Button
-              variant="primary"
+              variant="secondary"
               size="sm"
               onClick={() => setShowExportMenu((prev) => !prev)}
-              icon={<Download className="w-3.5 h-3.5" />}
-              className="flex items-center gap-1.5"
+              icon={<Download className="w-3.5 h-3.5 text-slate-500" />}
+              className="flex items-center gap-1.5 text-slate-800 font-medium"
             >
               <span>Export</span>
-              <ChevronDown className="w-3 h-3 opacity-80" />
+              <ChevronDown className="w-3 h-3 text-slate-400" />
             </Button>
 
             {showExportMenu && (
@@ -170,48 +231,69 @@ export const TopNavbar: React.FC<TopNavbarProps> = ({
                   className="fixed inset-0 z-40"
                   onClick={() => setShowExportMenu(false)}
                 />
-                <div className="absolute right-0 mt-2 w-64 bg-white border border-slate-200 rounded-lg shadow-lg z-50 py-1.5 text-xs">
-                  {/* ML Model Training Dataset Option */}
-                  <div className="px-3 py-1 text-[10px] font-semibold uppercase tracking-wider text-slate-500 flex items-center gap-1.5">
-                    <Sparkles className="w-3 h-3 text-blue-600" />
-                    Model Training Dataset
+                <div className="absolute right-0 mt-2 w-72 bg-white border border-slate-200 rounded-lg shadow-lg z-50 py-1.5 text-xs">
+                  {/* ML Model Training Dataset Section */}
+                  <div className="px-3 py-1 text-[10px] font-semibold uppercase tracking-wider text-slate-400">
+                    Model Training Datasets
                   </div>
                   <button
                     onClick={() => {
                       setShowTrainingModal(true);
                       setShowExportMenu(false);
                     }}
-                    className="w-full text-left px-3 py-2 text-slate-800 hover:bg-blue-50/70 flex items-center gap-2.5 transition-colors cursor-pointer border-b border-slate-100"
+                    className="w-full text-left px-3 py-2 text-slate-800 hover:bg-slate-50 flex items-center gap-2.5 transition-colors cursor-pointer border-b border-slate-100"
                   >
                     <Database className="w-4 h-4 text-blue-600 shrink-0" />
                     <div>
-                      <div className="font-semibold text-slate-900 text-xs">Export ML Dataset (Excel/CSV)</div>
-                      <div className="text-[10px] text-slate-500">User, Parameters & Raw Logs (N Days)</div>
+                      <div className="font-semibold text-slate-900 text-xs">ML Training Dataset (.xlsx / CSV)</div>
+                      <div className="text-[10px] text-slate-500">Multitab parameters, features & raw logs</div>
                     </div>
                   </button>
 
-                  {/* Collector-Specific Dataset Option (5+ Lakhs) */}
                   <button
                     onClick={() => {
                       setShowCollectorModal(true);
                       setShowExportMenu(false);
                     }}
-                    className="w-full text-left px-3 py-2 text-slate-800 hover:bg-indigo-50/70 flex items-center gap-2.5 transition-colors cursor-pointer border-b border-slate-100"
+                    className="w-full text-left px-3 py-2 text-slate-800 hover:bg-slate-50 flex items-center gap-2.5 transition-colors cursor-pointer border-b border-slate-100"
                   >
                     <Layers className="w-4 h-4 text-indigo-600 shrink-0" />
                     <div>
                       <div className="font-semibold text-slate-900 text-xs flex items-center gap-1.5">
                         Collector Dataset Export
-                        <span className="text-[9px] bg-indigo-100 text-indigo-700 font-bold px-1.5 py-0.2 rounded-full">
-                          5+ Lakhs
+                        <span className="text-[9px] bg-slate-100 text-slate-700 font-bold px-1.5 py-0.2 rounded-full border border-slate-200">
+                          500k+
                         </span>
                       </div>
-                      <div className="text-[10px] text-slate-500">Unrolled feature columns per collector (CSV)</div>
+                      <div className="text-[10px] text-slate-500">Unrolled feature columns per collector</div>
                     </div>
                   </button>
 
-                  <div className="my-1 border-t border-slate-100" />
-                  <div className="px-3 py-1 text-[10px] font-semibold uppercase tracking-wider text-slate-400">
+                  {/* Security Telemetry Section */}
+                  <div className="px-3 py-1 text-[10px] font-semibold uppercase tracking-wider text-slate-400 mt-1">
+                    Security Operations
+                  </div>
+                  <button
+                    onClick={() => {
+                      triggerServerExport('threats', 'csv');
+                      setShowExportMenu(false);
+                    }}
+                    className="w-full text-left px-3 py-1.5 text-slate-700 hover:bg-slate-50 hover:text-slate-900 flex items-center gap-2 transition-colors cursor-pointer"
+                  >
+                    <ShieldAlert className="w-3.5 h-3.5 text-rose-600 shrink-0" />
+                    <span>Export Threat Events (CSV)</span>
+                  </button>
+
+                  <button
+                    onClick={handleExportFleetRisk}
+                    className="w-full text-left px-3 py-1.5 text-slate-700 hover:bg-slate-50 hover:text-slate-900 flex items-center gap-2 transition-colors cursor-pointer border-b border-slate-100"
+                  >
+                    <FileSpreadsheet className="w-3.5 h-3.5 text-amber-600 shrink-0" />
+                    <span>Export Fleet Risk Matrix (CSV)</span>
+                  </button>
+
+                  {/* Raw Stream Section */}
+                  <div className="px-3 py-1 text-[10px] font-semibold uppercase tracking-wider text-slate-400 mt-1">
                     Raw Telemetry Streams
                   </div>
                   <button
@@ -221,7 +303,7 @@ export const TopNavbar: React.FC<TopNavbarProps> = ({
                     }}
                     className="w-full text-left px-3 py-1.5 text-slate-700 hover:bg-slate-50 hover:text-slate-900 flex items-center gap-2 transition-colors cursor-pointer"
                   >
-                    <Download className="w-3.5 h-3.5 text-emerald-600 shrink-0" />
+                    <Download className="w-3.5 h-3.5 text-slate-600 shrink-0" />
                     <span>Stream All Logs (CSV)</span>
                   </button>
                   <button
@@ -231,7 +313,7 @@ export const TopNavbar: React.FC<TopNavbarProps> = ({
                     }}
                     className="w-full text-left px-3 py-1.5 text-slate-700 hover:bg-slate-50 hover:text-slate-900 flex items-center gap-2 transition-colors cursor-pointer"
                   >
-                    <FileCode className="w-3.5 h-3.5 text-amber-600 shrink-0" />
+                    <FileCode className="w-3.5 h-3.5 text-slate-600 shrink-0" />
                     <span>Stream Logs (NDJSON)</span>
                   </button>
                 </div>
@@ -248,7 +330,7 @@ export const TopNavbar: React.FC<TopNavbarProps> = ({
         availableUsers={summary?.users || []}
       />
 
-      {/* Collector-Specific Dataset Export Modal (5+ Lakhs high throughput) */}
+      {/* Collector-Specific Dataset Export Modal */}
       <CollectorDatasetExportModal
         isOpen={showCollectorModal}
         onClose={() => setShowCollectorModal(false)}

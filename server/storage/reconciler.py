@@ -110,13 +110,9 @@ class ReplicationReconciler:
             return completed
         except Exception as exc:
             self.last_error = type(exc).__name__
-            poison_ids = [r['outbox_id'] for r in pending if r.get('attempts', 1) >= 5]
-            if poison_ids:
-                logger.error("Quarantining %d poison outbox record(s) exceeding max retries: %s", len(poison_ids), poison_ids)
-                try:
-                    self.outbox.quarantine(token, poison_ids, exc)
-                except Exception as q_err:
-                    logger.warning("Outbox quarantine failed: %s", q_err)
+            # Retry count cannot distinguish a poison record from an HDD/network
+            # outage. Keep every failed record pending for recovery; explicit
+            # operator quarantine remains available after inspecting the payload.
             attempts = max(r.get('attempts', 1) for r in pending)
             delay = min(300, 2 ** min(attempts, 8)) * random.uniform(0.8, 1.2)
             self.outbox.release(token, exc, delay)
@@ -130,12 +126,17 @@ class ReplicationReconciler:
         while not self._stop_event.is_set():
             requested = self._claim_size
             try:
-                count = self.reconcile_once()
+                from server.api.snapshots import workload_slot
+                with workload_slot('replication') as allowed:
+                    if not allowed:
+                        self._stop_event.wait(self.poll_interval)
+                        continue
+                    count = self.reconcile_once()
                 self._cycle_count += 1
                 if self._cycle_count % self.purge_every_n_cycles == 0:
                     self.outbox.purge(self.outbox_retention_hours)
-                if count < requested:
-                    self._stop_event.wait(self.poll_interval)
+                # Even catch-up yields disk time; no unbounded tight insert loop.
+                self._stop_event.wait(self.poll_interval if count < requested else 0.25)
             except Exception as exc:
                 self.last_error = type(exc).__name__
                 logger.exception('Replication cycle failed; uncompleted records remain recoverable')

@@ -145,6 +145,7 @@ export interface CollectorCounts {
  * Storage metrics reported by the backend database.
  */
 export interface StorageStats {
+  freshness?: DataFreshness;
   agents?: number;
   risk_events?: number;
   anomalies?: number;
@@ -188,6 +189,7 @@ export interface RiskCounts {
  * Comprehensive dashboard telemetry envelope returned by `GET /api/dashboard-summary`.
  */
 export interface DashboardSummary {
+  freshness?: DataFreshness;
   ok: boolean;
   pc_status: PCStatus;
   risk_counts: RiskCounts;
@@ -297,6 +299,7 @@ export interface TelemetryHistogramBucket {
 }
 
 export interface TelemetryHistogramResponse {
+  freshness?: DataFreshness;
   ok: boolean;
   time_range: string;
   interval: string;
@@ -352,3 +355,12 @@ export interface EndpointRow {
   isOnline: boolean;
 }
 
+
+/** Snapshot timestamps describe data generation, not the last HTTP response. */
+export interface DataFreshness {
+  generated_at: string | null;
+  stale: boolean;
+  age_seconds?: number;
+  fresh_for_seconds?: number;
+  source: string;
+}

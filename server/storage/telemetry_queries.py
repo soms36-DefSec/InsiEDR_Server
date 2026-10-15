@@ -477,7 +477,7 @@ def telemetry_histogram(storage, time_range='1h', interval=None, collector=None,
                 histogram.append({'timestamp': _format_sqlite_pg_iso(t_val, substr_len), 'count': c_num})
                 total_events += c_num
         except Exception as exc:
-            logger.warning("Telemetry histogram aggregation failed: %s", exc)
+            raise  # Preserve the last good snapshot instead of caching a false zero.
 
     return {
         'ok': True,

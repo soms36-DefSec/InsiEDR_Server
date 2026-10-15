@@ -109,6 +109,10 @@ test('dashboard: one SSE stream, coalesced updates, filters, stale responses, pa
   });
   try {
     await page.goto(base);
+    const tab = page.getByRole('tab', { name: /Telemetry Explorer/i });
+    if (await tab.count() > 0) {
+      await tab.click();
+    }
     await page.getByText('LIVE-0', { exact: true }).waitFor();
     assert.equal(requests.at(-1).get('include_total'), 'false');
     assert.equal(requests.at(-1).get('search_scope'), 'metadata');
@@ -146,11 +150,11 @@ test('dashboard: one SSE stream, coalesced updates, filters, stale responses, pa
     assert.equal(requests.at(-1).has('username'), false);
     fail = true;
     await page.evaluate(() => window.emitTelemetry());
-    await page.getByRole('alert').filter({ hasText: 'Database busy' }).waitFor();
+    await page.getByRole('status').filter({ hasText: 'Showing previously loaded logs' }).waitFor();
     await page.getByText('NEW', { exact: true }).waitFor();
     fail = false;
-    await page.getByRole('button', { name: 'Retry', exact: true }).click();
-    await page.getByRole('alert').waitFor({ state: 'hidden' });
+    await page.getByRole('button', { name: 'Retry', exact: true }).first().click();
+    await page.getByRole('status').filter({ hasText: 'Showing previously loaded logs' }).waitFor({ state: 'hidden' });
     await page.getByRole('button', { name: 'Pause', exact: true }).click();
     assert.equal(await page.evaluate(() => window.streams.filter(s => !s.closed).length), 0);
     const paused = requests.length;
@@ -287,6 +291,10 @@ test('collector dataset export modal: preview schema, clears stale data on filte
 
   try {
     await page.goto(base);
+    const tab = page.getByRole('tab', { name: /Telemetry Explorer/i });
+    if (await tab.count() > 0) {
+      await tab.click();
+    }
     // 1. Open the Collector Dataset modal
     const collectorBtn = page.getByRole('button', { name: 'Collector Dataset' });
     await collectorBtn.waitFor();

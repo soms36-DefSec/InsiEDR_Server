@@ -183,16 +183,11 @@ class HybridStorage(BaseStorage):
         return self.pg.get_telemetry_page(**filters)
 
     def get_telemetry_explorer(self, **filters) -> Dict[str, Any]:
-        if self.telemetry_read_backend == 'clickhouse' or (self.ch and self.ch.is_connected()):
-            if self.ch and self.ch.is_connected():
-                try:
-                    res = self.ch.get_telemetry_explorer(**filters)
-                    if res is not None and ('events' in res or 'logs' in res):
-                        return res
-                except ValueError:
-                    raise
-                except Exception as exc:
-                    logger.warning('ClickHouse telemetry explorer read failed: %s, falling back to PostgreSQL', exc)
+        if self.telemetry_read_backend == 'clickhouse':
+            from server.api.errors import AnalyticsUnavailableError
+            if not self.ch or not self.ch.is_connected():
+                raise AnalyticsUnavailableError('ClickHouse analytics is unavailable')
+            return self.ch.get_telemetry_explorer(**filters)
         return self.pg.get_telemetry_explorer(**filters)
 
     def get_telemetry_event_detail(self, event_id: str) -> Optional[Dict[str, Any]]:
@@ -209,14 +204,11 @@ class HybridStorage(BaseStorage):
         return self.pg.get_telemetry_event_detail(event_id)
 
     def get_telemetry_histogram(self, **filters) -> Dict[str, Any]:
-        if self.telemetry_read_backend == 'clickhouse' or (self.ch and self.ch.is_connected()):
-            if self.ch and self.ch.is_connected():
-                try:
-                    res = self.ch.get_telemetry_histogram(**filters)
-                    if res is not None and ('total_events' in res or 'histogram' in res or res.get('ok')):
-                        return res
-                except Exception as exc:
-                    logger.warning('ClickHouse telemetry histogram failed: %s', exc)
+        if self.telemetry_read_backend == 'clickhouse':
+            from server.api.errors import AnalyticsUnavailableError
+            if not self.ch or not self.ch.is_connected():
+                raise AnalyticsUnavailableError('ClickHouse analytics is unavailable')
+            return self.ch.get_telemetry_histogram(**filters)
         return self.pg.get_telemetry_histogram(**filters)
 
     def get_agent(self, agent_id: str) -> Dict[str, Any] | None:
@@ -411,6 +403,6 @@ class HybridStorage(BaseStorage):
                 if ch_stats.get("source_quality"):
                     pg_stats["source_quality"] = ch_stats["source_quality"]
             except Exception as exc:
-                logger.warning("ClickHouse telemetry stats overlay failed: %s", exc)
+                raise  # Snapshot layer retains the last good result with its original timestamp.
 
         return pg_stats

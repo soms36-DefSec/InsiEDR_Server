@@ -9,7 +9,7 @@ const metrics: { key: FleetFilter; label: string }[] = [
   { key: 'total', label: 'Total PCs' },
   { key: 'online', label: 'Online' },
   { key: 'offline', label: 'Offline' },
-  { key: 'logs', label: 'Total Logs (All-Time)' },
+  { key: 'logs', label: 'Retained Logs' },
 ];
 
 function fleetEndpoints(summary: DashboardSummary | null): FleetEndpoint[] {
@@ -87,7 +87,16 @@ export function FleetStatusCards({ summary, compact = false, stale = false }: {
     ? { total: parsedTotal, online: parsedOnline, offline: parsedOffline }
     : lastValidCounts;
 
-  const isStale = (Boolean(stale) && effectiveValid !== null) || (!hasValidCounts && lastValidCounts !== null);
+  const [clock, setClock] = useState(Date.now);
+  useEffect(() => {
+    const timer = window.setInterval(() => setClock(Date.now()), 5000);
+    return () => window.clearInterval(timer);
+  }, []);
+  const aged = (freshness: NonNullable<typeof summary>['freshness']) => Boolean(freshness && (
+    freshness.stale || !freshness.generated_at ||
+    clock - Date.parse(freshness.generated_at) >= (freshness.fresh_for_seconds ?? 120) * 1000
+  ));
+  const isStale = (Boolean(stale || aged(summary?.freshness)) && effectiveValid !== null) || (!hasValidCounts && lastValidCounts !== null);
 
   const totalEvents = summary?.stats?.collector_results ?? summary?.stats?.logs;
   const counts: Record<FleetFilter, number | string | undefined> = {
@@ -143,7 +152,7 @@ export function FleetStatusCards({ summary, compact = false, stale = false }: {
         {visibleMetrics.map(({ key, label }) => {
           const online = key === 'online';
           const isLogs = key === 'logs';
-          const cardStale = isStale && !isLogs;
+          const cardStale = (key === 'logs' ? aged(summary?.stats?.freshness) : isStale);
 
           return (
             <button
@@ -225,7 +234,7 @@ export function FleetStatusCards({ summary, compact = false, stale = false }: {
             <div>
               <h2 className="text-sm font-semibold">{selectedLabel} · {counts[open] ?? '—'}</h2>
               <p className="mt-1 text-xs text-slate-500">
-                {open === 'logs' ? 'All-time raw payload envelope volume across all collectors' : 'Online = seen within the last 5 minutes.'}
+                {open === 'logs' ? 'Retained collector observations (90-day window when summaries are enabled)' : 'Online = seen within the last 5 minutes.'}
               </p>
             </div>
             <button type="button" onClick={close} aria-label="Close details" className="p-1 rounded hover:bg-slate-100 focus-visible:outline-blue-500 cursor-pointer">

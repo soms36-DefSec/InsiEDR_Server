@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import logging
 from fastapi import APIRouter, Depends, Request
-from server.api.cache import api_cache
 from server.api.responses import api_error
 from server.api.deps import get_storage, require_operator, OperatorPrincipal
 from psycopg2.pool import PoolError
@@ -14,38 +13,19 @@ logger = logging.getLogger("insiedr.api.stats")
 router = APIRouter(prefix="/api", tags=["System & Observability"])
 bp = router  # Backward compatibility alias
 
-_LAST_KNOWN_FLEET_STATS = None
-_LAST_KNOWN_DASHBOARD_SUMMARY = None
+from server.api.snapshots import snapshot
 
 
-def _fleet_stats(storage):
-    global _LAST_KNOWN_FLEET_STATS
-    # Dashboard refreshes must not repeat full-table aggregate counts for every
-    # SSE notification. Scope cache entries to this storage instance with 30s TTL.
-    key = f"fleet_stats:{id(storage)}"
-    cached = api_cache.get(key)
-    if cached is not None:
-        return cached
-    try:
-        result = storage.get_stats()
-        if isinstance(result, dict) and result.get("ok", True):
-            _LAST_KNOWN_FLEET_STATS = dict(result)
-        api_cache.set(key, result, ttl=30.0)
-        return result
-    except (PoolError, QueryCanceled, LockNotAvailable):
-        raise
-    except Exception as exc:
-        logger.warning("fleet stats calculation failed: %s", exc)
-        if _LAST_KNOWN_FLEET_STATS:
-            return dict(_LAST_KNOWN_FLEET_STATS)
-        return {"ok": False, "error": str(exc)}
+def _fleet_stats(storage, actor="anon"):
+    return snapshot(storage, actor, 'fleet-stats', storage.get_stats,
+                    fresh_seconds=90, group='analytics')
 
 
 @router.get("/stats")
 @router.get("/v1/stats")
 def get_stats(request: Request, storage=Depends(get_storage),
               operator: OperatorPrincipal = Depends(require_operator("operator:read"))):
-    """Returns aggregated fleet overview stats, protected by 30s in-memory TTL caching."""
+    """Returns aggregated fleet overview stats, served from coordinated 90-second snapshots."""
     if storage is None:
         return api_error(
             code="STORAGE_UNAVAILABLE",
@@ -54,7 +34,7 @@ def get_stats(request: Request, storage=Depends(get_storage),
             error="storage is not configured",
         )
 
-    return _fleet_stats(storage)
+    return _fleet_stats(storage, getattr(operator, "actor", "anon"))
 
 
 @router.get("/dashboard-summary")
@@ -65,9 +45,8 @@ def dashboard_summary(include_stats: bool = True, storage=Depends(get_storage),
 
     The separate agents array remains a bounded list of agent registrations;
     fleet card drill-downs use the same unique-host snapshot as their counts.
-    Protected by 30s caching so stored data is served instantly.
+    Fleet snapshots refresh independently of historical analytics.
     """
-    global _LAST_KNOWN_DASHBOARD_SUMMARY
 
     if storage is None:
         return api_error(
@@ -77,13 +56,9 @@ def dashboard_summary(include_stats: bool = True, storage=Depends(get_storage),
             error="storage is not configured",
         )
 
-    try:
-        actor = getattr(operator, "actor", "anon")
-        cache_key = f"dashboard_summary:{actor}:{id(storage)}:{include_stats}"
-        cached = api_cache.get(cache_key)
-        if cached is not None:
-            return cached
+    actor = getattr(operator, "actor", "anon")
 
+    def load_summary():
         pc_failed = False
         try:
             threshold = getattr(config, "agent_online_threshold_seconds", 300)
@@ -115,48 +90,92 @@ def dashboard_summary(include_stats: bool = True, storage=Depends(get_storage),
             agents = []
             agents_failed = True
 
-        stats_failed = False
+        risk_events = []
         try:
-            stats = _fleet_stats(storage) if include_stats and hasattr(storage, "get_stats") else {}
-            if not isinstance(stats, dict):
-                stats = {}
+            if hasattr(storage, "list_risk_events"):
+                res = storage.list_risk_events(limit=50, offset=0)
+                if isinstance(res, (list, tuple)):
+                    risk_events = res
+                else:
+                    risk_events = []
         except (PoolError, QueryCanceled, LockNotAvailable):
             raise
-        except Exception as stats_err:
-            logger.warning("Non-fatal: fleet stats calculation error: %s", stats_err)
-            stats = {"ok": False, "error": str(stats_err)}
-            stats_failed = True
+        except Exception as risk_err:
+            logger.warning("Non-fatal: list_risk_events error: %s", risk_err)
+            risk_events = []
 
-        if pc_failed and agents_failed and stats_failed:
-            return api_error(
-                code="STORAGE_UNAVAILABLE",
-                message="Storage backend is unavailable",
-                status_code=503,
-                error="All fleet data sources failed to respond",
-            )
+        critical_count = 0
+        high_count = 0
+        medium_count = 0
+        low_count = 0
+
+        user_latest_risk: dict[str, dict] = {}
+        for event in risk_events:
+            score = float(event.get("risk_score") or 0.0)
+            if score >= 85.0:
+                level = "CRITICAL"
+            elif score >= 60.0:
+                level = "HIGH"
+            elif score >= 35.0:
+                level = "MEDIUM"
+            else:
+                level = "LOW"
+            event["risk_level"] = level
+            event["_computed_level"] = level
+
+            user = event.get("username") or "unknown"
+            if user not in user_latest_risk:
+                user_latest_risk[user] = event
+
+        unique_endpoints = set()
+        for a in agents:
+            key = a.get("username_last_seen") or a.get("hostname")
+            if key:
+                unique_endpoints.add(key)
+
+        for ep in unique_endpoints:
+            ev = user_latest_risk.get(ep)
+            if ev:
+                lvl = (ev.get("_computed_level") or ev.get("risk_level") or "LOW").upper()
+                if lvl == "CRITICAL":
+                    critical_count += 1
+                elif lvl == "HIGH":
+                    high_count += 1
+                elif lvl == "MEDIUM":
+                    medium_count += 1
+                else:
+                    low_count += 1
+            else:
+                low_count += 1
+
+        if not unique_endpoints:
+            critical_count = sum(1 for e in user_latest_risk.values() if e.get("_computed_level") == "CRITICAL")
+            high_count = sum(1 for e in user_latest_risk.values() if e.get("_computed_level") == "HIGH")
+            medium_count = sum(1 for e in user_latest_risk.values() if e.get("_computed_level") == "MEDIUM")
+            low_count = sum(1 for e in user_latest_risk.values() if e.get("_computed_level") == "LOW")
 
         res = {
             "ok": True,
             "pc_status": pc_status,
             "agents": agents,
-            "stats": stats,
-            "risk_counts": {"critical": 0, "high": 0, "medium": 0, "low": 0},
-            "risk_events": [],
+            "stats": {},
+            "agents_available": not agents_failed,
+            "risk_counts": {"critical": critical_count, "high": high_count, "medium": medium_count, "low": low_count},
+            "risk_events": risk_events,
             "anomalies": [],
         }
 
-        if not pc_failed:
-            _LAST_KNOWN_DASHBOARD_SUMMARY = res
-            try:
-                api_cache.set(cache_key, res, ttl=30.0)
-            except Exception as cache_err:
-                logger.debug("Non-fatal: dashboard_summary cache set failed: %s", cache_err)
-
+        if pc_failed:
+            from server.api.errors import AnalyticsUnavailableError
+            raise AnalyticsUnavailableError("Fleet inventory is temporarily unavailable")
         from fastapi.encoders import jsonable_encoder
         return jsonable_encoder(res)
-    except (PoolError, QueryCanceled, LockNotAvailable):
-        raise  # Central handler returns a retryable 503, not a generic 500.
-    except Exception:
-        raise  # Central handler logs details and returns a non-sensitive error.
 
-
+    result = snapshot(storage, actor, 'dashboard-summary', load_summary,
+                      fresh_seconds=15, group='fleet')
+    if include_stats:
+        try:
+            result['stats'] = _fleet_stats(storage, actor)
+        except Exception:
+            result['stats'] = {'ok': False, 'freshness': {'stale': True, 'generated_at': None}}
+    return result

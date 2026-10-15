@@ -8,7 +8,7 @@ import { ErrorBoundary } from '../ui/ErrorBoundary';
 
 export const AppLayout: React.FC = () => {
   const [plugins, setPlugins] = useState<EDRPlugin[]>(() => pluginRegistry.getAll());
-  const [activePluginId, setActivePluginId] = useState('telemetry-explorer');
+  const [activePluginId, setActivePluginId] = useState('soc-matrix');
 
   const {
     summary,
@@ -50,7 +50,7 @@ export const AppLayout: React.FC = () => {
   const ActiveComponent = activePlugin?.component;
 
   return (
-    <div className="min-h-screen bg-[#f8fafc] text-slate-900 flex flex-col">
+    <div className="min-h-screen bg-[#f8fafc] text-slate-900 flex flex-col font-sans selection:bg-slate-900 selection:text-white">
       {/* Top Navigation Bar */}
       <TopNavbar
         plugins={plugins}
@@ -64,16 +64,21 @@ export const AppLayout: React.FC = () => {
       />
 
       {/* Main Content Canvas */}
-      <main className="flex-1 overflow-y-auto px-6 sm:px-8 py-6">
-        <div className="max-w-[1700px] mx-auto space-y-6">
+      <main className="flex-1 overflow-y-auto px-4 sm:px-6 lg:px-8 py-5">
+        <div className="max-w-[1700px] mx-auto space-y-5">
           {/* View Title & Description + Fleet PC Status Cards */}
-          <div className="flex flex-col xl:flex-row xl:items-center justify-between gap-4 pb-1">
+          <div className="flex flex-col xl:flex-row xl:items-center justify-between gap-3 pb-0.5 border-b border-slate-200/60 pb-4">
             <div>
-              <h1 className="text-[28px] font-semibold text-slate-900 tracking-tight leading-tight">
-                {activePlugin?.name || 'Telemetry & Dataset Explorer'}
-              </h1>
-              <p className="text-sm text-slate-500 mt-1 font-normal">
-                {activePlugin?.description || 'Endpoint telemetry ingestion and ML model training dataset export'}
+              <div className="flex items-center gap-2.5">
+                <h1 className="text-xl sm:text-2xl font-semibold text-slate-900 tracking-tight">
+                  {activePlugin?.name || 'SOC Matrix'}
+                </h1>
+                <span className="px-2 py-0.5 text-[11px] font-medium rounded-full bg-slate-100 text-slate-600 border border-slate-200/80">
+                  {activePluginId === 'soc-matrix' ? 'Operational View' : 'Forensics View'}
+                </span>
+              </div>
+              <p className="text-xs sm:text-sm text-slate-500 mt-1 font-normal max-w-2xl">
+                {activePlugin?.description || 'Fleet risk posture, real-time threat feed, and heuristic correlation engine'}
               </p>
             </div>
 

@@ -23,8 +23,8 @@ export const VirtualizedLogTable: React.FC<VirtualizedLogTableProps> = React.mem
   onSelectLog,
   isLoading = false,
   resetKey = '',
-  error: _error = null,
-  onRetry: _onRetry,
+  error = null,
+  onRetry,
 }) => {
   const [viewport, setViewport] = useState<HTMLDivElement | null>(null);
   const [scrollTop, setScrollTop] = useState(0);
@@ -77,22 +77,16 @@ export const VirtualizedLogTable: React.FC<VirtualizedLogTableProps> = React.mem
 
   if (logs.length === 0) {
     return (
-      <div className="h-64 flex flex-col items-center justify-center text-slate-400 text-xs bg-slate-50/50 rounded-lg border border-dashed border-slate-200">
-        No telemetry records found matching filter criteria.
-      </div>
-    );
-  }
-
-  if (logs.length === 0) {
-    return (
-      <div className="h-64 flex flex-col items-center justify-center text-slate-400 text-xs bg-slate-50/50 rounded-lg border border-dashed border-slate-200">
-        No telemetry records found matching filter criteria.
+      <div role={error ? 'status' : undefined} className="h-64 flex flex-col items-center justify-center text-slate-500 text-xs bg-slate-50/50 rounded-lg border border-dashed border-slate-200">
+        {error ? 'Telemetry is temporarily unavailable. Retrying automatically.' : 'No telemetry records found matching filter criteria.'}
+        {error && onRetry && <button onClick={onRetry} className="mt-2 underline">Retry</button>}
       </div>
     );
   }
 
   return (
     <div role="grid" aria-label="Telemetry logs" aria-rowcount={logs.length + 1} className="border border-slate-200 rounded-lg overflow-x-auto bg-white shadow-[0_1px_3px_rgba(0,0,0,0.06)]">
+      {error && <div role="status" className="p-3 text-xs text-amber-800 bg-amber-50">Showing previously loaded logs. Refresh is delayed. {onRetry && <button onClick={onRetry} className="underline">Retry</button>}</div>}
       {/* Fixed Header */}
       <div role="row" className="min-w-[840px] bg-slate-50/80 border-b border-slate-200 grid grid-cols-12 px-6 py-3 text-xs font-medium text-slate-500 select-none">
         <div className="col-span-2">Timestamp</div>

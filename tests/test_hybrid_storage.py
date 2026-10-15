@@ -193,7 +193,7 @@ def test_hybrid_storage_telemetry_explorer_routing():
     ch.is_connected.return_value = True
 
     # 1. When ClickHouse connected, routes explorer to ClickHouse
-    hybrid = HybridStorage(postgres_storage=pg, clickhouse_storage=ch)
+    hybrid = HybridStorage(postgres_storage=pg, clickhouse_storage=ch, telemetry_read_backend='clickhouse')
     res = hybrid.get_telemetry_explorer(limit=50)
     assert res == {"events": [{"event_id": "ch-1"}]}
     ch.get_telemetry_explorer.assert_called_once_with(limit=50)
@@ -203,9 +203,12 @@ def test_hybrid_storage_telemetry_explorer_routing():
     ch.reset_mock()
     pg.reset_mock()
     ch.is_connected.return_value = False
-    res = hybrid.get_telemetry_explorer(limit=50)
-    assert res == {"events": [{"event_id": "pg-1"}]}
-    pg.get_telemetry_explorer.assert_called_once_with(limit=50)
+    with pytest.raises(PoolError):
+        hybrid.get_telemetry_explorer(limit=50)
+    pg.get_telemetry_explorer.assert_not_called()
+    # PostgreSQL is used only when explicitly selected.
+    hybrid.telemetry_read_backend = 'postgres'
+    assert hybrid.get_telemetry_explorer(limit=50) == {"events": [{"event_id": "pg-1"}]}
     ch.get_telemetry_explorer.assert_not_called()
 
 
@@ -219,7 +222,7 @@ def test_hybrid_storage_telemetry_detail_and_histogram_routing():
     ch.is_connected.return_value = True
 
     # Connected: Routes to ClickHouse for UUID/string IDs
-    hybrid = HybridStorage(postgres_storage=pg, clickhouse_storage=ch)
+    hybrid = HybridStorage(postgres_storage=pg, clickhouse_storage=ch, telemetry_read_backend='clickhouse')
     assert hybrid.get_telemetry_event_detail("evt-1") == {"event_id": "ch-detail"}
     assert hybrid.get_telemetry_histogram(time_range="1h") == {"total_events": 100}
     ch.get_telemetry_event_detail.assert_called_once_with("evt-1")
@@ -239,9 +242,10 @@ def test_hybrid_storage_telemetry_detail_and_histogram_routing():
     pg.reset_mock()
     ch.is_connected.return_value = False
     assert hybrid.get_telemetry_event_detail("evt-1") == {"event_id": "pg-detail"}
-    assert hybrid.get_telemetry_histogram(time_range="1h") == {"total_events": 10}
+    with pytest.raises(PoolError):
+        hybrid.get_telemetry_histogram(time_range="1h")
     pg.get_telemetry_event_detail.assert_called_once_with("evt-1")
-    pg.get_telemetry_histogram.assert_called_once_with(time_range="1h")
+    pg.get_telemetry_histogram.assert_not_called()
     ch.get_telemetry_event_detail.assert_not_called()
     ch.get_telemetry_histogram.assert_not_called()
 
@@ -257,7 +261,7 @@ def test_hybrid_storage_preserves_valid_empty_results_when_connected():
     ch.get_telemetry_histogram.return_value = {"total_events": 0, "histogram": [], "ok": True}
     ch.is_connected.return_value = True
 
-    hybrid = HybridStorage(postgres_storage=pg, clickhouse_storage=ch)
+    hybrid = HybridStorage(postgres_storage=pg, clickhouse_storage=ch, telemetry_read_backend='clickhouse')
     exp = hybrid.get_telemetry_explorer(limit=50)
     assert exp == {"events": [], "logs": [], "has_more": False}
     pg.get_telemetry_explorer.assert_not_called()

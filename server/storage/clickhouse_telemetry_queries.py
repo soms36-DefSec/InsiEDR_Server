@@ -622,6 +622,35 @@ def telemetry_histogram(storage, time_range='1h', interval=None, collector=None,
         return t_str
 
     try:
+        from server.storage.dashboard_rollups import enabled as rollups_enabled, names as rollup_names
+        if rollups_enabled():
+            source = rollup_names(getattr(storage, 'collector_schema_version', 1))[1]
+            r_where = where.replace('timestamp', 'bucket').replace('collector_collected_at', 'bucket').replace('lower(collector_name)', 'collector')
+            r_where = r_where.replace('now() -', 'toStartOfMinute(now()) -')
+            r_bucket_fn = bucket_fn.replace('timestamp', 'bucket').replace('collector_collected_at', 'bucket')
+            sql = (
+                f"SELECT {r_bucket_fn} AS t, uniqExactMerge(event_ids) AS c "
+                f"FROM {source}{r_where} "
+                f"GROUP BY t ORDER BY t SETTINGS max_execution_time = 8, timeout_before_checking_execution_speed = 0"
+            )
+            res = storage._query(sql, params)
+            if res and hasattr(res, 'result_rows'):
+                for t_val, c_val in res.result_rows:
+                    histogram.append({'timestamp': _format_iso(t_val), 'count': int(c_val)})
+                    total_events += int(c_val)
+            return {
+                'ok': True,
+                'time_range': time_range,
+                'interval': actual_interval,
+                'total_events': total_events,
+                'histogram': histogram,
+            }
+    except TimeoutError:
+        raise
+    except Exception as rexc:
+        logger.debug("Rollups query skipped or failed: %s", rexc)
+
+    try:
         sql = (
             f"SELECT {bucket_fn} AS t, count() AS c "
             f"FROM telemetry_events{where} "
@@ -632,6 +661,8 @@ def telemetry_histogram(storage, time_range='1h', interval=None, collector=None,
             for t_val, c_val in res.result_rows:
                 histogram.append({'timestamp': _format_iso(t_val), 'count': int(c_val)})
                 total_events += int(c_val)
+    except TimeoutError:
+        raise
     except Exception as exc:
         logger.debug("Primary ClickHouse histogram query on telemetry_events note: %s", exc)
         # Fallback to collector_results if telemetry_events table doesn't exist
@@ -653,20 +684,15 @@ def telemetry_histogram(storage, time_range='1h', interval=None, collector=None,
                 for t_val, c_val in res.result_rows:
                     histogram.append({'timestamp': _format_iso(t_val), 'count': int(c_val)})
                     total_events += int(c_val)
+        except TimeoutError:
+            raise
         except Exception:
             pass
-
-    if total_events == 0 and hasattr(storage, 'get_stats'):
-        try:
-            st = storage.get_stats()
-            total_events = int(st.get("collector_results") or st.get("logs") or 1511377)
-        except Exception:
-            total_events = 1511377
 
     return {
         'ok': True,
         'time_range': time_range,
         'interval': actual_interval,
-        'total_events': total_events or 1511377,
+        'total_events': total_events,
         'histogram': histogram,
     }

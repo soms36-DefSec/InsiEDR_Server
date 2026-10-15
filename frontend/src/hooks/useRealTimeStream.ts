@@ -6,17 +6,7 @@ import { notifyTelemetry } from '../services/telemetryStream';
 // One multiplexed SSE connection; views subscribe without re-rendering the shell
 // for every telemetry event. REST is the authoritative recovery path.
 export function useRealTimeStream() {
-  const [summary, setSummary] = useState<DashboardSummary | null>(() => {
-    try {
-      if (typeof window !== 'undefined' && window.sessionStorage) {
-        const cached = window.sessionStorage.getItem('insiedr_cached_dashboard_summary');
-        if (cached) return JSON.parse(cached);
-      }
-    } catch {
-      // Ignore
-    }
-    return null;
-  });
+  const [summary, setSummary] = useState<DashboardSummary | null>(null);
   const [health, setHealth] = useState<SystemHealth | null>(null);
   const [logs, setLogs] = useState<TelemetryLog[]>([]);
   const [liveThreats, setLiveThreats] = useState<RiskEvent[]>([]);
@@ -42,8 +32,8 @@ export function useRealTimeStream() {
             if (abort.signal.aborted || seq < latestAppliedSeq.current) return;
             latestAppliedSeq.current = seq;
             setSummary(previous => ({ ...value, stats: previous?.stats ?? value.stats }));
-            setLastUpdated(new Date());
-            setError(null);
+            setLastUpdated(value.freshness?.generated_at ? new Date(value.freshness.generated_at) : new Date());
+            setError(value.freshness?.stale ? 'Showing the last successful fleet snapshot; refreshing.' : null);
             setIsLoading(false);
           }).catch((reason: unknown) => {
             if (!abort.signal.aborted) {
@@ -118,7 +108,7 @@ export function useRealTimeStream() {
         notifyTelemetry(); // Reconnect also recovers events missed while offline.
       };
       source.onerror = () => setConnectionMode('polling');
-      source.addEventListener('telemetry_changed', () => { notifyTelemetry(); scheduleSummary(); });
+      source.addEventListener('telemetry_changed', () => { notifyTelemetry(); });
       source.addEventListener('agent_status', scheduleSummary);
       source.addEventListener('resync', () => { notifyTelemetry(); scheduleSummary(); });
       source.addEventListener('threat_alert', (event) => {
@@ -147,8 +137,8 @@ export function useRealTimeStream() {
 
   useEffect(() => {
     if (!autoRefresh) return;
-    // Calm periodic polling: 45s when in SSE mode, 25s when fallback polling
-    const timer = window.setInterval(() => { void refreshAll(); }, connectionMode === 'sse' ? 30000 : 15000);
+    // Poll at a bounded rate in both modes; SSE is a notification, not freshness.
+    const timer = window.setInterval(() => { void refreshAll(); }, 15000);
     return () => window.clearInterval(timer);
   }, [autoRefresh, connectionMode, refreshAll]);
 

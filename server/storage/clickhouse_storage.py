@@ -223,17 +223,24 @@ class ClickHouseStorage:
         """Execute a parameterized query with server-side memory & execution time quotas."""
         settings = {
             "max_execution_time": self.query_timeout,
+            "timeout_before_checking_execution_speed": 0,
             "max_memory_usage": self.max_memory_usage,
-            "max_bytes_before_external_group_by": 134217728,
-            "max_bytes_before_external_sort": 134217728,
+            "max_bytes_before_external_group_by": 0,
+            "max_bytes_before_external_sort": 0,
         }
         if self.collector_schema_version == 2:
             # Route older count/export APIs through the same deduplicated source.
             # This only rewrites a fixed internal table token, never parameters.
             query = re.sub(r'\bFROM collector_results\b', 'FROM collector_events_v2 FINAL', query)
         try:
-            with self._client_lock:
+            # Do not let reads queue indefinitely behind inserts on this client.
+            if not self._client_lock.acquire(timeout=0.25):
+                from server.api.errors import AnalyticsUnavailableError
+                raise AnalyticsUnavailableError('Analytics connection is busy')
+            try:
                 res = self._client.query(query, parameters=parameters, settings=settings)
+            finally:
+                self._client_lock.release()
             self._last_ping_time = time.monotonic()
             self._last_ping_status = True
             return res
@@ -1139,43 +1146,26 @@ class ClickHouseStorage:
     def get_telemetry_stats(self) -> Dict[str, Any]:
         """Aggregate telemetry counts and quality distributions via ClickHouse."""
         if not self.is_connected():
-            if hasattr(self, "_stats_cache"):
-                return dict(self._stats_cache)
-            return {"logs": 0, "collector_results": 0, "anomalies": 0, "risk_events": 0}
-
-        now = time.monotonic()
-        if hasattr(self, "_stats_cache") and (now - getattr(self, "_stats_cache_ts", 0.0) < 45.0):
-            return dict(self._stats_cache)
-
-        col_table = "collector_events_v2" if self.collector_schema_version == 2 else "collector_results"
-        stats: Dict[str, Any] = {}
-        try:
-            for table, key in [
-                ("raw_payloads", "logs"),
-                (col_table, "collector_results"),
-                ("anomalies", "anomalies"),
-                ("risk_events", "risk_events"),
-            ]:
-                r = self._query(f"SELECT count() FROM {table}")
-                stats[key] = int(r.result_rows[0][0]) if r.result_rows else 0
-
-            # Collector status distribution
-            cr_status = self._query(f"SELECT status, count() FROM {col_table} GROUP BY status")
-            stats["collector_status"] = {row[0]: int(row[1]) for row in cr_status.result_rows}
-
-            # Collector name distribution
-            cr_names = self._query(f"SELECT collector, count() FROM {col_table} GROUP BY collector")
-            stats["collector_counts"] = {row[0]: int(row[1]) for row in cr_names.result_rows}
-
-            # Quality distribution
-            nf_quality = self._query("SELECT source_quality, count() FROM normalized_features GROUP BY source_quality")
-            stats["source_quality"] = {row[0]: int(row[1]) for row in nf_quality.result_rows}
-
-            self._stats_cache = dict(stats)
-            self._stats_cache_ts = now
-        except Exception as exc:
-            logger.debug("ClickHouse telemetry stats query failed: %s; serving cache if available", exc)
-            if hasattr(self, "_stats_cache"):
-                return dict(self._stats_cache)
-
+            raise RuntimeError('ClickHouse is unavailable')
+        # One scan for both collector distributions; no unconsumed feature scan.
+        source = 'collector_events_v2 FINAL' if self.collector_schema_version == 2 else 'collector_results'
+        from server.storage.dashboard_rollups import enabled, names
+        aggregate, where = 'uniqExact(id)', ''
+        if enabled():
+            source = names(self.collector_schema_version)[1]
+            aggregate = 'uniqExactMerge(event_ids)'
+            where = ' WHERE bucket >= toStartOfMinute(now()) - INTERVAL 90 DAY'
+        rows = self._query(f'SELECT collector, status, {aggregate} FROM {source}{where} GROUP BY collector, status').result_rows
+        stats: Dict[str, Any] = {'collector_results': 0, 'collector_counts': {}, 'collector_status': {}}
+        for collector, status, count in rows:
+            count = int(count)
+            stats['collector_results'] += count
+            stats['collector_counts'][collector] = stats['collector_counts'].get(collector, 0) + count
+            stats['collector_status'][status] = stats['collector_status'].get(status, 0) + count
+        # Physical retained row counts use MergeTree metadata and are explicitly
+        # identified as such (replication duplicates may remain until merges).
+        rows = self._query("SELECT table, sum(rows) FROM system.parts WHERE active AND database = %(db)s AND table IN ('raw_payloads', 'anomalies', 'risk_events') GROUP BY table", {'db': self.database}).result_rows
+        counts = dict(rows)
+        stats.update(logs=int(counts.get('raw_payloads', 0)), anomalies=int(counts.get('anomalies', 0)),
+                     risk_events=int(counts.get('risk_events', 0)), count_semantics='retained_physical_rows')
         return stats

@@ -563,28 +563,7 @@ class FleetRepository:
                 cols = [col[0] for col in cur.description or []]
                 raw_endpoints = [dict(zip(cols, row)) for row in cur.fetchall()]
 
-                # Auto-heal: if agents table yields 0 endpoints, attempt dynamic telemetry sync
-                if not raw_endpoints:
-                    try:
-                        synced = self._sync_discovered_agents_with_cursor(cur=cur, conn=conn)
-                        if synced > 0:
-                            cur.execute(query_sql, query_params)
-                            cols = [col[0] for col in cur.description or []]
-                            raw_endpoints = [dict(zip(cols, row)) for row in cur.fetchall()]
-                    except Exception as sync_err:
-                        logger.debug("Non-fatal: auto-heal sync in get_pc_status failed: %s", sync_err)
-
-        # Merge directly from ClickHouse if connected and raw_endpoints is still empty
-        if not raw_endpoints and self.ch and hasattr(self.ch, "get_discovered_hosts"):
-            try:
-                ch_hosts = self.ch.get_discovered_hosts()
-                for hl, host_data in ch_hosts.items():
-                    raw_endpoints.append({
-                        "hostname": host_data["hostname"],
-                        "last_seen_at": host_data.get("last_seen_at"),
-                    })
-            except Exception as ch_err:
-                logger.debug("Non-fatal: ClickHouse direct fallback in get_pc_status failed: %s", ch_err)
+        # Discovery/backfill is maintenance work, never a dashboard read side effect.
 
         endpoints = []
         for ep in raw_endpoints:

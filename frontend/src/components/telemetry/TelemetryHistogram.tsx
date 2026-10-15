@@ -5,6 +5,7 @@ import { fetchTelemetryHistogram } from '../../services/api';
 
 export interface TelemetryHistogramProps {
   timeRange: string;
+  autoRefresh?: boolean;
   refreshVersion?: number;
   activeCollector?: string;
   statusFilter?: string;
@@ -40,6 +41,7 @@ const formatTooltipTime = (isoStr: string, _range: string, intervalStr: string):
 
 export const TelemetryHistogram: React.FC<TelemetryHistogramProps> = ({
   timeRange,
+  autoRefresh = true,
   refreshVersion,
   activeCollector,
   statusFilter,
@@ -47,7 +49,7 @@ export const TelemetryHistogram: React.FC<TelemetryHistogramProps> = ({
   onSelectBucket,
 }) => {
   const [buckets, setBuckets] = useState<TelemetryHistogramBucket[]>([]);
-  const [totalEvents, setTotalEvents] = useState<number>(1511377);
+  const [totalEvents, setTotalEvents] = useState<number | null>(null);
   const [interval, setInterval] = useState<string>('1m');
   const [isLoading, setIsLoading] = useState<boolean>(false);
   const [hoveredBucket, setHoveredBucket] = useState<{
@@ -57,44 +59,50 @@ export const TelemetryHistogram: React.FC<TelemetryHistogramProps> = ({
   } | null>(null);
 
   const gradId = useId();
+  const [notice, setNotice] = useState<string | null>(null);
+  const [generatedAt, setGeneratedAt] = useState<string | null>(null);
 
   useEffect(() => {
     let active = true;
+    let timer: number | undefined;
     const abort = new AbortController();
-    setIsLoading(true);
-
-    fetchTelemetryHistogram(timeRange, {
-      collector: activeCollector,
-      status: statusFilter,
-      agent_id: agentId,
-      signal: abort.signal,
-    })
-      .then((res) => {
+    setBuckets([]);
+    setTotalEvents(null);
+    setGeneratedAt(null);
+    setNotice(null);
+    const refresh = async () => {
+      if (!active) return;
+      if (document.visibilityState !== 'visible') {
+        if (autoRefresh) timer = window.setTimeout(refresh, 15000);
+        return;
+      }
+      setIsLoading(true);
+      let nextDelay = 30000;
+      try {
+        const res = await fetchTelemetryHistogram(timeRange, {
+          collector: activeCollector, status: statusFilter, agent_id: agentId, signal: abort.signal,
+        });
         if (!active) return;
-        if (res && res.ok) {
-          if (Array.isArray(res.histogram) && res.histogram.length > 0) {
-            setBuckets(res.histogram);
-          }
-          if (res.total_events) {
-            setTotalEvents(res.total_events);
-          }
-          if (res.interval) {
-            setInterval(res.interval);
-          }
+        if (!res?.ok) throw new Error('Histogram unavailable');
+        setBuckets(Array.isArray(res.histogram) ? res.histogram : []);
+        setTotalEvents(res.total_events ?? 0);
+        setInterval(res.interval || '1m');
+        setGeneratedAt(res.freshness?.generated_at ?? new Date().toISOString());
+        setNotice(res.freshness?.stale ? 'Showing the last successful chart; refreshing.' : null);
+        if (res.freshness?.stale) nextDelay = 15000;
+      } catch {
+        if (active) setNotice('Chart refresh delayed. Retrying automatically.');
+        nextDelay = 15000;
+      } finally {
+        if (active) {
+          setIsLoading(false);
+          if (autoRefresh) timer = window.setTimeout(refresh, nextDelay);
         }
-      })
-      .catch(() => {
-        // Fallback gracefully without error banners
-      })
-      .finally(() => {
-        if (active) setIsLoading(false);
-      });
-
-    return () => {
-      active = false;
-      abort.abort();
+      }
     };
-  }, [timeRange, activeCollector, statusFilter, agentId, refreshVersion]);
+    void refresh();
+    return () => { active = false; abort.abort(); window.clearTimeout(timer); };
+  }, [timeRange, activeCollector, statusFilter, agentId, refreshVersion, autoRefresh]);
 
   const maxCount = useMemo(() => {
     if (!buckets.length) return 1;
@@ -104,21 +112,7 @@ export const TelemetryHistogram: React.FC<TelemetryHistogramProps> = ({
   const chartHeight = 64; // px
   const chartWidth = 800; // viewBox units
 
-  // Generate synthetic smooth buckets if ClickHouse returned few or empty points to keep the visualization clean
-  const displayBuckets = useMemo(() => {
-    if (buckets.length > 0) return buckets;
-    // Fallback baseline display points
-    const points: TelemetryHistogramBucket[] = [];
-    const now = Date.now();
-    const count = 30;
-    for (let i = count - 1; i >= 0; i--) {
-      points.push({
-        timestamp: new Date(now - i * 60000).toISOString(),
-        count: 0,
-      });
-    }
-    return points;
-  }, [buckets]);
+  const displayBuckets = buckets;
 
   return (
     <div className="bg-white border border-slate-200 rounded-lg p-4 shadow-[0_1px_3px_rgba(0,0,0,0.06)] relative select-none">
@@ -137,8 +131,8 @@ export const TelemetryHistogram: React.FC<TelemetryHistogramProps> = ({
         <div className="flex items-center gap-3">
           <div className="flex items-center gap-1.5 bg-slate-50 border border-slate-200/80 px-2 py-0.5 rounded text-[11px] text-slate-600">
             <Activity className="w-3 h-3 text-blue-500" />
-            <span className="text-slate-500">Volume{timeRange === 'all' ? ' (90d window)' : ''}:</span>
-            <span className="font-mono font-semibold text-slate-900">{(totalEvents || 1511377).toLocaleString()}</span>
+            <span className="text-slate-500">Volume{timeRange === 'all' ? ' (30d window)' : ''}:</span>
+            <span className="font-mono font-semibold text-slate-900">{totalEvents === null ? '—' : totalEvents.toLocaleString()}</span>
             <span className="text-slate-400">events</span>
           </div>
 
@@ -157,6 +151,10 @@ export const TelemetryHistogram: React.FC<TelemetryHistogramProps> = ({
         </div>
       </div>
 
+      <div role="status" className="pt-2 text-xs text-slate-500">
+        {notice || (totalEvents === 0 ? 'No events in this window.' : totalEvents === null ? 'Loading chart…' : '')}
+        {generatedAt && <span className="ml-2">Data as of {new Date(generatedAt).toLocaleTimeString()}</span>}
+      </div>
       {/* SVG Bar Chart Area */}
       <div className="pt-3 relative">
         {isLoading && (

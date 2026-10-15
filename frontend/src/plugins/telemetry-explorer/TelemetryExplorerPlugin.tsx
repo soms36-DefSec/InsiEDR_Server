@@ -96,7 +96,7 @@ export const TelemetryExplorerPlugin: React.FC<TelemetryExplorerPluginProps> = (
   const [searchTerm, setSearchTerm] = useState('');
   const [activeCollector, setActiveCollector] = useState<string>('all');
   const [statusFilter, setStatusFilter] = useState<string>('all');
-  const [timeRange, setTimeRange] = useState<string>('all');
+  const [timeRange, setTimeRange] = useState<string>('1h');
   const [debouncedSearch, setDebouncedSearch] = useState('');
   const [searchScope, setSearchScope] = useState<'metadata' | 'payload'>('metadata');
   const [loadError, setLoadError] = useState<string | null>(null);
@@ -173,6 +173,7 @@ export const TelemetryExplorerPlugin: React.FC<TelemetryExplorerPluginProps> = (
               signal: abort.signal,
             });
           if (abort.signal.aborted || request.current !== abort) return;
+          if (!response.ok) throw new Error('Telemetry is temporarily unavailable');
           fetched = (response.events || response.logs || []) as TelemetryLog[];
           nextCursorVal = response.next_cursor || undefined;
           hasMoreVal = Boolean(response.has_more && response.next_cursor);
@@ -189,6 +190,7 @@ export const TelemetryExplorerPlugin: React.FC<TelemetryExplorerPluginProps> = (
               signal: abort.signal,
             });
           if (abort.signal.aborted || request.current !== abort) return;
+          if (!response.ok) throw new Error('Telemetry is temporarily unavailable');
           fetched = response.logs || [];
           nextCursorVal = response.next_cursor || undefined;
           hasMoreVal = Boolean(response.has_more && response.next_cursor);
@@ -231,13 +233,13 @@ export const TelemetryExplorerPlugin: React.FC<TelemetryExplorerPluginProps> = (
       timer = window.setTimeout(() => {
         timer = undefined;
         if (document.visibilityState === 'visible') void loadLogs(1, pageSize, true);
-      }, 2000);
+      }, 10000);
     };
     scheduleRefresh.current = schedule;
     const unsubscribe = subscribeTelemetry(schedule);
     // SSE carries invalidations, not complete rows. Coalesce them, and recover
     // missed notifications at a bounded rate only while disconnected.
-    const poll = window.setInterval(schedule, context.isConnected ? 30000 : 15000);
+    const poll = window.setInterval(schedule, 15000);
     const onVisible = () => { if (document.visibilityState === 'visible') schedule(); };
     document.addEventListener('visibilitychange', onVisible);
     return () => {
@@ -335,6 +337,7 @@ export const TelemetryExplorerPlugin: React.FC<TelemetryExplorerPluginProps> = (
 
       {/* Server-Side Event Frequency Histogram (ClickHouse Aggregation) */}
       <TelemetryHistogram
+          autoRefresh={context.autoRefresh}
         refreshVersion={lastUpdated ? Math.floor(lastUpdated.getTime() / 15000) : undefined}
         timeRange={timeRange}
         activeCollector={activeCollector}
@@ -418,7 +421,7 @@ export const TelemetryExplorerPlugin: React.FC<TelemetryExplorerPluginProps> = (
                 onChange={(e) => setTimeRange(e.target.value)}
                 className="bg-transparent font-medium text-slate-800 outline-none cursor-pointer"
               >
-                <option value="all">All Recorded Time</option>
+                <option value="all">All retained logs (chart: 30 days)</option>
                 <option value="15m">Last 15 Minutes</option>
                 <option value="1h">Last 1 Hour</option>
                 <option value="24h">Last 24 Hours</option>
@@ -575,7 +578,7 @@ export const TelemetryExplorerPlugin: React.FC<TelemetryExplorerPluginProps> = (
         resetKey={`${activeCollector}:${debouncedSearch}:${statusFilter}:${timeRange}:${currentPage}:${pageSize}`}
         onSelectLog={(log) => setSelectedLog(log)}
         isLoading={isLoading}
-        error={null}
+        error={loadError}
         onRetry={() => loadLogs(currentPage, pageSize)}
       />
 

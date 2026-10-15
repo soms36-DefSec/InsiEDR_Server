@@ -560,8 +560,8 @@ def test_keystrokes_export_excel(client):
     assert "Typing Speed (CPM)" in headers
 
 
-def test_master_log_ingestion_toggle_drops_incoming_logs(client, mock_storage, monkeypatch):
-    """Verify that setting ENABLE_LOG_INGESTION = False drops incoming logs and prevents DB writes."""
+def test_master_log_ingestion_toggle_retries_incoming_logs(client, mock_storage, monkeypatch):
+    """Verify that setting ENABLE_LOG_INGESTION = False rejects incoming logs for retry and prevents DB writes."""
     import server.config as config_module
     from server.config import config
     
@@ -585,11 +585,11 @@ def test_master_log_ingestion_toggle_drops_incoming_logs(client, mock_storage, m
 
         # Post to /api/logs
         resp = client.post("/api/logs", json=body, headers=headers)
-        assert resp.status_code == 200
+        assert resp.status_code == 503
+        assert resp.headers["retry-after"] == "5"
         data = resp.json()
-        assert data["ok"] is True
-        assert data["status"] == "paused"
-        assert "paused" in data["message"].lower()
+        assert data["ok"] is False
+        assert "paused" in data["error"].lower()
 
         # Verify nothing was written to storage
         assert len(stored_payloads) == 0
@@ -611,7 +611,7 @@ def test_master_log_ingestion_toggle_drops_incoming_logs(client, mock_storage, m
         config_module.ENABLE_LOG_INGESTION = orig_state
 
 
-def test_runtime_file_pause_flag_drops_incoming_logs(client, mock_storage, tmp_path, monkeypatch):
+def test_runtime_file_pause_flag_retries_incoming_logs(client, mock_storage, tmp_path, monkeypatch):
     """Verify that creating .pause_logs flag pauses ingestion without code edits."""
     import server.config as config_module
     from server.config import config
@@ -632,8 +632,9 @@ def test_runtime_file_pause_flag_drops_incoming_logs(client, mock_storage, tmp_p
             "Content-Type": "application/json",
         }
         resp = client.post("/api/v1/logs", json={}, headers=headers)
-        assert resp.status_code == 200
-        assert resp.json()["status"] == "paused"
+        assert resp.status_code == 503
+        assert resp.headers["retry-after"] == "5"
+        assert "paused" in resp.json()["error"]
     finally:
         if flag.exists():
             flag.unlink()
