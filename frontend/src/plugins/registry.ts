@@ -44,6 +44,8 @@ export interface PluginContextData {
   onNavigatePlugin?: (pluginId: string) => void;
   /** Triggers an immediate refresh of all dashboard state */
   onRefresh?: () => Promise<void>;
+  /** Toggles real-time stream / polling pipeline on or off */
+  onToggleAutoRefresh?: () => void;
   /** Error message if latest fleet refresh failed */
   error?: string | null;
   /** True when previously loaded fleet metrics are stale */

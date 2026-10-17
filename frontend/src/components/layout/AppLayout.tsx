@@ -43,6 +43,7 @@ export const AppLayout: React.FC = () => {
     onSelectCollector: handleSelectCollector,
     onNavigatePlugin: (id) => setActivePluginId(id),
     onRefresh: refreshAll,
+    onToggleAutoRefresh: toggleAutoRefresh,
     error,
     isStale: Boolean(error && summary),
   };

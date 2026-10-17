@@ -171,32 +171,41 @@ export const TopNavbar: React.FC<TopNavbarProps> = ({
             <FleetStatusCards summary={summary} compact stale={Boolean(context.isStale || (context.error && summary))} />
           </div>
 
-          {/* Real-time Connection Status */}
+          {/* Real-time Ingestion Pipeline Toggle */}
           <div
-            className="flex items-center gap-2 px-2.5 py-1.5 rounded-md border border-slate-200/90 bg-slate-50/80 text-xs"
+            className={`flex items-center gap-2 px-2.5 py-1 rounded-md border text-xs transition-colors shadow-2xs ${
+              autoRefresh
+                ? 'bg-emerald-50/70 border-emerald-200 text-emerald-900'
+                : 'bg-slate-100 border-slate-200 text-slate-600'
+            }`}
             title={
-              connectionMode === 'sse'
-                ? 'Server-Sent Events connected: Live telemetry invalidation and threat alerts active'
-                : connectionMode === 'polling'
-                ? 'Periodic polling active'
-                : 'Refresh paused'
+              autoRefresh
+                ? (connectionMode === 'sse' ? 'Pipeline actively receiving telemetry via live stream. Click Pause to stop.' : 'Pipeline actively polling telemetry. Click Pause to stop.')
+                : 'Pipeline stopped. Click Resume to start receiving telemetry.'
             }
           >
-            <span
-              className={`w-2 h-2 rounded-full ${
-                !autoRefresh
-                  ? 'bg-slate-400'
-                  : connectionMode === 'sse'
-                  ? 'bg-emerald-600'
-                  : 'bg-amber-500'
-              }`}
-            />
-            <span className="text-slate-600 text-[11px] font-normal hidden md:inline">
-              {!autoRefresh ? 'Paused' : connectionMode === 'sse' ? 'Live Stream' : 'Polling'}
+            <span className="relative flex h-2 w-2 shrink-0">
+              {autoRefresh && (
+                <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75" />
+              )}
+              <span
+                className={`relative inline-flex rounded-full h-2 w-2 ${
+                  autoRefresh ? 'bg-emerald-500' : 'bg-slate-400'
+                }`}
+              />
+            </span>
+            <span className="text-[11px] font-medium hidden sm:inline">
+              {autoRefresh ? (connectionMode === 'sse' ? 'Pipeline: Receiving' : 'Polling: Receiving') : 'Pipeline: Stopped'}
             </span>
             <button
+              type="button"
+              role="button"
               onClick={onToggleAutoRefresh}
-              className="text-[11px] font-medium text-slate-700 hover:text-slate-900 cursor-pointer underline ml-0.5"
+              className={`text-[11px] font-semibold px-2 py-0.5 rounded transition-all cursor-pointer ${
+                autoRefresh
+                  ? 'bg-white hover:bg-emerald-100 text-emerald-800 border border-emerald-300 shadow-2xs'
+                  : 'bg-white hover:bg-slate-200 text-slate-700 border border-slate-300 shadow-2xs'
+              }`}
             >
               {autoRefresh ? 'Pause' : 'Resume'}
             </button>

@@ -227,19 +227,22 @@ export const TelemetryExplorerPlugin: React.FC<TelemetryExplorerPluginProps> = (
 
   useEffect(() => {
     if (context.autoRefresh === false || currentPage !== 1 || selectedLog) return;
+    // Immediate refresh on resume/mount if on page 1
+    void loadLogs(1, pageSize, true);
+
     let timer: number | undefined;
     const schedule = () => {
       if (timer !== undefined) return;
       timer = window.setTimeout(() => {
         timer = undefined;
         if (document.visibilityState === 'visible') void loadLogs(1, pageSize, true);
-      }, 10000);
+      }, 500);
     };
     scheduleRefresh.current = schedule;
     const unsubscribe = subscribeTelemetry(schedule);
-    // SSE carries invalidations, not complete rows. Coalesce them, and recover
-    // missed notifications at a bounded rate only while disconnected.
-    const poll = window.setInterval(schedule, 15000);
+    // Active polling interval: 4s when polling fallback, 10s when SSE connected
+    const pollInterval = context.isConnected ? 10000 : 4000;
+    const poll = window.setInterval(schedule, pollInterval);
     const onVisible = () => { if (document.visibilityState === 'visible') schedule(); };
     document.addEventListener('visibilitychange', onVisible);
     return () => {
@@ -478,6 +481,36 @@ export const TelemetryExplorerPlugin: React.FC<TelemetryExplorerPluginProps> = (
             >
               Collector Dataset
             </Button>
+            {/* Pipeline Polling Toggle Button */}
+            {context.onToggleAutoRefresh && (
+              <Button
+                variant={context.autoRefresh !== false ? 'secondary' : 'primary'}
+                size="sm"
+                onClick={context.onToggleAutoRefresh}
+                title={
+                  context.autoRefresh !== false
+                    ? 'Click to pause pipeline and stop receiving new logs'
+                    : 'Click to start pipeline and receive new logs'
+                }
+                className={
+                  context.autoRefresh !== false
+                    ? 'border-emerald-300 bg-emerald-50 text-emerald-900 hover:bg-emerald-100 font-medium'
+                    : 'bg-slate-900 text-white hover:bg-slate-800 font-medium'
+                }
+                icon={
+                  context.autoRefresh !== false ? (
+                    <span className="relative flex h-2 w-2 mr-0.5">
+                      <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75" />
+                      <span className="relative inline-flex rounded-full h-2 w-2 bg-emerald-500" />
+                    </span>
+                  ) : (
+                    <span className="h-2 w-2 rounded-full bg-slate-400 mr-0.5" />
+                  )
+                }
+              >
+                {context.autoRefresh !== false ? 'Pipeline: Receiving' : 'Pipeline: Paused'}
+              </Button>
+            )}
             <Button
               variant="secondary"
               size="sm"
