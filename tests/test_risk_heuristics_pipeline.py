@@ -16,6 +16,7 @@ from typing import Any, Dict
 
 from heuristics.detector import detect_insider_threat, calculate_overall_severity
 from server.risk.signals import detect_auth_burst, score_zscore
+from server.risk.aggregator import RiskAggregator
 from server.risk.pipeline import extract_features_from_payload, process_telemetry_risk
 from server.baseline.engine import BaselineEngine, UserBaseline
 
@@ -61,8 +62,15 @@ def test_heuristic_lsass_credential_dumping():
     assert "S1_CRED_DUMP" in scenarios1
     assert scenarios1["S1_CRED_DUMP"]["severity"] == "CRITICAL"
     assert scenarios1["S1_CRED_DUMP"]["score"] == 100
-    assert res1["overall_score"] >= 60.0
-    assert res1["overall_severity"] in ("MEDIUM", "HIGH", "CRITICAL")
+    assert res1["overall_score"] >= 95.0
+    assert res1["overall_severity"] == "CRITICAL"
+    assert "CREDENTIAL" in res1["active_domains"]
+
+    developer_res = detect_insider_threat(
+        {"credential_dumping_suspected": True}, system_profile="DEVELOPER"
+    )
+    assert developer_res["overall_score"] >= 95.0
+    assert developer_res["overall_severity"] == "CRITICAL"
 
     # String "1"
     res2 = detect_insider_threat({"credential_dumping_suspected": "1"})
@@ -294,6 +302,41 @@ def test_auth_burst_brute_force():
     assert burst["severity"] == "HIGH"
     assert burst["burst_type"] == "HIGH_FAILURE_BURST"
     assert burst["scope"] == "host"
+
+
+def test_auth_burst_zero_successes_with_explicit_failure_rate():
+    """A zero-success window still detects failures when the failure rate gives volume."""
+    burst = detect_auth_burst({
+        "edr_auth_event_count_window": 0,
+        "edr_failed_auth_events_per_minute_window": 2.0,
+        "edr_failed_auth_ratio_window": 1.0,
+    })
+    assert burst["is_anomaly"] is True
+    assert burst["burst_type"] == "HIGH_FAILURE_BURST"
+    assert burst["evidence"]["failed_auth_events_5m_estimate"] == 10.0
+    assert burst["score"] >= 80.0
+
+
+def test_auth_burst_ratio_without_denominator_does_not_invent_failure_volume():
+    """A 100% ratio alone has no denominator and must not fabricate an attack count."""
+    burst = detect_auth_burst({
+        "edr_auth_event_count_window": 0,
+        "edr_failed_auth_ratio_window": 1.0,
+    })
+    assert burst["is_anomaly"] is False
+    assert burst["evidence"]["failed_auth_events_5m_estimate"] == 0.0
+
+
+def test_cert_sabotage_correlates_sampled_deletes_with_system_change():
+    """Ten or more sampled deletes plus a system change trigger daytime S1."""
+    aggregator = RiskAggregator(InMemoryRiskStorage())
+    scenarios = aggregator._map_cert_scenarios(
+        detector_results=[],
+        raw_features={"file_delete_count": 13, "persistence_modification_count": 1},
+        heur_result={"detections": []},
+    )
+    s1 = next(scenario for scenario in scenarios if scenario["id"] == "S1")
+    assert s1["severity"] == "HIGH"
 
 
 def test_auth_burst_lateral_movement():
@@ -612,7 +655,7 @@ def test_score_zscore_multi_domain_deconstruction_and_compounding():
     assert single_res["domain_z_scores"]["file"] == 3.8
     assert single_res["domain_z_scores"]["logon"] == 0.0
     assert single_res["compound_domains_count"] == 1
-    assert single_res["score"] == 30.0  # (3.8 - 2.0) * (100 / 6) = 30.0
+    assert single_res["score"] == 52.0  # piecewise calibration maps 3σ→40 and 5σ→70
 
     # Case 2: Compound multi-domain elevated (Logon 3.5, File 3.8, Network 3.2)
     compound_devs = {
@@ -629,6 +672,27 @@ def test_score_zscore_multi_domain_deconstruction_and_compounding():
     assert compound_res["score"] > 50.0
     assert compound_res["confidence"] > single_res["confidence"]
     assert "Compound baseline anomaly across 3 domains" in compound_res["reason"]
+
+
+def test_score_zscore_piecewise_calibration_and_compound_domain_boundary():
+    """Moderate deviations become visible and each domain activates above 2σ."""
+    z35 = score_zscore({"file_access_count": 3.5}, {}, calibration_threshold=8.0)
+    assert z35["score"] == 47.5
+    assert z35["is_anomaly"] is True
+    assert z35["severity"] == "MEDIUM"
+
+    z5 = score_zscore({"file_access_count": 5.0}, {}, calibration_threshold=8.0)
+    assert z5["score"] == 70.0
+    z7 = score_zscore({"file_access_count": 7.0}, {}, calibration_threshold=8.0)
+    assert z7["score"] == 95.0
+
+    low_and_slow = score_zscore({
+        "file_access_count": 2.4,
+        "daily_http_request_count": 2.4,
+        "daily_device_connect_count": 2.4,
+    }, {}, calibration_threshold=8.0)
+    assert low_and_slow["compound_domains_count"] == 3
+    assert low_and_slow["score"] == 16.0  # recognized across domains, but below alert threshold
 
 
 # ==============================================================================
@@ -830,16 +894,16 @@ def test_kill_chain_benign_subsequent_event_not_elevated():
 # ==============================================================================
 
 def test_score_zscore_single_domain_agent_only_compatibility():
-    """Verify single-domain agent velocity z-score behaves identically to the documented scalar path."""
+    """Agent velocity uses the same graduated calibration as baseline deviations."""
     features = {
         "logon_velocity_zscore": 4.5,
     }
     # No server baseline deviations (agent-only input)
     result = score_zscore({}, features, calibration_threshold=8.0)
     assert result["detector_name"] == "z_score"
-    # Scalar formula: min(50.0, (4.5 - 2.0) * 10.0) = 25.0
-    assert result["score"] == 25.0
-    assert result["severity"] == "LOW"
+    # Piecewise calibration interpolates between 3σ→40 and 5σ→70.
+    assert result["score"] == 62.5
+    assert result["severity"] == "MEDIUM"
     assert result["compound_domains_count"] <= 1
     # Confidence uses effective max_z = 4.5
     assert result["confidence"] > 0.60

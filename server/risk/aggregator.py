@@ -490,7 +490,11 @@ class RiskAggregator:
         delete_count = max(number("daily_file_delete_count"), number("file_delete_count"))
         sabotage_action = any(number(name) > 0 for name in ("service_modification_count", "privilege_change_count", "persistence_modification_count", "driver_modification_count"))
         after_hours_access = number("after_hours_logon") >= 2 or "S1_PRECURSOR" in ids
-        if "S1" in ids or (delete_count >= 20 and (sabotage_action or auth_burst or after_hours_access)) or (sabotage_action and (after_hours_access or auth_burst)):
+        # A batch of confirmed sampled deletions plus a system/persistence change
+        # is sufficient sabotage evidence, even during daytime and without an
+        # accompanying authentication anomaly.
+        corroborated_delete_sabotage = delete_count >= 10 and sabotage_action
+        if "S1" in ids or corroborated_delete_sabotage or (sabotage_action and (after_hours_access or auth_burst)):
             add_scenario("S1", "HIGH", "IT sabotage indicators: destructive file activity with authentication or system-change evidence")
         elif delete_count >= 20:
             add_scenario("S1_PRECURSOR", "LOW", "Mass file deletion observed without supporting sabotage evidence")

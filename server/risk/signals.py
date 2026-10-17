@@ -23,6 +23,9 @@ def detect_auth_burst(features: Dict[str, Any]) -> Dict[str, Any]:
     successes = _number(features, "edr_auth_event_count_window")
     fail_rate = _number(features, "edr_failed_auth_events_per_minute_window")
     fail_ratio = _number(features, "edr_failed_auth_ratio_window", "auth_fail_rate_300s")
+    if fail_ratio is not None and not 0.0 <= fail_ratio <= 1.0:
+        # Ratios outside [0, 1] are malformed and must not create huge inferred counts.
+        fail_ratio = None
     # The agent currently defines these rates from successful logons only;
     # estimate successes from that rate when the exact five-minute count is absent.
     events_per_minute = _number(features, "edr_auth_events_per_minute_window", "auth_rate_300s")
@@ -32,10 +35,30 @@ def detect_auth_burst(features: Dict[str, Any]) -> Dict[str, Any]:
     workstations = _number(features, "unique_workstations_300s")
     off_hours = _number(features, "off_hours_auth_count")
 
-    failed_count = max(0.0, (fail_rate or 0.0) * 5.0)
-    # Some agent versions export the ratio and total but not a failed-event count.
-    if failed_count == 0.0 and fail_ratio is not None and successes is not None:
-        failed_count = (max(0.0, fail_ratio) * max(0.0, successes)) / max(0.01, 1.0 - fail_ratio)
+    explicit_failed_count = _number(
+        features,
+        "edr_failed_auth_event_count_window",
+        "failed_auth_count_300s",
+    )
+    if explicit_failed_count is not None:
+        failed_count = max(0.0, explicit_failed_count)
+    elif fail_rate is not None:
+        failed_count = max(0.0, fail_rate * 5.0)
+    else:
+        failed_count = 0.0
+        # A ratio plus successful-event count can infer failures only while
+        # the ratio is below 1.0. At 100% failures, the denominator is unknown;
+        # require an explicit failed count/rate or total-attempt count instead.
+        if fail_ratio is not None and successes is not None and fail_ratio < 1.0:
+            failed_count = (fail_ratio * max(0.0, successes)) / (1.0 - fail_ratio)
+        elif fail_ratio == 1.0:
+            total_attempt_count = _number(
+                features,
+                "edr_auth_total_attempt_count_window",
+                "auth_attempt_count_300s",
+            )
+            if total_attempt_count is not None:
+                failed_count = max(0.0, total_attempt_count)
 
     ws_count = workstations or 0.0
     total_attempts = (successes or 0.0) + failed_count
@@ -159,6 +182,24 @@ def _classify_domain(name: str) -> str:
     return "other"
 
 
+def _calibrated_z_score(z_value: float, calibration_threshold: float) -> float:
+    """Map positive deviations to a graduated 0–100 risk scale."""
+    threshold = max(7.0, float(calibration_threshold))
+    points = [(2.0, 0.0), (3.0, 40.0), (5.0, 70.0), (7.0, 95.0)]
+    if threshold > 7.0:
+        points.append((threshold, 100.0))
+    else:
+        points[-1] = (7.0, 100.0)
+
+    if z_value <= points[0][0]:
+        return 0.0
+    for (z0, score0), (z1, score1) in zip(points, points[1:]):
+        if z_value <= z1:
+            ratio = (z_value - z0) / (z1 - z0)
+            return score0 + ratio * (score1 - score0)
+    return 100.0
+
+
 def score_zscore(
     deviations: Dict[str, float],
     features: Dict[str, Any],
@@ -197,12 +238,12 @@ def score_zscore(
         for dom, devs in domain_deviations.items()
     }
 
-    threshold = max(3.0, float(calibration_threshold))
+    threshold = max(7.0, float(calibration_threshold))
     max_name, max_z = max(candidates.items(), key=lambda item: item[1], default=("", 0.0))
-    baseline_score = min(100.0, max(0.0, (max_z - 2.0) * (100.0 / (threshold - 2.0))))
+    baseline_score = _calibrated_z_score(max_z, threshold)
 
     # The agent's exported velocity z-score uses a fixed low-volume baseline.
-    agent_score = min(50.0, max(0.0, (agent_z - 2.0) * 10.0))
+    agent_score = _calibrated_z_score(agent_z, threshold)
     if agent_z >= 4.0 and (_number(features, "auth_rate_300s") or 0.0) >= 2.0 and (_number(features, "unique_workstations_300s") or 0.0) >= 2.0:
         agent_score = min(65.0, max(agent_score, (agent_z - 2.0) * 12.0))
     if agent_score > baseline_score:
@@ -210,7 +251,7 @@ def score_zscore(
 
     # Multi-Domain Compound Anomaly Norm
     excess_by_domain = {dom: max(0.0, z_val - 2.0) for dom, z_val in domain_z.items()}
-    active_compound_domains = [dom for dom, excess in excess_by_domain.items() if excess > 0.5]  # >= 2.5 sigma
+    active_compound_domains = [dom for dom, excess in excess_by_domain.items() if excess > 0.0]  # strictly above 2.0σ
     k_domains = len(active_compound_domains)
 
     # Compound norm only applies when multiple orthogonal domains are elevated (k >= 2)

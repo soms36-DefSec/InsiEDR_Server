@@ -49,7 +49,10 @@ DOMAIN_BASE_WEIGHTS = {
     "FILE": 0.35,
     "DEVICE": 0.30,
     "LOGON": 0.20,
-    "HTTP": 0.15
+    "HTTP": 0.15,
+    "CREDENTIAL": 0.25,
+    "EXECUTION": 0.25,
+    "DECEPTION": 0.25,
 }
 
 # Rule Confidence Value Mappings
@@ -62,12 +65,12 @@ CONFIDENCE_MAP = {
 
 # Workload Sensitivity Multipliers by Endpoint Profile
 PROFILE_SENSITIVITY = {
-    "OFFICE_WORKER": {"FILE": 1.00, "HTTP": 1.00, "LOGON": 1.00, "DEVICE": 1.00},
-    "DEVELOPER":     {"FILE": 0.35, "HTTP": 0.60, "LOGON": 0.70, "DEVICE": 0.80},
-    "SYSADMIN":      {"FILE": 0.60, "HTTP": 0.70, "LOGON": 0.30, "DEVICE": 0.70},
-    "DATA_ENGINEER": {"FILE": 0.40, "HTTP": 0.30, "LOGON": 0.60, "DEVICE": 0.70},
-    "MEDIA_CREATOR": {"FILE": 0.40, "HTTP": 0.50, "LOGON": 0.80, "DEVICE": 0.30},
-    "DEFAULT":       {"FILE": 0.80, "HTTP": 0.80, "LOGON": 0.80, "DEVICE": 0.80}
+    "OFFICE_WORKER": {"FILE": 1.00, "HTTP": 1.00, "LOGON": 1.00, "DEVICE": 1.00, "CREDENTIAL": 1.00, "EXECUTION": 1.00, "DECEPTION": 1.00},
+    "DEVELOPER":     {"FILE": 0.35, "HTTP": 0.60, "LOGON": 0.70, "DEVICE": 0.80, "CREDENTIAL": 1.00, "EXECUTION": 1.00, "DECEPTION": 1.00},
+    "SYSADMIN":      {"FILE": 0.60, "HTTP": 0.70, "LOGON": 0.30, "DEVICE": 0.70, "CREDENTIAL": 1.00, "EXECUTION": 1.00, "DECEPTION": 1.00},
+    "DATA_ENGINEER": {"FILE": 0.40, "HTTP": 0.30, "LOGON": 0.60, "DEVICE": 0.70, "CREDENTIAL": 1.00, "EXECUTION": 1.00, "DECEPTION": 1.00},
+    "MEDIA_CREATOR": {"FILE": 0.40, "HTTP": 0.50, "LOGON": 0.80, "DEVICE": 0.30, "CREDENTIAL": 1.00, "EXECUTION": 1.00, "DECEPTION": 1.00},
+    "DEFAULT":       {"FILE": 0.80, "HTTP": 0.80, "LOGON": 0.80, "DEVICE": 0.80, "CREDENTIAL": 1.00, "EXECUTION": 1.00, "DECEPTION": 1.00}
 }
 
 # Known Trusted Developer & Build Toolchains
@@ -105,8 +108,14 @@ def calculate_overall_severity(score: float) -> str:
 
 
 def _infer_domain(scenario_name: str) -> str:
-    """Infers the domain (LOGON, FILE, HTTP, DEVICE) from scenario name."""
+    """Infer a behavioral domain without grouping memory/credential signals as file I/O."""
     s = scenario_name.lower()
+    if "honeytoken" in s or "decoy" in s:
+        return "DECEPTION"
+    if any(term in s for term in ("lsass", "mimikatz", "credential dump", "credential dumping")):
+        return "CREDENTIAL"
+    if any(term in s for term in ("memory", "injection", "executable region")):
+        return "EXECUTION"
     if "http" in s or "cloud" in s or "domain" in s or "network" in s or "browsing" in s or "sharing" in s or "upload" in s:
         return "HTTP"
     if "file" in s or "credential" in s:
@@ -338,7 +347,13 @@ def detect_insider_threat(features: Dict[str, Any], system_profile: Optional[str
             
         final_risk = min(100.0, base_risk + diversity_bonus)
 
-    bounded_risk = 100.0 if decoy_triggered else max(0.0, min(100.0, final_risk))
+    # Explicit LSASS credential-dump telemetry is a high-confidence endpoint
+    # signal. Workload-profile and single-domain discounts must not hide it.
+    scenario_ids = {item.get("scenario_id") for item in processed_detections}
+    strong_signal_floor = 95.0 if "S1_CRED_DUMP" in scenario_ids else 0.0
+    bounded_risk = 100.0 if decoy_triggered else max(
+        strong_signal_floor, max(0.0, min(100.0, final_risk))
+    )
     severity = calculate_overall_severity(bounded_risk)
 
     # Sort detections highest severity/score first
