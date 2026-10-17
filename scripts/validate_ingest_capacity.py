@@ -24,6 +24,7 @@ from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from server.crypto.aesgcm_plugin import AES_GCM_AAD
+from shared.crypto_utils import normalize_aes_key
 from shared.protocol import encrypted_payload_headers
 
 
@@ -45,9 +46,7 @@ def build_envelope(agent_id, template, key):
 
 
 async def run(args):
-    key = base64.b64decode(os.environ['INSIEDR_LOADTEST_AES_KEY'], validate=True)
-    if len(key) != 32:
-        raise ValueError('INSIEDR_LOADTEST_AES_KEY must encode exactly 32 bytes')
+    key = normalize_aes_key(os.environ['INSIEDR_LOADTEST_AES_KEY'])
     token = os.environ['INSIEDR_LOADTEST_AGENT_TOKEN']
     template = json.loads(Path(args.template).read_text()) if args.template else {
         'collectors': [{'collector': name, 'status': 'success', 'payload': {'count': 1}}
@@ -58,7 +57,7 @@ async def run(args):
         raise ValueError('Template must contain collector observations')
     counts, latency = Counter(), []
     deadline = time.monotonic() + args.duration
-    prefix = 'loadtest-' + uuid.uuid4().hex[:8]
+    prefix = getattr(args, 'agent_prefix', None) or ('loadtest-' + uuid.uuid4().hex[:8])
     limits = httpx.Limits(max_connections=args.concurrency, max_keepalive_connections=args.concurrency)
     admission = asyncio.Semaphore(args.concurrency)
 
@@ -122,6 +121,7 @@ if __name__ == '__main__':
     parser.add_argument('--interval', type=float, default=10)
     parser.add_argument('--concurrency', type=int, default=32)
     parser.add_argument('--burst', action='store_true', help='Start all agents together')
+    parser.add_argument('--agent-prefix', help='Explicit agent ID prefix (defaults to random loadtest-<id>)')
     parser.add_argument('--template', help='Sanitized representative telemetry JSON')
     parser.add_argument('--output', default='capacity-results.json')
     args = parser.parse_args()

@@ -1,0 +1,1337 @@
+{
+  "schema": "insiedr.agent.telemetry.v1",
+  "protocol_version": "2.0",
+  "payload_id": "REPLACED-BY-CAPACITY-HARNESS",
+  "agent_id": "REPLACED-BY-CAPACITY-HARNESS",
+  "hostname": "REPLACED-BY-CAPACITY-HARNESS",
+  "username": "loadtest-user",
+  "collected_at": "2026-10-17T00:00:00Z",
+  "collectors": [
+    {
+      "collector": "activity-monitor",
+      "status": "success",
+      "collected_at": "2026-10-17T00:00:00Z",
+      "hostname": "REPLACED-BY-CAPACITY-HARNESS",
+      "payload": {
+        "active_window_count": 1,
+        "idle_seconds": 0,
+        "foreground_app": "explorer.exe"
+      }
+    },
+    {
+      "collector": "clipboard-monitor",
+      "status": "success",
+      "collected_at": "2026-10-17T00:00:00Z",
+      "hostname": "REPLACED-BY-CAPACITY-HARNESS",
+      "payload": {
+        "clipboard_event_count": 0,
+        "sensitive_content_detected": false
+      }
+    },
+    {
+      "collector": "decoy-monitor",
+      "status": "success",
+      "collected_at": "2026-10-17T00:00:00Z",
+      "hostname": "REPLACED-BY-CAPACITY-HARNESS",
+      "payload": {
+        "decoy_file_access_count": 0,
+        "threat_triggered": false
+      }
+    },
+    {
+      "collector": "devices",
+      "status": "success",
+      "collected_at": "2026-10-17T00:00:00Z",
+      "hostname": "REPLACED-BY-CAPACITY-HARNESS",
+      "payload": {
+        "usb_connect_count": 0,
+        "daily_device_connect_count": 0,
+        "devices": []
+      }
+    },
+    {
+      "collector": "dns-monitor",
+      "status": "success",
+      "collected_at": "2026-10-17T00:00:00Z",
+      "hostname": "REPLACED-BY-CAPACITY-HARNESS",
+      "payload": {
+        "query_count": 10,
+        "queries": [
+          {
+            "query_name": "service-0.example.invalid",
+            "query_type": "A",
+            "response_count": 1
+          },
+          {
+            "query_name": "service-1.example.invalid",
+            "query_type": "A",
+            "response_count": 1
+          },
+          {
+            "query_name": "service-2.example.invalid",
+            "query_type": "A",
+            "response_count": 1
+          },
+          {
+            "query_name": "service-3.example.invalid",
+            "query_type": "A",
+            "response_count": 1
+          },
+          {
+            "query_name": "service-4.example.invalid",
+            "query_type": "A",
+            "response_count": 1
+          },
+          {
+            "query_name": "service-5.example.invalid",
+            "query_type": "A",
+            "response_count": 1
+          },
+          {
+            "query_name": "service-6.example.invalid",
+            "query_type": "A",
+            "response_count": 1
+          },
+          {
+            "query_name": "service-7.example.invalid",
+            "query_type": "A",
+            "response_count": 1
+          },
+          {
+            "query_name": "service-0.example.invalid",
+            "query_type": "A",
+            "response_count": 1
+          },
+          {
+            "query_name": "service-1.example.invalid",
+            "query_type": "A",
+            "response_count": 1
+          }
+        ]
+      }
+    },
+    {
+      "collector": "driver-monitor",
+      "status": "success",
+      "collected_at": "2026-10-17T00:00:00Z",
+      "hostname": "REPLACED-BY-CAPACITY-HARNESS",
+      "payload": {
+        "loaded_driver_count": 42,
+        "unsigned_driver_count": 0,
+        "drivers_changed": false
+      }
+    },
+    {
+      "collector": "email-monitor",
+      "status": "success",
+      "collected_at": "2026-10-17T00:00:00Z",
+      "hostname": "REPLACED-BY-CAPACITY-HARNESS",
+      "payload": {
+        "email_event_count": 0,
+        "attachments_opened": 0,
+        "external_recipients": []
+      }
+    },
+    {
+      "collector": "file-integrity-monitor",
+      "status": "success",
+      "collected_at": "2026-10-17T00:00:00Z",
+      "hostname": "REPLACED-BY-CAPACITY-HARNESS",
+      "payload": {
+        "integrity_event_count": 28,
+        "integrity_events": [
+          {
+            "path": "C:\\Users\\loadtest\\Documents\\SyntheticReport-000.txt",
+            "operation": "read",
+            "process_name": "explorer.exe",
+            "file_size_bytes": 2048,
+            "result": "success"
+          },
+          {
+            "path": "C:\\Users\\loadtest\\Documents\\SyntheticReport-001.txt",
+            "operation": "read",
+            "process_name": "SearchHost.exe",
+            "file_size_bytes": 3072,
+            "result": "success"
+          },
+          {
+            "path": "C:\\Users\\loadtest\\Documents\\SyntheticReport-002.txt",
+            "operation": "read",
+            "process_name": "explorer.exe",
+            "file_size_bytes": 4096,
+            "result": "success"
+          },
+          {
+            "path": "C:\\Users\\loadtest\\Documents\\SyntheticReport-003.txt",
+            "operation": "read",
+            "process_name": "SearchHost.exe",
+            "file_size_bytes": 5120,
+            "result": "success"
+          },
+          {
+            "path": "C:\\Users\\loadtest\\Documents\\SyntheticReport-004.txt",
+            "operation": "read",
+            "process_name": "explorer.exe",
+            "file_size_bytes": 6144,
+            "result": "success"
+          },
+          {
+            "path": "C:\\Users\\loadtest\\Documents\\SyntheticReport-005.txt",
+            "operation": "read",
+            "process_name": "SearchHost.exe",
+            "file_size_bytes": 7168,
+            "result": "success"
+          },
+          {
+            "path": "C:\\Users\\loadtest\\Documents\\SyntheticReport-006.txt",
+            "operation": "read",
+            "process_name": "explorer.exe",
+            "file_size_bytes": 8192,
+            "result": "success"
+          },
+          {
+            "path": "C:\\Users\\loadtest\\Documents\\SyntheticReport-007.txt",
+            "operation": "read",
+            "process_name": "SearchHost.exe",
+            "file_size_bytes": 9216,
+            "result": "success"
+          },
+          {
+            "path": "C:\\Users\\loadtest\\Documents\\SyntheticReport-008.txt",
+            "operation": "read",
+            "process_name": "explorer.exe",
+            "file_size_bytes": 10240,
+            "result": "success"
+          },
+          {
+            "path": "C:\\Users\\loadtest\\Documents\\SyntheticReport-009.txt",
+            "operation": "read",
+            "process_name": "SearchHost.exe",
+            "file_size_bytes": 2048,
+            "result": "success"
+          },
+          {
+            "path": "C:\\Users\\loadtest\\Documents\\SyntheticReport-010.txt",
+            "operation": "read",
+            "process_name": "explorer.exe",
+            "file_size_bytes": 3072,
+            "result": "success"
+          },
+          {
+            "path": "C:\\Users\\loadtest\\Documents\\SyntheticReport-011.txt",
+            "operation": "read",
+            "process_name": "SearchHost.exe",
+            "file_size_bytes": 4096,
+            "result": "success"
+          },
+          {
+            "path": "C:\\Users\\loadtest\\Documents\\SyntheticReport-012.txt",
+            "operation": "read",
+            "process_name": "explorer.exe",
+            "file_size_bytes": 5120,
+            "result": "success"
+          },
+          {
+            "path": "C:\\Users\\loadtest\\Documents\\SyntheticReport-013.txt",
+            "operation": "read",
+            "process_name": "SearchHost.exe",
+            "file_size_bytes": 6144,
+            "result": "success"
+          },
+          {
+            "path": "C:\\Users\\loadtest\\Documents\\SyntheticReport-014.txt",
+            "operation": "read",
+            "process_name": "explorer.exe",
+            "file_size_bytes": 7168,
+            "result": "success"
+          },
+          {
+            "path": "C:\\Users\\loadtest\\Documents\\SyntheticReport-015.txt",
+            "operation": "read",
+            "process_name": "SearchHost.exe",
+            "file_size_bytes": 8192,
+            "result": "success"
+          },
+          {
+            "path": "C:\\Users\\loadtest\\Documents\\SyntheticReport-016.txt",
+            "operation": "read",
+            "process_name": "explorer.exe",
+            "file_size_bytes": 9216,
+            "result": "success"
+          },
+          {
+            "path": "C:\\Users\\loadtest\\Documents\\SyntheticReport-017.txt",
+            "operation": "read",
+            "process_name": "SearchHost.exe",
+            "file_size_bytes": 10240,
+            "result": "success"
+          },
+          {
+            "path": "C:\\Users\\loadtest\\Documents\\SyntheticReport-018.txt",
+            "operation": "read",
+            "process_name": "explorer.exe",
+            "file_size_bytes": 2048,
+            "result": "success"
+          },
+          {
+            "path": "C:\\Users\\loadtest\\Documents\\SyntheticReport-019.txt",
+            "operation": "read",
+            "process_name": "SearchHost.exe",
+            "file_size_bytes": 3072,
+            "result": "success"
+          },
+          {
+            "path": "C:\\Users\\loadtest\\Documents\\SyntheticReport-020.txt",
+            "operation": "read",
+            "process_name": "explorer.exe",
+            "file_size_bytes": 4096,
+            "result": "success"
+          },
+          {
+            "path": "C:\\Users\\loadtest\\Documents\\SyntheticReport-021.txt",
+            "operation": "read",
+            "process_name": "SearchHost.exe",
+            "file_size_bytes": 5120,
+            "result": "success"
+          },
+          {
+            "path": "C:\\Users\\loadtest\\Documents\\SyntheticReport-022.txt",
+            "operation": "read",
+            "process_name": "explorer.exe",
+            "file_size_bytes": 6144,
+            "result": "success"
+          },
+          {
+            "path": "C:\\Users\\loadtest\\Documents\\SyntheticReport-023.txt",
+            "operation": "read",
+            "process_name": "SearchHost.exe",
+            "file_size_bytes": 7168,
+            "result": "success"
+          },
+          {
+            "path": "C:\\Users\\loadtest\\Documents\\SyntheticReport-024.txt",
+            "operation": "read",
+            "process_name": "explorer.exe",
+            "file_size_bytes": 8192,
+            "result": "success"
+          },
+          {
+            "path": "C:\\Users\\loadtest\\Documents\\SyntheticReport-025.txt",
+            "operation": "read",
+            "process_name": "SearchHost.exe",
+            "file_size_bytes": 9216,
+            "result": "success"
+          },
+          {
+            "path": "C:\\Users\\loadtest\\Documents\\SyntheticReport-026.txt",
+            "operation": "read",
+            "process_name": "explorer.exe",
+            "file_size_bytes": 10240,
+            "result": "success"
+          },
+          {
+            "path": "C:\\Users\\loadtest\\Documents\\SyntheticReport-027.txt",
+            "operation": "read",
+            "process_name": "SearchHost.exe",
+            "file_size_bytes": 2048,
+            "result": "success"
+          }
+        ],
+        "integrity_events_delete_op": 0
+      }
+    },
+    {
+      "collector": "http",
+      "status": "success",
+      "collected_at": "2026-10-17T00:00:00Z",
+      "hostname": "REPLACED-BY-CAPACITY-HARNESS",
+      "payload": {
+        "request_count": 6,
+        "requests": [
+          {
+            "method": "GET",
+            "url_host": "service-0.example.invalid",
+            "url_path": "/health/check/0",
+            "status_code": 200,
+            "bytes_sent": 512,
+            "bytes_received": 4096
+          },
+          {
+            "method": "GET",
+            "url_host": "service-1.example.invalid",
+            "url_path": "/health/check/1",
+            "status_code": 200,
+            "bytes_sent": 525,
+            "bytes_received": 4125
+          },
+          {
+            "method": "GET",
+            "url_host": "service-2.example.invalid",
+            "url_path": "/health/check/2",
+            "status_code": 200,
+            "bytes_sent": 538,
+            "bytes_received": 4154
+          },
+          {
+            "method": "GET",
+            "url_host": "service-3.example.invalid",
+            "url_path": "/health/check/3",
+            "status_code": 200,
+            "bytes_sent": 551,
+            "bytes_received": 4183
+          },
+          {
+            "method": "GET",
+            "url_host": "service-4.example.invalid",
+            "url_path": "/health/check/4",
+            "status_code": 200,
+            "bytes_sent": 564,
+            "bytes_received": 4212
+          },
+          {
+            "method": "GET",
+            "url_host": "service-0.example.invalid",
+            "url_path": "/health/check/5",
+            "status_code": 200,
+            "bytes_sent": 577,
+            "bytes_received": 4241
+          }
+        ],
+        "http_post_count": 0
+      }
+    },
+    {
+      "collector": "keystroke-collector",
+      "status": "success",
+      "collected_at": "2026-10-17T00:00:00Z",
+      "hostname": "REPLACED-BY-CAPACITY-HARNESS",
+      "payload": {
+        "keystroke_event_count": 0,
+        "raw_keystrokes_collected": false
+      }
+    },
+    {
+      "collector": "logon",
+      "status": "success",
+      "collected_at": "2026-10-17T00:00:00Z",
+      "hostname": "REPLACED-BY-CAPACITY-HARNESS",
+      "payload": {
+        "successful_logons_5m": 1,
+        "failed_logons_5m": 0,
+        "unique_workstations_300s": 1,
+        "logons": []
+      }
+    },
+    {
+      "collector": "lsass-monitor",
+      "status": "success",
+      "collected_at": "2026-10-17T00:00:00Z",
+      "hostname": "REPLACED-BY-CAPACITY-HARNESS",
+      "payload": {
+        "lsass_handle_request_count": 0,
+        "mimikatz_signatures": 0,
+        "credential_dumping_suspected": false
+      }
+    },
+    {
+      "collector": "memory-scanner",
+      "status": "success",
+      "collected_at": "2026-10-17T00:00:00Z",
+      "hostname": "REPLACED-BY-CAPACITY-HARNESS",
+      "payload": {
+        "unbacked_executable_regions": 0,
+        "suspicious_memory_regions": 0
+      }
+    },
+    {
+      "collector": "named-pipe-monitor",
+      "status": "success",
+      "collected_at": "2026-10-17T00:00:00Z",
+      "hostname": "REPLACED-BY-CAPACITY-HARNESS",
+      "payload": {
+        "pipe_open_count": 2,
+        "named_pipes": [
+          "\\Device\\NamedPipe\\spoolss",
+          "\\Device\\NamedPipe\\wkssvc"
+        ]
+      }
+    },
+    {
+      "collector": "network",
+      "status": "success",
+      "collected_at": "2026-10-17T00:00:00Z",
+      "hostname": "REPLACED-BY-CAPACITY-HARNESS",
+      "payload": {
+        "connection_count": 20,
+        "connections": [
+          {
+            "protocol": "TCP",
+            "local_port": 51000,
+            "dest_ip": "192.0.2.10",
+            "dest_port": 443,
+            "bytes_sent": 1200,
+            "bytes_received": 2400,
+            "state": "ESTABLISHED",
+            "process_name": "explorer.exe"
+          },
+          {
+            "protocol": "TCP",
+            "local_port": 51001,
+            "dest_ip": "192.0.2.11",
+            "dest_port": 80,
+            "bytes_sent": 1511,
+            "bytes_received": 2597,
+            "state": "ESTABLISHED",
+            "process_name": "svchost.exe"
+          },
+          {
+            "protocol": "TCP",
+            "local_port": 51002,
+            "dest_ip": "192.0.2.12",
+            "dest_port": 53,
+            "bytes_sent": 1822,
+            "bytes_received": 2794,
+            "state": "ESTABLISHED",
+            "process_name": "RuntimeBroker.exe"
+          },
+          {
+            "protocol": "TCP",
+            "local_port": 51003,
+            "dest_ip": "192.0.2.13",
+            "dest_port": 443,
+            "bytes_sent": 2133,
+            "bytes_received": 2991,
+            "state": "ESTABLISHED",
+            "process_name": "SearchHost.exe"
+          },
+          {
+            "protocol": "TCP",
+            "local_port": 51004,
+            "dest_ip": "192.0.2.14",
+            "dest_port": 80,
+            "bytes_sent": 2444,
+            "bytes_received": 3188,
+            "state": "ESTABLISHED",
+            "process_name": "explorer.exe"
+          },
+          {
+            "protocol": "TCP",
+            "local_port": 51005,
+            "dest_ip": "192.0.2.15",
+            "dest_port": 53,
+            "bytes_sent": 2755,
+            "bytes_received": 3385,
+            "state": "ESTABLISHED",
+            "process_name": "svchost.exe"
+          },
+          {
+            "protocol": "TCP",
+            "local_port": 51006,
+            "dest_ip": "192.0.2.16",
+            "dest_port": 443,
+            "bytes_sent": 3066,
+            "bytes_received": 3582,
+            "state": "ESTABLISHED",
+            "process_name": "RuntimeBroker.exe"
+          },
+          {
+            "protocol": "TCP",
+            "local_port": 51007,
+            "dest_ip": "192.0.2.17",
+            "dest_port": 80,
+            "bytes_sent": 1200,
+            "bytes_received": 3779,
+            "state": "ESTABLISHED",
+            "process_name": "SearchHost.exe"
+          },
+          {
+            "protocol": "TCP",
+            "local_port": 51008,
+            "dest_ip": "192.0.2.18",
+            "dest_port": 53,
+            "bytes_sent": 1511,
+            "bytes_received": 3976,
+            "state": "ESTABLISHED",
+            "process_name": "explorer.exe"
+          },
+          {
+            "protocol": "TCP",
+            "local_port": 51009,
+            "dest_ip": "192.0.2.19",
+            "dest_port": 443,
+            "bytes_sent": 1822,
+            "bytes_received": 4173,
+            "state": "ESTABLISHED",
+            "process_name": "svchost.exe"
+          },
+          {
+            "protocol": "TCP",
+            "local_port": 51010,
+            "dest_ip": "192.0.2.20",
+            "dest_port": 80,
+            "bytes_sent": 2133,
+            "bytes_received": 4370,
+            "state": "ESTABLISHED",
+            "process_name": "RuntimeBroker.exe"
+          },
+          {
+            "protocol": "TCP",
+            "local_port": 51011,
+            "dest_ip": "192.0.2.21",
+            "dest_port": 53,
+            "bytes_sent": 2444,
+            "bytes_received": 2400,
+            "state": "ESTABLISHED",
+            "process_name": "SearchHost.exe"
+          },
+          {
+            "protocol": "TCP",
+            "local_port": 51012,
+            "dest_ip": "192.0.2.22",
+            "dest_port": 443,
+            "bytes_sent": 2755,
+            "bytes_received": 2597,
+            "state": "ESTABLISHED",
+            "process_name": "explorer.exe"
+          },
+          {
+            "protocol": "TCP",
+            "local_port": 51013,
+            "dest_ip": "192.0.2.23",
+            "dest_port": 80,
+            "bytes_sent": 3066,
+            "bytes_received": 2794,
+            "state": "ESTABLISHED",
+            "process_name": "svchost.exe"
+          },
+          {
+            "protocol": "TCP",
+            "local_port": 51014,
+            "dest_ip": "192.0.2.24",
+            "dest_port": 53,
+            "bytes_sent": 1200,
+            "bytes_received": 2991,
+            "state": "ESTABLISHED",
+            "process_name": "RuntimeBroker.exe"
+          },
+          {
+            "protocol": "TCP",
+            "local_port": 51015,
+            "dest_ip": "192.0.2.25",
+            "dest_port": 443,
+            "bytes_sent": 1511,
+            "bytes_received": 3188,
+            "state": "ESTABLISHED",
+            "process_name": "SearchHost.exe"
+          },
+          {
+            "protocol": "TCP",
+            "local_port": 51016,
+            "dest_ip": "192.0.2.26",
+            "dest_port": 80,
+            "bytes_sent": 1822,
+            "bytes_received": 3385,
+            "state": "ESTABLISHED",
+            "process_name": "explorer.exe"
+          },
+          {
+            "protocol": "TCP",
+            "local_port": 51017,
+            "dest_ip": "192.0.2.27",
+            "dest_port": 53,
+            "bytes_sent": 2133,
+            "bytes_received": 3582,
+            "state": "ESTABLISHED",
+            "process_name": "svchost.exe"
+          },
+          {
+            "protocol": "TCP",
+            "local_port": 51018,
+            "dest_ip": "192.0.2.28",
+            "dest_port": 443,
+            "bytes_sent": 2444,
+            "bytes_received": 3779,
+            "state": "ESTABLISHED",
+            "process_name": "RuntimeBroker.exe"
+          },
+          {
+            "protocol": "TCP",
+            "local_port": 51019,
+            "dest_ip": "192.0.2.29",
+            "dest_port": 80,
+            "bytes_sent": 2755,
+            "bytes_received": 3976,
+            "state": "ESTABLISHED",
+            "process_name": "SearchHost.exe"
+          }
+        ],
+        "daily_unique_pc_count": 1
+      }
+    },
+    {
+      "collector": "persistence-monitor",
+      "status": "success",
+      "collected_at": "2026-10-17T00:00:00Z",
+      "hostname": "REPLACED-BY-CAPACITY-HARNESS",
+      "payload": {
+        "modifications_detected": false,
+        "persistence_changes": []
+      }
+    },
+    {
+      "collector": "process-watcher",
+      "status": "success",
+      "collected_at": "2026-10-17T00:00:00Z",
+      "hostname": "REPLACED-BY-CAPACITY-HARNESS",
+      "payload": {
+        "process_count": 45,
+        "processes": [
+          {
+            "pid": 4000,
+            "parent_pid": 900,
+            "name": "explorer.exe",
+            "path": "C:\\Windows\\System32\\explorer.exe",
+            "user": "LOADTEST\\synthetic-user",
+            "integrity_level": "medium",
+            "signature_status": "valid",
+            "command_line": "svchost.exe -k netsvcs"
+          },
+          {
+            "pid": 4001,
+            "parent_pid": 901,
+            "name": "svchost.exe",
+            "path": "C:\\Windows\\System32\\svchost.exe",
+            "user": "LOADTEST\\synthetic-user",
+            "integrity_level": "medium",
+            "signature_status": "valid",
+            "command_line": "RuntimeBroker.exe -Embedding"
+          },
+          {
+            "pid": 4002,
+            "parent_pid": 902,
+            "name": "RuntimeBroker.exe",
+            "path": "C:\\Windows\\System32\\RuntimeBroker.exe",
+            "user": "LOADTEST\\synthetic-user",
+            "integrity_level": "medium",
+            "signature_status": "valid",
+            "command_line": "SearchHost.exe"
+          },
+          {
+            "pid": 4003,
+            "parent_pid": 903,
+            "name": "SearchHost.exe",
+            "path": "C:\\Windows\\System32\\SearchHost.exe",
+            "user": "LOADTEST\\synthetic-user",
+            "integrity_level": "medium",
+            "signature_status": "valid",
+            "command_line": "explorer.exe"
+          },
+          {
+            "pid": 4004,
+            "parent_pid": 904,
+            "name": "explorer.exe",
+            "path": "C:\\Windows\\System32\\explorer.exe",
+            "user": "LOADTEST\\synthetic-user",
+            "integrity_level": "medium",
+            "signature_status": "valid",
+            "command_line": "svchost.exe -k netsvcs"
+          },
+          {
+            "pid": 4005,
+            "parent_pid": 905,
+            "name": "svchost.exe",
+            "path": "C:\\Windows\\System32\\svchost.exe",
+            "user": "LOADTEST\\synthetic-user",
+            "integrity_level": "medium",
+            "signature_status": "valid",
+            "command_line": "RuntimeBroker.exe -Embedding"
+          },
+          {
+            "pid": 4006,
+            "parent_pid": 906,
+            "name": "RuntimeBroker.exe",
+            "path": "C:\\Windows\\System32\\RuntimeBroker.exe",
+            "user": "LOADTEST\\synthetic-user",
+            "integrity_level": "medium",
+            "signature_status": "valid",
+            "command_line": "SearchHost.exe"
+          },
+          {
+            "pid": 4007,
+            "parent_pid": 907,
+            "name": "SearchHost.exe",
+            "path": "C:\\Windows\\System32\\SearchHost.exe",
+            "user": "LOADTEST\\synthetic-user",
+            "integrity_level": "medium",
+            "signature_status": "valid",
+            "command_line": "explorer.exe"
+          },
+          {
+            "pid": 4008,
+            "parent_pid": 900,
+            "name": "explorer.exe",
+            "path": "C:\\Windows\\System32\\explorer.exe",
+            "user": "LOADTEST\\synthetic-user",
+            "integrity_level": "medium",
+            "signature_status": "valid",
+            "command_line": "svchost.exe -k netsvcs"
+          },
+          {
+            "pid": 4009,
+            "parent_pid": 901,
+            "name": "svchost.exe",
+            "path": "C:\\Windows\\System32\\svchost.exe",
+            "user": "LOADTEST\\synthetic-user",
+            "integrity_level": "medium",
+            "signature_status": "valid",
+            "command_line": "RuntimeBroker.exe -Embedding"
+          },
+          {
+            "pid": 4010,
+            "parent_pid": 902,
+            "name": "RuntimeBroker.exe",
+            "path": "C:\\Windows\\System32\\RuntimeBroker.exe",
+            "user": "LOADTEST\\synthetic-user",
+            "integrity_level": "medium",
+            "signature_status": "valid",
+            "command_line": "SearchHost.exe"
+          },
+          {
+            "pid": 4011,
+            "parent_pid": 903,
+            "name": "SearchHost.exe",
+            "path": "C:\\Windows\\System32\\SearchHost.exe",
+            "user": "LOADTEST\\synthetic-user",
+            "integrity_level": "medium",
+            "signature_status": "valid",
+            "command_line": "explorer.exe"
+          },
+          {
+            "pid": 4012,
+            "parent_pid": 904,
+            "name": "explorer.exe",
+            "path": "C:\\Windows\\System32\\explorer.exe",
+            "user": "LOADTEST\\synthetic-user",
+            "integrity_level": "medium",
+            "signature_status": "valid",
+            "command_line": "svchost.exe -k netsvcs"
+          },
+          {
+            "pid": 4013,
+            "parent_pid": 905,
+            "name": "svchost.exe",
+            "path": "C:\\Windows\\System32\\svchost.exe",
+            "user": "LOADTEST\\synthetic-user",
+            "integrity_level": "medium",
+            "signature_status": "valid",
+            "command_line": "RuntimeBroker.exe -Embedding"
+          },
+          {
+            "pid": 4014,
+            "parent_pid": 906,
+            "name": "RuntimeBroker.exe",
+            "path": "C:\\Windows\\System32\\RuntimeBroker.exe",
+            "user": "LOADTEST\\synthetic-user",
+            "integrity_level": "medium",
+            "signature_status": "valid",
+            "command_line": "SearchHost.exe"
+          },
+          {
+            "pid": 4015,
+            "parent_pid": 907,
+            "name": "SearchHost.exe",
+            "path": "C:\\Windows\\System32\\SearchHost.exe",
+            "user": "LOADTEST\\synthetic-user",
+            "integrity_level": "medium",
+            "signature_status": "valid",
+            "command_line": "explorer.exe"
+          },
+          {
+            "pid": 4016,
+            "parent_pid": 900,
+            "name": "explorer.exe",
+            "path": "C:\\Windows\\System32\\explorer.exe",
+            "user": "LOADTEST\\synthetic-user",
+            "integrity_level": "medium",
+            "signature_status": "valid",
+            "command_line": "svchost.exe -k netsvcs"
+          },
+          {
+            "pid": 4017,
+            "parent_pid": 901,
+            "name": "svchost.exe",
+            "path": "C:\\Windows\\System32\\svchost.exe",
+            "user": "LOADTEST\\synthetic-user",
+            "integrity_level": "medium",
+            "signature_status": "valid",
+            "command_line": "RuntimeBroker.exe -Embedding"
+          },
+          {
+            "pid": 4018,
+            "parent_pid": 902,
+            "name": "RuntimeBroker.exe",
+            "path": "C:\\Windows\\System32\\RuntimeBroker.exe",
+            "user": "LOADTEST\\synthetic-user",
+            "integrity_level": "medium",
+            "signature_status": "valid",
+            "command_line": "SearchHost.exe"
+          },
+          {
+            "pid": 4019,
+            "parent_pid": 903,
+            "name": "SearchHost.exe",
+            "path": "C:\\Windows\\System32\\SearchHost.exe",
+            "user": "LOADTEST\\synthetic-user",
+            "integrity_level": "medium",
+            "signature_status": "valid",
+            "command_line": "explorer.exe"
+          },
+          {
+            "pid": 4020,
+            "parent_pid": 904,
+            "name": "explorer.exe",
+            "path": "C:\\Windows\\System32\\explorer.exe",
+            "user": "LOADTEST\\synthetic-user",
+            "integrity_level": "medium",
+            "signature_status": "valid",
+            "command_line": "svchost.exe -k netsvcs"
+          },
+          {
+            "pid": 4021,
+            "parent_pid": 905,
+            "name": "svchost.exe",
+            "path": "C:\\Windows\\System32\\svchost.exe",
+            "user": "LOADTEST\\synthetic-user",
+            "integrity_level": "medium",
+            "signature_status": "valid",
+            "command_line": "RuntimeBroker.exe -Embedding"
+          },
+          {
+            "pid": 4022,
+            "parent_pid": 906,
+            "name": "RuntimeBroker.exe",
+            "path": "C:\\Windows\\System32\\RuntimeBroker.exe",
+            "user": "LOADTEST\\synthetic-user",
+            "integrity_level": "medium",
+            "signature_status": "valid",
+            "command_line": "SearchHost.exe"
+          },
+          {
+            "pid": 4023,
+            "parent_pid": 907,
+            "name": "SearchHost.exe",
+            "path": "C:\\Windows\\System32\\SearchHost.exe",
+            "user": "LOADTEST\\synthetic-user",
+            "integrity_level": "medium",
+            "signature_status": "valid",
+            "command_line": "explorer.exe"
+          },
+          {
+            "pid": 4024,
+            "parent_pid": 900,
+            "name": "explorer.exe",
+            "path": "C:\\Windows\\System32\\explorer.exe",
+            "user": "LOADTEST\\synthetic-user",
+            "integrity_level": "medium",
+            "signature_status": "valid",
+            "command_line": "svchost.exe -k netsvcs"
+          },
+          {
+            "pid": 4025,
+            "parent_pid": 901,
+            "name": "svchost.exe",
+            "path": "C:\\Windows\\System32\\svchost.exe",
+            "user": "LOADTEST\\synthetic-user",
+            "integrity_level": "medium",
+            "signature_status": "valid",
+            "command_line": "RuntimeBroker.exe -Embedding"
+          },
+          {
+            "pid": 4026,
+            "parent_pid": 902,
+            "name": "RuntimeBroker.exe",
+            "path": "C:\\Windows\\System32\\RuntimeBroker.exe",
+            "user": "LOADTEST\\synthetic-user",
+            "integrity_level": "medium",
+            "signature_status": "valid",
+            "command_line": "SearchHost.exe"
+          },
+          {
+            "pid": 4027,
+            "parent_pid": 903,
+            "name": "SearchHost.exe",
+            "path": "C:\\Windows\\System32\\SearchHost.exe",
+            "user": "LOADTEST\\synthetic-user",
+            "integrity_level": "medium",
+            "signature_status": "valid",
+            "command_line": "explorer.exe"
+          },
+          {
+            "pid": 4028,
+            "parent_pid": 904,
+            "name": "explorer.exe",
+            "path": "C:\\Windows\\System32\\explorer.exe",
+            "user": "LOADTEST\\synthetic-user",
+            "integrity_level": "medium",
+            "signature_status": "valid",
+            "command_line": "svchost.exe -k netsvcs"
+          },
+          {
+            "pid": 4029,
+            "parent_pid": 905,
+            "name": "svchost.exe",
+            "path": "C:\\Windows\\System32\\svchost.exe",
+            "user": "LOADTEST\\synthetic-user",
+            "integrity_level": "medium",
+            "signature_status": "valid",
+            "command_line": "RuntimeBroker.exe -Embedding"
+          },
+          {
+            "pid": 4030,
+            "parent_pid": 906,
+            "name": "RuntimeBroker.exe",
+            "path": "C:\\Windows\\System32\\RuntimeBroker.exe",
+            "user": "LOADTEST\\synthetic-user",
+            "integrity_level": "medium",
+            "signature_status": "valid",
+            "command_line": "SearchHost.exe"
+          },
+          {
+            "pid": 4031,
+            "parent_pid": 907,
+            "name": "SearchHost.exe",
+            "path": "C:\\Windows\\System32\\SearchHost.exe",
+            "user": "LOADTEST\\synthetic-user",
+            "integrity_level": "medium",
+            "signature_status": "valid",
+            "command_line": "explorer.exe"
+          },
+          {
+            "pid": 4032,
+            "parent_pid": 900,
+            "name": "explorer.exe",
+            "path": "C:\\Windows\\System32\\explorer.exe",
+            "user": "LOADTEST\\synthetic-user",
+            "integrity_level": "medium",
+            "signature_status": "valid",
+            "command_line": "svchost.exe -k netsvcs"
+          },
+          {
+            "pid": 4033,
+            "parent_pid": 901,
+            "name": "svchost.exe",
+            "path": "C:\\Windows\\System32\\svchost.exe",
+            "user": "LOADTEST\\synthetic-user",
+            "integrity_level": "medium",
+            "signature_status": "valid",
+            "command_line": "RuntimeBroker.exe -Embedding"
+          },
+          {
+            "pid": 4034,
+            "parent_pid": 902,
+            "name": "RuntimeBroker.exe",
+            "path": "C:\\Windows\\System32\\RuntimeBroker.exe",
+            "user": "LOADTEST\\synthetic-user",
+            "integrity_level": "medium",
+            "signature_status": "valid",
+            "command_line": "SearchHost.exe"
+          },
+          {
+            "pid": 4035,
+            "parent_pid": 903,
+            "name": "SearchHost.exe",
+            "path": "C:\\Windows\\System32\\SearchHost.exe",
+            "user": "LOADTEST\\synthetic-user",
+            "integrity_level": "medium",
+            "signature_status": "valid",
+            "command_line": "explorer.exe"
+          },
+          {
+            "pid": 4036,
+            "parent_pid": 904,
+            "name": "explorer.exe",
+            "path": "C:\\Windows\\System32\\explorer.exe",
+            "user": "LOADTEST\\synthetic-user",
+            "integrity_level": "medium",
+            "signature_status": "valid",
+            "command_line": "svchost.exe -k netsvcs"
+          },
+          {
+            "pid": 4037,
+            "parent_pid": 905,
+            "name": "svchost.exe",
+            "path": "C:\\Windows\\System32\\svchost.exe",
+            "user": "LOADTEST\\synthetic-user",
+            "integrity_level": "medium",
+            "signature_status": "valid",
+            "command_line": "RuntimeBroker.exe -Embedding"
+          },
+          {
+            "pid": 4038,
+            "parent_pid": 906,
+            "name": "RuntimeBroker.exe",
+            "path": "C:\\Windows\\System32\\RuntimeBroker.exe",
+            "user": "LOADTEST\\synthetic-user",
+            "integrity_level": "medium",
+            "signature_status": "valid",
+            "command_line": "SearchHost.exe"
+          },
+          {
+            "pid": 4039,
+            "parent_pid": 907,
+            "name": "SearchHost.exe",
+            "path": "C:\\Windows\\System32\\SearchHost.exe",
+            "user": "LOADTEST\\synthetic-user",
+            "integrity_level": "medium",
+            "signature_status": "valid",
+            "command_line": "explorer.exe"
+          },
+          {
+            "pid": 4040,
+            "parent_pid": 900,
+            "name": "explorer.exe",
+            "path": "C:\\Windows\\System32\\explorer.exe",
+            "user": "LOADTEST\\synthetic-user",
+            "integrity_level": "medium",
+            "signature_status": "valid",
+            "command_line": "svchost.exe -k netsvcs"
+          },
+          {
+            "pid": 4041,
+            "parent_pid": 901,
+            "name": "svchost.exe",
+            "path": "C:\\Windows\\System32\\svchost.exe",
+            "user": "LOADTEST\\synthetic-user",
+            "integrity_level": "medium",
+            "signature_status": "valid",
+            "command_line": "RuntimeBroker.exe -Embedding"
+          },
+          {
+            "pid": 4042,
+            "parent_pid": 902,
+            "name": "RuntimeBroker.exe",
+            "path": "C:\\Windows\\System32\\RuntimeBroker.exe",
+            "user": "LOADTEST\\synthetic-user",
+            "integrity_level": "medium",
+            "signature_status": "valid",
+            "command_line": "SearchHost.exe"
+          },
+          {
+            "pid": 4043,
+            "parent_pid": 903,
+            "name": "SearchHost.exe",
+            "path": "C:\\Windows\\System32\\SearchHost.exe",
+            "user": "LOADTEST\\synthetic-user",
+            "integrity_level": "medium",
+            "signature_status": "valid",
+            "command_line": "explorer.exe"
+          },
+          {
+            "pid": 4044,
+            "parent_pid": 904,
+            "name": "explorer.exe",
+            "path": "C:\\Windows\\System32\\explorer.exe",
+            "user": "LOADTEST\\synthetic-user",
+            "integrity_level": "medium",
+            "signature_status": "valid",
+            "command_line": "svchost.exe -k netsvcs"
+          }
+        ],
+        "tunneling_process_count": 0
+      }
+    },
+    {
+      "collector": "short-term_edr_feature",
+      "status": "success",
+      "collected_at": "2026-10-17T00:00:00Z",
+      "hostname": "REPLACED-BY-CAPACITY-HARNESS",
+      "payload": {
+        "edr_auth_event_count_window": 1,
+        "edr_auth_events_per_minute_window": 0.2,
+        "edr_failed_auth_events_per_minute_window": 0.0,
+        "edr_failed_auth_ratio_window": 0.0,
+        "unique_workstations_300s": 1,
+        "auth_rate_300s": 0.2,
+        "off_hours_auth_count": 0,
+        "daily_device_connect_count": 0
+      }
+    },
+    {
+      "collector": "usn-monitor",
+      "status": "success",
+      "collected_at": "2026-10-17T00:00:00Z",
+      "hostname": "REPLACED-BY-CAPACITY-HARNESS",
+      "payload": {
+        "change_count": 28,
+        "changes": [
+          {
+            "path": "C:\\Users\\loadtest\\Documents\\SyntheticReport-000.txt",
+            "reason": "DATA_OVERWRITE",
+            "file_size_bytes": 2048
+          },
+          {
+            "path": "C:\\Users\\loadtest\\Documents\\SyntheticReport-001.txt",
+            "reason": "DATA_OVERWRITE",
+            "file_size_bytes": 3072
+          },
+          {
+            "path": "C:\\Users\\loadtest\\Documents\\SyntheticReport-002.txt",
+            "reason": "DATA_OVERWRITE",
+            "file_size_bytes": 4096
+          },
+          {
+            "path": "C:\\Users\\loadtest\\Documents\\SyntheticReport-003.txt",
+            "reason": "DATA_OVERWRITE",
+            "file_size_bytes": 5120
+          },
+          {
+            "path": "C:\\Users\\loadtest\\Documents\\SyntheticReport-004.txt",
+            "reason": "DATA_OVERWRITE",
+            "file_size_bytes": 6144
+          },
+          {
+            "path": "C:\\Users\\loadtest\\Documents\\SyntheticReport-005.txt",
+            "reason": "DATA_OVERWRITE",
+            "file_size_bytes": 7168
+          },
+          {
+            "path": "C:\\Users\\loadtest\\Documents\\SyntheticReport-006.txt",
+            "reason": "DATA_OVERWRITE",
+            "file_size_bytes": 8192
+          },
+          {
+            "path": "C:\\Users\\loadtest\\Documents\\SyntheticReport-007.txt",
+            "reason": "DATA_OVERWRITE",
+            "file_size_bytes": 9216
+          },
+          {
+            "path": "C:\\Users\\loadtest\\Documents\\SyntheticReport-008.txt",
+            "reason": "DATA_OVERWRITE",
+            "file_size_bytes": 10240
+          },
+          {
+            "path": "C:\\Users\\loadtest\\Documents\\SyntheticReport-009.txt",
+            "reason": "DATA_OVERWRITE",
+            "file_size_bytes": 2048
+          },
+          {
+            "path": "C:\\Users\\loadtest\\Documents\\SyntheticReport-010.txt",
+            "reason": "DATA_OVERWRITE",
+            "file_size_bytes": 3072
+          },
+          {
+            "path": "C:\\Users\\loadtest\\Documents\\SyntheticReport-011.txt",
+            "reason": "DATA_OVERWRITE",
+            "file_size_bytes": 4096
+          },
+          {
+            "path": "C:\\Users\\loadtest\\Documents\\SyntheticReport-012.txt",
+            "reason": "DATA_OVERWRITE",
+            "file_size_bytes": 5120
+          },
+          {
+            "path": "C:\\Users\\loadtest\\Documents\\SyntheticReport-013.txt",
+            "reason": "DATA_OVERWRITE",
+            "file_size_bytes": 6144
+          },
+          {
+            "path": "C:\\Users\\loadtest\\Documents\\SyntheticReport-014.txt",
+            "reason": "DATA_OVERWRITE",
+            "file_size_bytes": 7168
+          },
+          {
+            "path": "C:\\Users\\loadtest\\Documents\\SyntheticReport-015.txt",
+            "reason": "DATA_OVERWRITE",
+            "file_size_bytes": 8192
+          },
+          {
+            "path": "C:\\Users\\loadtest\\Documents\\SyntheticReport-016.txt",
+            "reason": "DATA_OVERWRITE",
+            "file_size_bytes": 9216
+          },
+          {
+            "path": "C:\\Users\\loadtest\\Documents\\SyntheticReport-017.txt",
+            "reason": "DATA_OVERWRITE",
+            "file_size_bytes": 10240
+          },
+          {
+            "path": "C:\\Users\\loadtest\\Documents\\SyntheticReport-018.txt",
+            "reason": "DATA_OVERWRITE",
+            "file_size_bytes": 2048
+          },
+          {
+            "path": "C:\\Users\\loadtest\\Documents\\SyntheticReport-019.txt",
+            "reason": "DATA_OVERWRITE",
+            "file_size_bytes": 3072
+          },
+          {
+            "path": "C:\\Users\\loadtest\\Documents\\SyntheticReport-020.txt",
+            "reason": "DATA_OVERWRITE",
+            "file_size_bytes": 4096
+          },
+          {
+            "path": "C:\\Users\\loadtest\\Documents\\SyntheticReport-021.txt",
+            "reason": "DATA_OVERWRITE",
+            "file_size_bytes": 5120
+          },
+          {
+            "path": "C:\\Users\\loadtest\\Documents\\SyntheticReport-022.txt",
+            "reason": "DATA_OVERWRITE",
+            "file_size_bytes": 6144
+          },
+          {
+            "path": "C:\\Users\\loadtest\\Documents\\SyntheticReport-023.txt",
+            "reason": "DATA_OVERWRITE",
+            "file_size_bytes": 7168
+          },
+          {
+            "path": "C:\\Users\\loadtest\\Documents\\SyntheticReport-024.txt",
+            "reason": "DATA_OVERWRITE",
+            "file_size_bytes": 8192
+          },
+          {
+            "path": "C:\\Users\\loadtest\\Documents\\SyntheticReport-025.txt",
+            "reason": "DATA_OVERWRITE",
+            "file_size_bytes": 9216
+          },
+          {
+            "path": "C:\\Users\\loadtest\\Documents\\SyntheticReport-026.txt",
+            "reason": "DATA_OVERWRITE",
+            "file_size_bytes": 10240
+          },
+          {
+            "path": "C:\\Users\\loadtest\\Documents\\SyntheticReport-027.txt",
+            "reason": "DATA_OVERWRITE",
+            "file_size_bytes": 2048
+          }
+        ]
+      }
+    },
+    {
+      "collector": "wmi-activity",
+      "status": "success",
+      "collected_at": "2026-10-17T00:00:00Z",
+      "hostname": "REPLACED-BY-CAPACITY-HARNESS",
+      "payload": {
+        "query_count": 2,
+        "queries": [
+          {
+            "namespace": "root\\cimv2",
+            "operation": "SELECT",
+            "class": "Win32_OperatingSystem"
+          },
+          {
+            "namespace": "root\\cimv2",
+            "operation": "SELECT",
+            "class": "Win32_ComputerSystem"
+          }
+        ]
+      }
+    }
+  ],
+  "summary": {
+    "collector_count": 20,
+    "success_count": 20,
+    "failed_count": 0
+  }
+}
