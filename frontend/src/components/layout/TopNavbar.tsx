@@ -12,7 +12,6 @@
 
 import React, { useState } from 'react';
 import type { EDRPlugin, PluginContextData } from '../../plugins/registry';
-import { FleetStatusCards } from './FleetStatusCards';
 import { Button } from '../ui/Button';
 import {
   RefreshCw,
@@ -161,13 +160,8 @@ export const TopNavbar: React.FC<TopNavbarProps> = ({
           })}
         </div>
 
-        {/* Right Controls: Fleet Status & Export Menu */}
+        {/* Right Controls: Real-time Toggle & Export Menu */}
         <div className="flex items-center gap-2.5 shrink-0">
-          {/* Fleet Status Metrics: Total PCs, Online, Offline */}
-          <div className="hidden xl:flex items-center gap-2 text-xs">
-            <FleetStatusCards summary={summary} compact stale={Boolean(context.isStale || (context.error && summary))} />
-          </div>
-
           {/* Real-time Ingestion Pipeline Toggle */}
           <div
             className={`flex items-center gap-2 px-2.5 py-1 rounded-md border text-xs transition-colors shadow-2xs ${
