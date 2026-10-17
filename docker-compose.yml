@@ -223,6 +223,11 @@ services:
         target: /app/data/dlq
         bind:
           create_host_path: false
+      - type: bind
+        source: ./server/dashboard/dist
+        target: /app/server/dashboard/dist
+        bind:
+          create_host_path: false
     networks: [data, edge]
 
   nginx:
