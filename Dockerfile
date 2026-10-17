@@ -26,8 +26,8 @@ WORKDIR /build
 RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential libpq-dev \
     && rm -rf /var/lib/apt/lists/*
-COPY requirements.txt requirements-postgres.txt constraints.txt ./
-RUN pip wheel --no-cache-dir --wheel-dir=/wheels -r requirements.txt -r requirements-postgres.txt -c constraints.txt
+COPY requirements.txt requirements-postgres.txt ./
+RUN pip wheel --no-cache-dir --wheel-dir=/wheels -r requirements.txt -r requirements-postgres.txt
 
 FROM python:3.11-slim AS runtime
 
@@ -43,11 +43,11 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 # Copy requirements files first to leverage Docker cache
-COPY requirements.txt requirements-postgres.txt constraints.txt ./
+COPY requirements.txt requirements-postgres.txt ./
 
 # Copy pre-compiled wheels from builder and install
 COPY --from=python-builder /wheels /wheels
-RUN pip install --no-cache-dir --no-index --find-links=/wheels -r requirements.txt -r requirements-postgres.txt -c constraints.txt \
+RUN pip install --no-cache-dir --no-index --find-links=/wheels -r requirements.txt -r requirements-postgres.txt \
     && rm -rf /wheels
 
 # Copy runtime source without local configuration or development artifacts.
