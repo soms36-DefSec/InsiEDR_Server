@@ -18,8 +18,8 @@ def _number(features: Dict[str, Any], *names: str) -> float | None:
     return None
 
 
-def detect_auth_burst(features: Dict[str, Any]) -> Dict[str, Any]:
-    """Score host-scoped short-window authentication burst indicators."""
+def detect_auth_burst(features: Dict[str, Any], host_deviations: Dict[str, float] | None = None) -> Dict[str, Any]:
+    """Score host-scoped short-window authentication burst indicators, taking into account host baseline deviations."""
     successes = _number(features, "edr_auth_event_count_window")
     fail_rate = _number(features, "edr_failed_auth_events_per_minute_window")
     fail_ratio = _number(features, "edr_failed_auth_ratio_window", "auth_fail_rate_300s")
@@ -76,7 +76,18 @@ def detect_auth_burst(features: Dict[str, Any]) -> Dict[str, Any]:
     # techniques or tactics that the evidence cannot substantiate.
     tactical_category: str | None = None
 
+    devs = host_deviations or {}
     ws_count = workstations or 0.0
+    ws_dev = devs.get("unique_workstations_300s")
+    ws_expected = ws_dev is not None and ws_dev < 2.0
+
+    rate_dev = devs.get("auth_rate_300s")
+    if rate_dev is None:
+        rate_dev = devs.get("edr_auth_events_per_minute_window")
+    rate_expected = rate_dev is not None and rate_dev < 2.0
+
+    off_hours_dev = devs.get("off_hours_auth_count")
+    off_hours_expected = off_hours_dev is not None and off_hours_dev < 2.0
 
     # 1. Multi-workstation burst with high failure ratio
     if ws_count >= 3.0 and failed_count >= 4.0 and (fail_ratio is not None and fail_ratio >= 0.50):
@@ -99,8 +110,8 @@ def detect_auth_burst(features: Dict[str, Any]) -> Dict[str, Any]:
             f"failed_auth_events_5m~={failed_count:.1f}",
             "Host authentication burst with high failure volume",
         ))
-    # 3. Multi-workstation activity with active/successful logons
-    elif ws_count >= 3.0 and (total_attempts >= 4.0 or (events_per_minute is not None and events_per_minute >= 1.0)) and (fail_ratio is None or fail_ratio < 0.50):
+    # 3. Multi-workstation activity with active/successful logons (skipped if expected by host baseline)
+    elif (not ws_expected) and ws_count >= 3.0 and (total_attempts >= 4.0 or (events_per_minute is not None and events_per_minute >= 1.0)) and (fail_ratio is None or fail_ratio < 0.50):
         score, severity, confidence = 75.0, "HIGH", 0.85
         burst_type = "MULTI_WORKSTATION_BURST"
         tactical_category = "AUTHENTICATION_ACTIVITY"
@@ -110,16 +121,19 @@ def detect_auth_burst(features: Dict[str, Any]) -> Dict[str, Any]:
             f"Host authentication activity across {ws_count:g} workstations in 5-minute window",
         ))
     # 4. Secondary volume threshold
-    elif failed_count >= 8.0 or (ws_count >= 4.0 and total_attempts >= 8.0):
+    elif failed_count >= 8.0 or (not ws_expected and ws_count >= 4.0 and total_attempts >= 8.0):
         score, severity, confidence = 70.0, "HIGH", 0.82
-        burst_type = "MULTI_WORKSTATION_BURST" if ws_count >= 4.0 else "HIGH_FAILURE_BURST"
+        burst_type = "MULTI_WORKSTATION_BURST" if (not ws_expected and ws_count >= 4.0 and total_attempts >= 8.0) else "HIGH_FAILURE_BURST"
         tactical_category = "AUTHENTICATION_ACTIVITY"
         reasons.extend((
             f"failed_auth_events_5m~={failed_count:.1f}",
             f"unique_workstations_5m={ws_count:g}",
         ))
-    # 5. Velocity Spike
-    elif (events_per_minute is not None and events_per_minute >= 3.0 and (fail_ratio or 0.0) >= 0.50) or (events_per_minute is not None and events_per_minute >= 5.0):
+    # 5. Velocity Spike (skipped if velocity is expected and fail ratio is low)
+    elif not (rate_expected and (fail_ratio or 0.0) < 0.20) and (
+        (events_per_minute is not None and events_per_minute >= 3.0 and (fail_ratio or 0.0) >= 0.50)
+        or (events_per_minute is not None and events_per_minute >= 5.0)
+    ):
         score, severity, confidence = 60.0, "MEDIUM", 0.75
         burst_type = "VELOCITY_BURST"
         tactical_category = "AUTHENTICATION_ACTIVITY"
@@ -128,8 +142,8 @@ def detect_auth_burst(features: Dict[str, Any]) -> Dict[str, Any]:
             f"failed_auth_ratio={fail_ratio or 0.0:.3f}",
             f"Host authentication velocity spike ({events_per_minute:.2f} events/min)",
         ))
-    # 6. Off-Hours Burst
-    elif (off_hours or 0.0) >= 2.0 and total_attempts >= 3.0:
+    # 6. Off-Hours Burst (skipped if off-hours activity is expected for this host)
+    elif not off_hours_expected and (off_hours or 0.0) >= 2.0 and total_attempts >= 3.0:
         score, severity, confidence = 35.0, "MEDIUM", 0.60
         burst_type = "OFF_HOURS_BURST"
         tactical_category = "AUTHENTICATION_ACTIVITY"

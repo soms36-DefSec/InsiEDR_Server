@@ -1765,6 +1765,73 @@ class PostgresStorage(BaseStorage):
                     conn.rollback()
                     return None
 
+    def save_host_baseline(self, baseline: dict[str, Any]) -> None:
+        with self.connection() as conn:
+            with closing(conn.cursor()) as cursor:
+                try:
+                    cursor.execute(
+                        """
+                        INSERT INTO baseline_snapshots (
+                            agent_id, username, feature_name, baseline_scope, window_start, window_end,
+                            mean_value, std_value, sample_count, logic_version, metadata_json, created_at
+                        ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                        """,
+                        (
+                            baseline.get("agent_id"),
+                            None,
+                            baseline.get("feature_name", "__host_aggregate__"),
+                            "host",
+                            baseline.get("window_start"),
+                            baseline.get("window_end"),
+                            baseline.get("mean_value", 0.0),
+                            baseline.get("std_value", 0.0),
+                            baseline.get("sample_count", 0),
+                            baseline.get("logic_version", "2.0"),
+                            Json(baseline.get("metadata_json") or {}),
+                            baseline.get("created_at"),
+                        ),
+                    )
+                    conn.commit()
+                except Exception:
+                    conn.rollback()
+                    raise
+
+    def load_host_baseline(self, agent_id: str) -> dict[str, Any] | None:
+        with self.connection() as conn:
+            with closing(conn.cursor()) as cursor:
+                try:
+                    cursor.execute(
+                        """
+                        SELECT agent_id, username, feature_name, baseline_scope, window_start, window_end,
+                               mean_value, std_value, sample_count, logic_version, metadata_json, created_at
+                        FROM baseline_snapshots
+                        WHERE agent_id = %s AND baseline_scope = 'host'
+                        ORDER BY window_end DESC
+                        LIMIT 1
+                        """,
+                        (agent_id,),
+                    )
+                    row = cursor.fetchone()
+                    if not row:
+                        return None
+                    return {
+                        "agent_id": row[0],
+                        "username": row[1],
+                        "feature_name": row[2],
+                        "baseline_scope": row[3],
+                        "window_start": row[4],
+                        "window_end": row[5],
+                        "mean_value": row[6],
+                        "std_value": row[7],
+                        "sample_count": row[8],
+                        "logic_version": row[9],
+                        "created_at": row[11],
+                        "metadata_json": row[10],
+                    }
+                except Exception:
+                    conn.rollback()
+                    return None
+
     @contextmanager
     def acquire_entity_lock(self, entity_id: str):
         """

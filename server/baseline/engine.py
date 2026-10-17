@@ -302,3 +302,228 @@ class BaselineEngine:
                 for feature in sorted(baseline.feature_means)
             ],
         }
+
+
+@dataclass
+class HostBaseline:
+    agent_id: str
+    feature_means: Dict[str, float] = field(default_factory=dict)
+    feature_stds: Dict[str, float] = field(default_factory=dict)
+    sample_count: int = 0
+    last_updated: str = ""
+    decay_factor: float = 0.05
+    feature_missing_counts: Dict[str, int] = field(default_factory=dict)
+    feature_sample_counts: Dict[str, int] = field(default_factory=dict)
+    short_term_sums: Dict[str, float] = field(default_factory=dict)
+    short_term_counts: Dict[str, int] = field(default_factory=dict)
+    last_merge_date: str = ""
+    last_observation_at: str = ""
+
+    @property
+    def confidence_score(self) -> float:
+        return min(self.sample_count / 14.0, 1.0) if self.sample_count > 0 else 0.1
+
+
+# Organizational priors for cold-start host baselines before an agent accumulates >= 5 samples.
+DEFAULT_HOST_FEATURE_PRIORS: Dict[str, tuple[float, float]] = {
+    "unique_workstations_300s": (1.0, 0.5),
+    "auth_rate_300s": (0.2, 0.5),
+    "edr_auth_events_per_minute_window": (1.0, 2.0),
+    "edr_auth_event_count_window": (1.0, 2.0),
+    "off_hours_auth_count": (0.0, 0.5),
+    "daily_unique_pc_count": (1.0, 0.5),
+    "daily_device_connect_count": (0.0, 0.5),
+}
+
+
+class HostBaselineEngine:
+    """
+    Agent-Scoped Host Baseline Engine.
+    Tracks machine-wide authentication and host traversal metrics separately
+    from per-user interactive session UEBA baselines.
+    Applies bounded contribution updating (Winsorization) and hourly snapshot throttling.
+    """
+
+    def __init__(self, storage: BaseStorage, window_days: int = 30) -> None:
+        self.storage = storage
+        self.window_days = window_days
+        self.decay = 2.0 / (window_days + 1.0)
+        self._meta_lock = threading.Lock()
+        self._entity_locks: dict[str, threading.Lock] = {}
+
+    def _get_entity_lock(self, entity_id: str) -> threading.Lock:
+        with self._meta_lock:
+            if entity_id not in self._entity_locks:
+                self._entity_locks[entity_id] = threading.Lock()
+            return self._entity_locks[entity_id]
+
+    @staticmethod
+    def _std_floor(feature: str, mean_value: float) -> float:
+        normalized = feature.lower()
+        if "ratio" in normalized or "rate" in normalized or "entropy" in normalized:
+            return max(abs(mean_value) * 0.1, 0.05)
+        return max(abs(mean_value) * 0.1, 0.5)
+
+    @staticmethod
+    def _parse_observed_at(value: str | datetime | None) -> datetime:
+        return BaselineEngine._parse_observed_at(value)
+
+    def get_baseline(self, agent_id: str) -> Optional[HostBaseline]:
+        load_fn = getattr(self.storage, "load_host_baseline", None)
+        if not callable(load_fn):
+            return None
+        row = load_fn(agent_id)
+        if not row:
+            return None
+        metadata = row.get("metadata_json") or {}
+        if isinstance(metadata, str):
+            try:
+                import json
+                metadata = json.loads(metadata)
+            except Exception:
+                metadata = {}
+        return HostBaseline(
+            agent_id=row.get("agent_id") or agent_id,
+            feature_means=dict(metadata.get("feature_means") or {}),
+            feature_stds=dict(metadata.get("feature_stds") or {}),
+            sample_count=int(row.get("sample_count") or 0),
+            last_updated=row.get("created_at") or "",
+            decay_factor=float(metadata.get("decay_factor") or self.decay),
+            feature_missing_counts=dict(metadata.get("feature_missing_counts") or {}),
+            feature_sample_counts=dict(metadata.get("feature_sample_counts") or {}),
+            short_term_sums=dict(metadata.get("short_term_sums") or {}),
+            short_term_counts=dict(metadata.get("short_term_counts") or {}),
+            last_merge_date=metadata.get("last_merge_date") or "",
+            last_observation_at=metadata.get("last_observation_at") or "",
+        )
+
+    def get_deviation_vector(
+        self,
+        agent_id: str,
+        features: Dict[str, float],
+    ) -> Dict[str, float]:
+        baseline = self.get_baseline(agent_id)
+        deviations: Dict[str, float] = {}
+        for name, value in features.items():
+            if baseline and baseline.feature_sample_counts.get(name, 0) >= 5:
+                mean_value = baseline.feature_means.get(name, value)
+                std_value = max(baseline.feature_stds.get(name, 0.0), self._std_floor(name, mean_value))
+            elif name in DEFAULT_HOST_FEATURE_PRIORS:
+                prior_mean, prior_std = DEFAULT_HOST_FEATURE_PRIORS[name]
+                mean_value = prior_mean
+                std_value = max(prior_std, self._std_floor(name, prior_mean))
+            else:
+                mean_value = value
+                std_value = 1.0
+
+            deviations[name] = (value - mean_value) / std_value
+        return deviations
+
+    def update_baseline(
+        self,
+        agent_id: str,
+        features: Dict[str, float],
+        observed_at: str | datetime | None = None,
+    ) -> dict[str, Any]:
+        if not features or not agent_id:
+            return {"agent_id": agent_id, "skipped": True, "reason": "no features or agent_id"}
+
+        storage_lock = getattr(self.storage, "acquire_entity_lock", None)
+        in_process_lock = self._get_entity_lock(agent_id)
+
+        with in_process_lock:
+            if callable(storage_lock):
+                with storage_lock(f"host:{agent_id}"):
+                    return self._do_update_host_baseline(agent_id, features, observed_at)
+            return self._do_update_host_baseline(agent_id, features, observed_at)
+
+    def _do_update_host_baseline(
+        self,
+        agent_id: str,
+        features: Dict[str, float],
+        observed_at: str | datetime | None = None,
+    ) -> dict[str, Any]:
+        current = self.get_baseline(agent_id) or HostBaseline(agent_id=agent_id, decay_factor=self.decay)
+        observed = self._parse_observed_at(observed_at)
+        today_date = observed.strftime("%Y-%m-%d")
+
+        # High-frequency snapshots are correlated; retain at most one baseline
+        # observation per host per hour and reject stale/replayed observations.
+        if current.last_observation_at:
+            previous = self._parse_observed_at(current.last_observation_at)
+            if observed <= previous or (observed - previous).total_seconds() < 3600:
+                return {
+                    "agent_id": agent_id,
+                    "sample_count": current.sample_count,
+                    "skipped": True,
+                    "reason": "host throttled",
+                }
+
+        # Merge short term buffer into long term EMA if a day has passed
+        if current.last_merge_date and current.last_merge_date != today_date:
+            for feature, count in current.short_term_counts.items():
+                if count > 0:
+                    daily_avg = current.short_term_sums.get(feature, 0.0) / count
+                    prev_mean = current.feature_means.get(feature, daily_avg)
+                    updated_mean = (1 - self.decay) * prev_mean + self.decay * daily_avg
+                    current.feature_means[feature] = updated_mean
+
+                    prev_std = current.feature_stds.get(feature, self._std_floor(feature, prev_mean))
+                    updated_std = (1 - self.decay) * prev_std + self.decay * abs(daily_avg - prev_mean)
+                    current.feature_stds[feature] = max(updated_std, self._std_floor(feature, updated_mean))
+                    current.feature_sample_counts[feature] = current.feature_sample_counts.get(feature, 0) + 1
+
+            current.short_term_sums = {}
+            current.short_term_counts = {}
+
+        current.last_merge_date = today_date
+        current.sample_count += 1
+        current.last_observation_at = observed.isoformat().replace("+00:00", "Z")
+
+        # Bounded contribution (Winsorization):
+        # Clip observation to [0, mu + 3.0 * sigma] when baseline has >= 5 samples
+        # to prevent sudden behavioral surges or gradual poison escalation from distorting running state.
+        all_known_features = set(current.feature_means.keys()).union(features.keys())
+        for feature_name in all_known_features:
+            if feature_name in features:
+                raw_val = float(features[feature_name])
+                if current.sample_count >= 5 and feature_name in current.feature_means:
+                    mu = current.feature_means[feature_name]
+                    sigma = max(current.feature_stds.get(feature_name, 0.0), self._std_floor(feature_name, mu))
+                    bounded_val = max(0.0, min(raw_val, mu + (3.0 * sigma)))
+                else:
+                    bounded_val = max(0.0, raw_val)
+
+                current.short_term_sums[feature_name] = current.short_term_sums.get(feature_name, 0.0) + bounded_val
+                current.short_term_counts[feature_name] = current.short_term_counts.get(feature_name, 0) + 1
+            else:
+                current.feature_missing_counts[feature_name] = current.feature_missing_counts.get(feature_name, 0) + 1
+
+        payload = {
+            "agent_id": agent_id,
+            "username": None,
+            "feature_name": "__host_aggregate__",
+            "baseline_scope": "host",
+            "window_start": observed.isoformat().replace("+00:00", "Z"),
+            "window_end": observed.isoformat().replace("+00:00", "Z"),
+            "mean_value": 0.0,
+            "std_value": 0.0,
+            "sample_count": current.sample_count,
+            "logic_version": "2.0",
+            "metadata_json": {
+                "feature_means": current.feature_means,
+                "feature_stds": current.feature_stds,
+                "feature_missing_counts": current.feature_missing_counts,
+                "feature_sample_counts": current.feature_sample_counts,
+                "short_term_sums": current.short_term_sums,
+                "short_term_counts": current.short_term_counts,
+                "last_merge_date": current.last_merge_date,
+                "last_observation_at": current.last_observation_at,
+                "decay_factor": self.decay,
+            },
+            "created_at": observed.isoformat().replace("+00:00", "Z"),
+        }
+        save_fn = getattr(self.storage, "save_host_baseline", None)
+        if callable(save_fn):
+            save_fn(payload)
+        return payload

@@ -18,7 +18,13 @@ from heuristics.detector import detect_insider_threat, calculate_overall_severit
 from server.risk.signals import detect_auth_burst, score_zscore
 from server.risk.aggregator import RiskAggregator
 from server.risk.pipeline import extract_features_from_payload, process_telemetry_risk
-from server.baseline.engine import BaselineEngine, UserBaseline
+from server.baseline.engine import (
+    BaselineEngine,
+    UserBaseline,
+    HostBaselineEngine,
+    HostBaseline,
+    DEFAULT_HOST_FEATURE_PRIORS,
+)
 
 
 class InMemoryRiskStorage:
@@ -26,6 +32,7 @@ class InMemoryRiskStorage:
 
     def __init__(self):
         self.baselines: dict[str, dict[str, Any]] = {}
+        self.host_baselines: dict[str, dict[str, Any]] = {}
         self.risk_events: list[dict[str, Any]] = []
 
     def load_baseline(self, username: str) -> dict[str, Any] | None:
@@ -35,6 +42,14 @@ class InMemoryRiskStorage:
         username = baseline.get("username")
         if username:
             self.baselines[username] = dict(baseline)
+
+    def load_host_baseline(self, agent_id: str) -> dict[str, Any] | None:
+        return self.host_baselines.get(agent_id)
+
+    def save_host_baseline(self, baseline: dict[str, Any]) -> None:
+        agent_id = baseline.get("agent_id")
+        if agent_id:
+            self.host_baselines[agent_id] = dict(baseline)
 
     def save_risk_event(self, event: dict[str, Any]) -> None:
         self.risk_events.append(event)
@@ -971,6 +986,397 @@ def test_storage_acquire_entity_lock_invoked_by_baseline_engine():
     assert "__role_engineering__" in lock_called
 
 
+# ==============================================================================
+# 11. Agent-Scoped Host Baseline Tests
+# ==============================================================================
+
+def test_host_baseline_feature_extraction():
+    """Verify that _host_baseline_features extracts only host-scoped features."""
+    from server.risk.pipeline import _host_baseline_features
+
+    mixed_features = {
+        # Host-scoped features
+        "unique_workstations_300s": 3.0,
+        "auth_rate_300s": 1.5,
+        "edr_auth_events_per_minute_window": 2.0,
+        "edr_auth_event_count_window": 10.0,
+        "off_hours_auth_count": 1.0,
+        "daily_unique_pc_count": 2.0,
+        "daily_device_connect_count": 0.0,
+        # User-scoped features
+        "file_access_count": 50.0,
+        "daily_unique_filename_count": 20.0,
+        "bytes_sent": 5000000.0,
+        # Invalid / none features
+        "unknown_metric": 999.0,
+        "auth_rate_3600s": 0.5,
+    }
+
+    host_features = _host_baseline_features(mixed_features)
+
+    assert host_features["unique_workstations_300s"] == 3.0
+    assert host_features["auth_rate_300s"] == 1.5
+    assert host_features["edr_auth_events_per_minute_window"] == 2.0
+    assert host_features["edr_auth_event_count_window"] == 10.0
+    assert host_features["off_hours_auth_count"] == 1.0
+    assert host_features["daily_unique_pc_count"] == 2.0
+    assert host_features["daily_device_connect_count"] == 0.0
+
+    # User-only features excluded
+    assert "file_access_count" not in host_features
+    assert "daily_unique_filename_count" not in host_features
+    assert "bytes_sent" not in host_features
+    assert "unknown_metric" not in host_features
 
 
+def test_host_baseline_cold_start_and_deviation():
+    """Verify cold-start host priors and calibrated deviations for uninitialized agents."""
+    storage = InMemoryRiskStorage()
+    engine = HostBaselineEngine(storage, window_days=14)
+
+    assert engine.get_baseline("agent-001") is None
+
+    # Normal activity matches priors -> deviation 0.0
+    devs_normal = engine.get_deviation_vector("agent-001", {
+        "unique_workstations_300s": 1.0,  # prior: mean=1.0, std=0.5
+        "auth_rate_300s": 0.2,            # prior: mean=0.2, std=0.5
+        "off_hours_auth_count": 0.0,      # prior: mean=0.0, std=0.5
+    })
+    assert devs_normal["unique_workstations_300s"] == 0.0
+    assert devs_normal["auth_rate_300s"] == 0.0
+    assert devs_normal["off_hours_auth_count"] == 0.0
+
+    # Spikes produce calibrated positive deviations
+    devs_spike = engine.get_deviation_vector("agent-001", {
+        "unique_workstations_300s": 5.0,  # (5.0 - 1.0) / 0.5 = 8.0
+        "auth_rate_300s": 1.2,            # (1.2 - 0.2) / 0.5 = 2.0
+    })
+    assert devs_spike["unique_workstations_300s"] == 8.0
+    assert devs_spike["auth_rate_300s"] == 2.0
+
+
+def test_host_baseline_jump_box_suppresses_multi_workstation_false_positive():
+    """Verify jump box host baseline suppresses benign multi-workstation bursts while detecting attacks."""
+    storage = InMemoryRiskStorage()
+    engine = HostBaselineEngine(storage, window_days=14)
+
+    # Mature jump box baseline with regular access to ~8 workstations
+    storage.save_host_baseline({
+        "agent_id": "agent-jumpbox-01",
+        "sample_count": 10,
+        "metadata_json": {
+            "feature_means": {"unique_workstations_300s": 8.0, "auth_rate_300s": 2.0},
+            "feature_stds": {"unique_workstations_300s": 1.5, "auth_rate_300s": 0.5},
+            "feature_sample_counts": {"unique_workstations_300s": 10, "auth_rate_300s": 10},
+        },
+        "created_at": "2026-10-16T12:00:00Z",
+    })
+
+    benign_jumpbox_features = {
+        "unique_workstations_300s": 8.0,
+        "edr_auth_event_count_window": 10.0,
+        "auth_fail_rate_300s": 0.0,
+    }
+
+    # 1. Jump box evaluation: Z-score is 0.0 < 2.0 -> suppressed
+    jumpbox_devs = engine.get_deviation_vector("agent-jumpbox-01", benign_jumpbox_features)
+    res_jumpbox = detect_auth_burst(benign_jumpbox_features, host_deviations=jumpbox_devs)
+    assert not res_jumpbox["is_anomaly"]
+    assert res_jumpbox["score"] == 0.0
+
+    # 2. Ordinary workstation evaluation: cold start / standard prior -> triggers MULTI_WORKSTATION_BURST
+    workstation_devs = engine.get_deviation_vector("agent-workstation-01", benign_jumpbox_features)
+    res_workstation = detect_auth_burst(benign_jumpbox_features, host_deviations=workstation_devs)
+    assert res_workstation["is_anomaly"]
+    assert res_workstation["score"] == 75.0
+    assert res_workstation["burst_type"] == "MULTI_WORKSTATION_BURST"
+
+    # 3. Malicious burst on jump box: high failures -> triggers regardless of baseline
+    attack_jumpbox_features = {
+        "unique_workstations_300s": 8.0,
+        "edr_auth_event_count_window": 10.0,
+        "edr_failed_auth_events_per_minute_window": 5.0,
+        "auth_fail_rate_300s": 0.80,
+    }
+    res_jumpbox_attack = detect_auth_burst(attack_jumpbox_features, host_deviations=jumpbox_devs)
+    assert res_jumpbox_attack["is_anomaly"]
+    assert res_jumpbox_attack["score"] == 85.0
+    assert res_jumpbox_attack["burst_type"] == "MULTI_WORKSTATION_BURST"
+
+
+def test_host_baseline_anti_poisoning_rejection_on_attack():
+    """Verify that attack telemetry and auth anomalies do not train/poison the host baseline."""
+    storage = InMemoryRiskStorage()
+
+    # 1. Clean observation trains the host baseline
+    payload_clean = {
+        "payload_id": "p-clean-1",
+        "agent_id": "agent-host-100",
+        "username": "alice",
+        "collected_at": "2026-10-16T10:00:00Z",
+        "collectors": [
+            {
+                "collector": "auth_monitor",
+                "status": "success",
+                "payload": {
+                    "unique_workstations_300s": 1.0,
+                    "auth_rate_300s": 0.2,
+                },
+            },
+            {
+                "collector": "file_monitor",
+                "status": "success",
+                "payload": {
+                    "file_access_count": 5.0,
+                },
+            },
+        ],
+    }
+    res1 = process_telemetry_risk(storage, payload_clean)
+    assert res1["risk_score"] < 40.0
+    host_b1 = storage.load_host_baseline("agent-host-100")
+    assert host_b1 is not None
+    assert host_b1["sample_count"] == 1
+
+    # 2. Attack payload arrives 2 hours later (credential dumping)
+    payload_attack = {
+        "payload_id": "p-attack-1",
+        "agent_id": "agent-host-100",
+        "username": "alice",
+        "collected_at": "2026-10-16T12:00:00Z",
+        "collectors": [
+            {
+                "collector": "lsass_monitor",
+                "status": "success",
+                "payload": {
+                    "credential_dumping_suspected": True,
+                },
+            },
+            {
+                "collector": "auth_monitor",
+                "status": "success",
+                "payload": {
+                    "unique_workstations_300s": 25.0,
+                    "auth_rate_300s": 15.0,
+                },
+            },
+        ],
+    }
+    res2 = process_telemetry_risk(storage, payload_attack)
+    assert res2["risk_score"] >= 95.0
+    host_b2 = storage.load_host_baseline("agent-host-100")
+    # Anti-poisoning policy rejected the update: sample_count remains 1
+    assert host_b2["sample_count"] == 1
+
+    # 3. Clean observation 2 hours after the attack trains normally
+    payload_clean_2 = {
+        "payload_id": "p-clean-2",
+        "agent_id": "agent-host-100",
+        "username": "alice",
+        "collected_at": "2026-10-16T14:00:00Z",
+        "collectors": [
+            {
+                "collector": "auth_monitor",
+                "status": "success",
+                "payload": {
+                    "unique_workstations_300s": 1.0,
+                    "auth_rate_300s": 0.2,
+                },
+            },
+        ],
+    }
+    res3 = process_telemetry_risk(storage, payload_clean_2)
+    assert res3["risk_score"] < 40.0
+    host_b3 = storage.load_host_baseline("agent-host-100")
+    assert host_b3["sample_count"] == 2
+
+
+def test_host_baseline_bounded_winsorization():
+    """Verify observations > mu + 3*sigma are clamped before short-term accumulation."""
+    storage = InMemoryRiskStorage()
+    engine = HostBaselineEngine(storage, window_days=14)
+
+    # Mature baseline: mu = 2.0, sigma = 1.0 -> clamp ceiling = 2.0 + 3.0 = 5.0
+    storage.save_host_baseline({
+        "agent_id": "agent-win-01",
+        "sample_count": 10,
+        "metadata_json": {
+            "feature_means": {"unique_workstations_300s": 2.0},
+            "feature_stds": {"unique_workstations_300s": 1.0},
+            "feature_sample_counts": {"unique_workstations_300s": 10},
+            "short_term_sums": {},
+            "short_term_counts": {},
+            "last_merge_date": "2026-10-16",
+            "last_observation_at": "2026-10-16T10:00:00Z",
+        },
+        "created_at": "2026-10-16T10:00:00Z",
+    })
+
+    # Observe an extreme surge of 50.0
+    engine.update_baseline(
+        "agent-win-01",
+        {"unique_workstations_300s": 50.0},
+        observed_at="2026-10-16T12:00:00Z",
+    )
+
+    saved = storage.load_host_baseline("agent-win-01")
+    # Winsorized value is clamped to 5.0
+    assert saved["metadata_json"]["short_term_sums"]["unique_workstations_300s"] == 5.0
+    assert saved["metadata_json"]["short_term_counts"]["unique_workstations_300s"] == 1
+
+
+def test_host_baseline_stale_and_hourly_throttling():
+    """Verify stale or sub-hourly snapshots are throttled for host baselines."""
+    storage = InMemoryRiskStorage()
+    engine = HostBaselineEngine(storage, window_days=14)
+
+    # First update
+    res1 = engine.update_baseline(
+        "agent-th-01",
+        {"unique_workstations_300s": 1.0},
+        observed_at="2026-10-16T12:00:00Z",
+    )
+    assert not res1.get("skipped")
+    assert res1["sample_count"] == 1
+
+    # Stale observation (earlier than last seen) -> skipped
+    res_stale = engine.update_baseline(
+        "agent-th-01",
+        {"unique_workstations_300s": 1.0},
+        observed_at="2026-10-16T11:00:00Z",
+    )
+    assert res_stale.get("skipped") is True
+    assert res_stale["reason"] == "host throttled"
+
+    # Rapid observation within 30 minutes (< 3600s) -> skipped
+    res_fast = engine.update_baseline(
+        "agent-th-01",
+        {"unique_workstations_300s": 1.0},
+        observed_at="2026-10-16T12:30:00Z",
+    )
+    assert res_fast.get("skipped") is True
+    assert res_fast["reason"] == "host throttled"
+
+    # Eligible observation after 65 minutes -> accepted
+    res_ok = engine.update_baseline(
+        "agent-th-01",
+        {"unique_workstations_300s": 1.0},
+        observed_at="2026-10-16T13:05:00Z",
+    )
+    assert not res_ok.get("skipped")
+    assert res_ok["sample_count"] == 2
+
+
+def test_host_baseline_suppressed_multi_workstation_does_not_mask_subsequent_rules():
+    """Verify that suppressing an expected multi-workstation pattern does not mask velocity or off-hours alerts."""
+    # Mature jump box baseline where 8 workstations is expected
+    host_deviations = {
+        "unique_workstations_300s": 0.5,  # Z < 2.0 -> expected multi-workstation
+        "auth_rate_300s": 3.5,            # Z >= 2.0 -> unexpected velocity spike
+        "off_hours_auth_count": 4.0,      # Z >= 2.0 -> unexpected off-hours burst
+    }
+
+    # 1. Expected multi-workstation + unexpected velocity spike
+    features_velocity = {
+        "unique_workstations_300s": 8.0,
+        "edr_auth_event_count_window": 10.0,
+        "edr_auth_events_per_minute_window": 5.5,
+        "auth_fail_rate_300s": 0.0,
+    }
+    res_vel = detect_auth_burst(features_velocity, host_deviations=host_deviations)
+    assert res_vel["is_anomaly"] is True
+    assert res_vel["score"] == 60.0
+    assert res_vel["burst_type"] == "VELOCITY_BURST"
+
+    # 2. Expected multi-workstation + unexpected off-hours burst
+    features_off_hours = {
+        "unique_workstations_300s": 8.0,
+        "edr_auth_event_count_window": 5.0,
+        "off_hours_auth_count": 3.0,
+        "auth_fail_rate_300s": 0.0,
+    }
+    # Rate deviation is normal (not spiking), but off-hours deviation is unexpected
+    host_devs_day = {
+        "unique_workstations_300s": 0.5,
+        "auth_rate_300s": 0.0,
+        "off_hours_auth_count": 3.5,
+    }
+    res_off = detect_auth_burst(features_off_hours, host_deviations=host_devs_day)
+    assert res_off["is_anomaly"] is True
+    assert res_off["score"] == 35.0
+    assert res_off["burst_type"] == "OFF_HOURS_BURST"
+
+
+def test_host_baseline_anti_poisoning_rejection_on_off_hours_burst():
+    """Verify that even a low-risk off-hours burst anomaly (score 35) blocks host baseline training."""
+    storage = InMemoryRiskStorage()
+
+    # 1. Clean observation trains the host baseline
+    payload_clean = {
+        "payload_id": "p-clean-1",
+        "agent_id": "agent-host-200",
+        "username": "bob",
+        "collected_at": "2026-10-16T10:00:00Z",
+        "collectors": [
+            {
+                "collector": "auth_monitor",
+                "status": "success",
+                "payload": {
+                    "unique_workstations_300s": 1.0,
+                    "auth_rate_300s": 0.2,
+                },
+            },
+        ],
+    }
+    res1 = process_telemetry_risk(storage, payload_clean)
+    assert res1["risk_score"] < 40.0
+    host_b1 = storage.load_host_baseline("agent-host-200")
+    assert host_b1 is not None
+    assert host_b1["sample_count"] == 1
+
+    # 2. Observation 2 hours later has off-hours burst (score 35.0, overall risk < 40)
+    payload_off_hours = {
+        "payload_id": "p-off-1",
+        "agent_id": "agent-host-200",
+        "username": "bob",
+        "collected_at": "2026-10-16T12:00:00Z",
+        "collectors": [
+            {
+                "collector": "auth_monitor",
+                "status": "success",
+                "payload": {
+                    "off_hours_auth_count": 3.0,
+                    "edr_auth_event_count_window": 4.0,
+                },
+            },
+        ],
+    }
+    res2 = process_telemetry_risk(storage, payload_off_hours)
+    # Risk score may be moderate (e.g. 35.0), but auth anomaly must block host baseline update
+    assert res2["correlated_signals_json"].get("auth_burst", {}).get("is_anomaly") is True
+    host_b2 = storage.load_host_baseline("agent-host-200")
+    # Sample count must remain 1 (not updated)
+    assert host_b2["sample_count"] == 1
+
+
+def test_host_baseline_auth_rate_zero_deviation_not_overridden():
+    """Verify that a valid 0.0 auth_rate_300s deviation is not treated as falsy/missing."""
+    features = {
+        "auth_rate_300s": 5.0,
+        "edr_auth_events_per_minute_window": 5.0,
+        "auth_fail_rate_300s": 0.05,
+    }
+
+    # Host has an established baseline where auth_rate_300s deviation is exactly 0.0 (rate_expected is True).
+    # edr_auth_events_per_minute_window has a legacy or fallback deviation of 4.5.
+    # An explicit 'is not None' check ensures 0.0 is used, keeping rate_expected == True.
+    host_deviations = {
+        "auth_rate_300s": 0.0,
+        "edr_auth_events_per_minute_window": 4.5,
+    }
+
+    res = detect_auth_burst(features, host_deviations=host_deviations)
+    # Because rate_expected is True (Z = 0.0 < 2.0) and fail_ratio < 0.20, velocity burst is suppressed
+    assert res["score"] == 0.0
+    assert not res["is_anomaly"]
 

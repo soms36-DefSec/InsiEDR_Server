@@ -45,6 +45,12 @@ class BaseStorage:
     def load_baseline(self, username: str) -> dict[str, Any] | None:
         raise NotImplementedError()
 
+    def save_host_baseline(self, baseline: dict[str, Any]) -> None:
+        raise NotImplementedError()
+
+    def load_host_baseline(self, agent_id: str) -> dict[str, Any] | None:
+        raise NotImplementedError()
+
     def get_feature_vector(self, payload_id: str) -> dict[str, Any]:
         raise NotImplementedError()
 

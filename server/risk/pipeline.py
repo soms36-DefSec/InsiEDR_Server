@@ -4,7 +4,7 @@ import logging
 from typing import Any, Dict
 from server.risk.aggregator import RiskAggregator
 from server.risk.signals import detect_auth_burst, score_zscore
-from server.baseline.engine import BaselineEngine
+from server.baseline.engine import BaselineEngine, HostBaselineEngine
 from server.config import config
 
 logger = logging.getLogger("insiedr.risk.pipeline")
@@ -138,12 +138,16 @@ def process_telemetry_risk(storage, payload: Dict[str, Any]) -> Dict[str, Any]:
     try:
         raw_features = extract_features_from_payload(payload)
 
-        # Score against the user's prior baseline before updating it. Ingested
-        # snapshots are sampled hourly and only low-risk observations train it.
+        # Score against the user's prior baseline and the agent's host baseline before updating.
+        # Ingested snapshots are sampled hourly and only eligible, non-alerting observations train them.
         detector_results = []
         baseline_engine = None
+        host_engine = None
         deviations: Dict[str, float] = {}
+        host_deviations: Dict[str, float] = {}
         baseline_features = _user_baseline_features(raw_features)
+        host_features = _host_baseline_features(raw_features)
+
         if username_value and hasattr(storage, "load_baseline") and hasattr(storage, "save_baseline"):
             try:
                 baseline_engine = BaselineEngine(storage, window_days=config.baseline_window_days)
@@ -151,8 +155,17 @@ def process_telemetry_risk(storage, payload: Dict[str, Any]) -> Dict[str, Any]:
                 deviations = baseline_engine.get_deviation_vector(username_value, baseline_features, role=role)
             except Exception as baseline_err:
                 logger.debug("User baseline unavailable for %s: %s", username_value, baseline_err)
+
+        if agent_id and hasattr(storage, "load_host_baseline") and hasattr(storage, "save_host_baseline"):
+            try:
+                host_engine = HostBaselineEngine(storage, window_days=config.baseline_window_days)
+                host_deviations = host_engine.get_deviation_vector(agent_id, host_features)
+            except Exception as host_err:
+                logger.debug("Host baseline unavailable for %s: %s", agent_id, host_err)
+
+        auth_burst_result = detect_auth_burst(raw_features, host_deviations=host_deviations)
         detector_results.extend((
-            detect_auth_burst(raw_features),
+            auth_burst_result,
             # Only user-baseline features enter the user z-score path. In
             # particular, do not let the host-wide agent logon velocity score
             # leak back into a per-user anomaly score.
@@ -174,6 +187,26 @@ def process_telemetry_risk(storage, payload: Dict[str, Any]) -> Dict[str, Any]:
                 )
             except Exception as baseline_err:
                 logger.debug("User baseline update skipped for %s: %s", username_value, baseline_err)
+
+        # Host baseline anti-poisoning policy:
+        # Update host baseline only from eligible, non-alerting observations.
+        # Prevent active auth anomalies (any is_anomaly) or elevated overall threat states from teaching the baseline.
+        if host_engine is not None and agent_id:
+            risk_val = float(risk_result.get("risk_score", 0.0))
+            auth_anomaly = bool(auth_burst_result.get("is_anomaly"))
+            has_critical = any(
+                raw_features.get(k) is True or str(raw_features.get(k, "")).strip().lower() in ("1", "true", "yes")
+                for k in ("credential_dumping_suspected", "threats_detected", "threat_triggered")
+            )
+            if risk_val < 40.0 and not auth_anomaly and not has_critical:
+                try:
+                    host_engine.update_baseline(
+                        agent_id,
+                        host_features,
+                        observed_at=payload.get("collected_at"),
+                    )
+                except Exception as host_err:
+                    logger.debug("Host baseline update skipped for %s: %s", agent_id, host_err)
 
         event_dict = {
             "payload_id": payload_id,
@@ -236,6 +269,34 @@ def _user_baseline_features(features: Dict[str, Any]) -> Dict[str, float]:
     )
     result: Dict[str, float] = {}
     for name in user_feature_names:
+        if name not in features or features[name] is None:
+            continue
+        try:
+            value = float(features[name])
+        except (TypeError, ValueError):
+            continue
+        if value == value:
+            result[name] = value
+    return result
+
+
+def _host_baseline_features(features: Dict[str, Any]) -> Dict[str, float]:
+    """
+    Extract baseline inputs associated with the endpoint host/machine.
+
+    Covers host-wide authentication, workstation traversal, and hardware velocity.
+    """
+    host_feature_names = (
+        "unique_workstations_300s",
+        "auth_rate_300s",
+        "edr_auth_events_per_minute_window",
+        "edr_auth_event_count_window",
+        "off_hours_auth_count",
+        "daily_unique_pc_count",
+        "daily_device_connect_count",
+    )
+    result: Dict[str, float] = {}
+    for name in host_feature_names:
         if name not in features or features[name] is None:
             continue
         try:
