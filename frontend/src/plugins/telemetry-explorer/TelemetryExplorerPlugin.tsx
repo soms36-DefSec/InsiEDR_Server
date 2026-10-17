@@ -23,7 +23,6 @@ import type { PluginProps } from '../registry';
 import { VirtualizedLogTable } from '../../components/telemetry/VirtualizedLogTable';
 import { LogInspectorDrawer } from '../../components/telemetry/LogInspectorDrawer';
 import { TelemetryHistogram } from '../../components/telemetry/TelemetryHistogram';
-import { ExportTrainingDatasetModal } from '../../components/telemetry/ExportTrainingDatasetModal';
 import { CollectorDatasetExportModal } from '../../components/telemetry/CollectorDatasetExportModal';
 import { Button } from '../../components/ui/Button';
 import type { TelemetryLog } from '../../types/telemetry';
@@ -37,7 +36,6 @@ import {
   Clock,
   ShieldAlert,
   Activity,
-  FileSpreadsheet,
   Layers,
   ChevronLeft,
   ChevronRight,
@@ -87,7 +85,6 @@ export interface TelemetryExplorerPluginProps extends PluginProps {
 export const TelemetryExplorerPlugin: React.FC<TelemetryExplorerPluginProps> = ({ context, useExplorerApi = true }) => {
   const [logs, setLogs] = useState<TelemetryLog[]>(context.logs || []);
   const [selectedLog, setSelectedLog] = useState<TelemetryLog | null>(null);
-  const [showTrainingModal, setShowTrainingModal] = useState<boolean>(false);
   const [showCollectorExportModal, setShowCollectorExportModal] = useState<boolean>(false);
   const [availableCollectors, setAvailableCollectors] = useState<string[]>([]);
   const [lastUpdated, setLastUpdated] = useState<Date | null>(null);
@@ -466,15 +463,6 @@ export const TelemetryExplorerPlugin: React.FC<TelemetryExplorerPluginProps> = (
             <Button
               variant="secondary"
               size="sm"
-              onClick={() => setShowTrainingModal(true)}
-              icon={<FileSpreadsheet className="w-3.5 h-3.5 text-blue-600" />}
-              title="Export User, Parameters, and Raw Logs over N days for ML training"
-            >
-              ML Dataset
-            </Button>
-            <Button
-              variant="secondary"
-              size="sm"
               onClick={() => setShowCollectorExportModal(true)}
               icon={<Layers className="w-3.5 h-3.5 text-indigo-600" />}
               title="Export single collector dataset with unrolled feature columns"
@@ -695,14 +683,6 @@ export const TelemetryExplorerPlugin: React.FC<TelemetryExplorerPluginProps> = (
       <LogInspectorDrawer
         log={selectedLog}
         onClose={() => setSelectedLog(null)}
-      />
-
-      {/* ML Training Dataset Export Modal */}
-      <ExportTrainingDatasetModal
-        isOpen={showTrainingModal}
-        onClose={() => setShowTrainingModal(false)}
-        availableUsers={context.summary?.users || []}
-        defaultUsername={searchTerm.trim() || undefined}
       />
 
       {/* Collector-Specific Dataset Export Modal */}

@@ -72,7 +72,7 @@ export const AppLayout: React.FC = () => {
             <div>
               <div className="flex items-center gap-2.5">
                 <h1 className="text-xl sm:text-2xl font-semibold text-slate-900 tracking-tight">
-                  {activePlugin?.name || 'SOC Matrix'}
+                  {activePlugin?.name || 'Insider EDR - Dashboard'}
                 </h1>
                 <span className="px-2 py-0.5 text-[11px] font-medium rounded-full bg-slate-100 text-slate-600 border border-slate-200/80">
                   {activePluginId === 'soc-matrix' ? 'Operational View' : 'Forensics View'}

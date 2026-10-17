@@ -20,7 +20,7 @@ export function initializePlugins(): void {
   // 1. SOC Threat Matrix: Primary operational overview, live threat feed, and heuristic risk scoring
   pluginRegistry.register({
     id: 'soc-matrix',
-    name: 'SOC Matrix',
+    name: 'Insider EDR - Dashboard',
     description: 'Fleet risk posture, real-time threat feed, and heuristic correlation engine',
     icon: ShieldAlert,
     component: SocMatrixPlugin,

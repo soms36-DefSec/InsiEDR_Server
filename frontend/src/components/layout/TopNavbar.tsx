@@ -19,14 +19,12 @@ import {
   Download,
   ChevronDown,
   FileCode,
-  Database,
   Layers,
   Shield,
   ShieldAlert,
   FileSpreadsheet,
 } from 'lucide-react';
 import { triggerServerExport, exportFleetRiskCSV } from '../../services/api';
-import { ExportTrainingDatasetModal } from '../telemetry/ExportTrainingDatasetModal';
 import { CollectorDatasetExportModal } from '../telemetry/CollectorDatasetExportModal';
 import type { EndpointRow, RiskEvent } from '../../types/telemetry';
 import { getRiskLevel } from '../../utils/formatters';
@@ -55,7 +53,6 @@ export const TopNavbar: React.FC<TopNavbarProps> = ({
 }) => {
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [showExportMenu, setShowExportMenu] = useState(false);
-  const [showTrainingModal, setShowTrainingModal] = useState(false);
   const [showCollectorModal, setShowCollectorModal] = useState(false);
 
   const summary = context.summary;
@@ -241,24 +238,10 @@ export const TopNavbar: React.FC<TopNavbarProps> = ({
                   onClick={() => setShowExportMenu(false)}
                 />
                 <div className="absolute right-0 mt-2 w-72 bg-white border border-slate-200 rounded-lg shadow-lg z-50 py-1.5 text-xs">
-                  {/* ML Model Training Dataset Section */}
+                  {/* Forensic Collector Datasets Section */}
                   <div className="px-3 py-1 text-[10px] font-semibold uppercase tracking-wider text-slate-400">
-                    Model Training Datasets
+                    Forensic Datasets
                   </div>
-                  <button
-                    onClick={() => {
-                      setShowTrainingModal(true);
-                      setShowExportMenu(false);
-                    }}
-                    className="w-full text-left px-3 py-2 text-slate-800 hover:bg-slate-50 flex items-center gap-2.5 transition-colors cursor-pointer border-b border-slate-100"
-                  >
-                    <Database className="w-4 h-4 text-blue-600 shrink-0" />
-                    <div>
-                      <div className="font-semibold text-slate-900 text-xs">ML Training Dataset (.xlsx / CSV)</div>
-                      <div className="text-[10px] text-slate-500">Multitab parameters, features & raw logs</div>
-                    </div>
-                  </button>
-
                   <button
                     onClick={() => {
                       setShowCollectorModal(true);
@@ -331,13 +314,6 @@ export const TopNavbar: React.FC<TopNavbarProps> = ({
           </div>
         </div>
       </div>
-
-      {/* ML Model Training Dataset Export Modal */}
-      <ExportTrainingDatasetModal
-        isOpen={showTrainingModal}
-        onClose={() => setShowTrainingModal(false)}
-        availableUsers={summary?.users || []}
-      />
 
       {/* Collector-Specific Dataset Export Modal */}
       <CollectorDatasetExportModal

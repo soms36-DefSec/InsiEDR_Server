@@ -17,9 +17,8 @@ import { ChartsSection } from '../../components/soc/ChartsSection';
 import { UserRiskTable } from '../../components/soc/UserRiskTable';
 import { DrillDownDrawer } from '../../components/soc/DrillDownDrawer';
 import { TelemetryHistogram } from '../../components/telemetry/TelemetryHistogram';
-import { ExportTrainingDatasetModal } from '../../components/telemetry/ExportTrainingDatasetModal';
 import { Card } from '../../components/ui/Card';
-import { Download, Database, BarChart3 } from 'lucide-react';
+import { Download, BarChart3 } from 'lucide-react';
 import { triggerServerExport } from '../../services/api';
 
 export const SocMatrixPlugin: React.FC<PluginProps> = ({ context }) => {
@@ -28,7 +27,6 @@ export const SocMatrixPlugin: React.FC<PluginProps> = ({ context }) => {
   const [drillHostname, setDrillHostname] = useState<string | null>(null);
   const [filterLevel, setFilterLevel] = useState<string | null>(null);
   const [timeRange, setTimeRange] = useState<string>('1h');
-  const [showTrainingModal, setShowTrainingModal] = useState<boolean>(false);
 
   const handleSelectEndpoint = (user: string, host?: string) => {
     setDrillUser(user);
@@ -87,16 +85,6 @@ export const SocMatrixPlugin: React.FC<PluginProps> = ({ context }) => {
                 </button>
               ))}
             </div>
-
-            {/* Export ML Model Training Dataset Action Button */}
-            <button
-              onClick={() => setShowTrainingModal(true)}
-              className="hidden sm:flex items-center gap-1.5 px-2.5 py-1 text-xs font-semibold text-indigo-700 bg-indigo-50 hover:bg-indigo-100/80 rounded border border-indigo-200 transition-colors cursor-pointer"
-              title="Export complete ML model training dataset in Excel (.xlsx) or CSV format"
-            >
-              <Database className="w-3.5 h-3.5" />
-              <span>Export ML Dataset</span>
-            </button>
           </div>
         }
       >
@@ -159,13 +147,6 @@ export const SocMatrixPlugin: React.FC<PluginProps> = ({ context }) => {
         username={drillUser}
         hostname={drillHostname}
         onClose={handleCloseDrillDown}
-      />
-
-      {/* 6. ML Model Training Dataset Export Modal */}
-      <ExportTrainingDatasetModal
-        isOpen={showTrainingModal}
-        onClose={() => setShowTrainingModal(false)}
-        availableUsers={summary?.users || []}
       />
     </div>
   );
