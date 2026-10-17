@@ -640,3 +640,66 @@ def test_runtime_file_pause_flag_retries_incoming_logs(client, mock_storage, tmp
             flag.unlink()
         config_module.ENABLE_LOG_INGESTION = orig_state
 
+
+def test_ingest_oversized_request_rejected_with_413(client, monkeypatch):
+    """Verify that requests exceeding max_request_bytes are rejected with HTTP 413."""
+    import server.config as config_module
+
+    # Temporarily set max request size to 128 bytes
+    monkeypatch.setenv("INSIEDR_MAX_REQUEST_BYTES", "128")
+    monkeypatch.setattr(config_module, "ENABLE_LOG_INGESTION", True)
+
+    headers = {
+        "X-Crypto-Scheme": "aes-256-gcm",
+        "X-Protocol-Version": "2.0",
+        "X-Agent-ID": "test-agent-01",
+        "X-Payload-ID": "test-payload-oversized",
+        "Content-Type": "application/json",
+    }
+    # Large payload exceeding 128 bytes
+    oversized_body = json.dumps({"data": "A" * 500})
+    resp = client.post("/api/v1/logs", content=oversized_body, headers=headers)
+    assert resp.status_code == 413
+    data = resp.json()
+    err_msg = str(data.get("error", "")).lower() + " " + str(data.get("detail", "")).lower()
+    assert "exceeds limit" in err_msg or "413" in err_msg
+
+
+@pytest.mark.asyncio
+async def test_read_bounded_request_body_stream_error_fails_closed():
+    """Verify that a broken stream fails closed with 400 IngestError and does not fall back."""
+    from server.api.ingest import _read_bounded_request_body, IngestError
+
+    class BrokenStreamRequest:
+        async def stream(self):
+            yield b'{"partial":'
+            raise ConnectionResetError("client abruptly disconnected")
+
+        async def body(self):
+            # This should NEVER be called when stream() fails!
+            raise AssertionError("Fallback to unmetered body() should not occur on stream error!")
+
+    req = BrokenStreamRequest()
+    with pytest.raises(IngestError) as exc_info:
+        await _read_bounded_request_body(req, max_bytes=1024)
+    assert exc_info.value.status_code == 400
+    assert "error reading request body stream" in str(exc_info.value)
+
+
+def test_https_enforcement_rejects_untrusted_client(client, monkeypatch):
+    """Verify that when REQUIRE_HTTPS is True, non-HTTPS requests are rejected with 403."""
+    from server.config import config
+    monkeypatch.setenv("INSIEDR_REQUIRE_HTTPS", "true")
+
+    headers = {
+        "X-Crypto-Scheme": "aes-256-gcm",
+        "X-Protocol-Version": "2.0",
+        "X-Agent-ID": "test-agent-01",
+        "X-Payload-ID": "test-payload-http",
+        "Content-Type": "application/json",
+        "X-Forwarded-Proto": "http",
+    }
+    resp = client.post("/api/v1/logs", json={"data": "test"}, headers=headers)
+    assert resp.status_code == 403
+    assert "https is required" in resp.text.lower()
+

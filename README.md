@@ -120,29 +120,27 @@ For frontend architecture and custom UI plugin development, see [frontend/README
 
 InsiEDR features dynamic plugin systems for both the backend and frontend:
 
-### Backend Threat Detector Plugins (`server/detectors/`)
-Subclass `Detector` to add custom analytical rules or external intelligence feeds:
+### Cryptographic Scheme Adapters (`server/crypto/`)
+Subclass `CryptoAdapter` to add custom wire encryption schemes or hardware security modules (HSMs):
 ```python
-from server.detectors.base import Detector
-from server.detectors.registry import register_detector
+from server.crypto.base import CryptoAdapter
+from server.plugin_registry import registry
 
-@register_detector
-class CloudStorageExfiltrationDetector(Detector):
+class CustomAEADCryptoPlugin(CryptoAdapter):
     @property
-    def name(self) -> str:
-        return "cloud_storage_exfiltration"
+    def scheme_name(self) -> str:
+        return "custom-aead-v1"
 
-    def detect(self, payload_id, agent_id, username, features, baseline, storage=None):
-        http_bytes = features.get("http_bytes_uploaded", 0)
-        if http_bytes > 500_000_000:  # 500MB
-            return self.format_result(
-                detector_name=self.name,
-                score=85.0,
-                is_anomaly=True,
-                reason="Mass outbound cloud storage transfer detected."
-            )
-        return self.format_result(detector_name=self.name, score=0.0, is_anomaly=False)
+    def decrypt(self, envelope: dict) -> bytes:
+        # Custom decryption logic
+        ...
+
+# Register with server runtime
+registry.register("custom-aead-v1", CustomAEADCryptoPlugin())
 ```
+
+### Heuristic Rule Modules (`heuristics/`)
+Add domain-specific insider threat rules across Logon, File, Device, or HTTP channels by implementing rule evaluations in `heuristics/*_rules.py` and registering them with `detect_insider_threat()` in `heuristics/detector.py`.
 
 ### Frontend UI Plugins (`frontend/src/plugins/`)
 Create custom visualizations, analyst playbooks, or SIEM connectors in React using `PluginProps` and `registerPlugin()`.

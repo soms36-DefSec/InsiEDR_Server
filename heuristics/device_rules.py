@@ -1,61 +1,55 @@
+from __future__ import annotations
+
 from math import isnan
 
 
-def safe_get(features, key, default=0):
-    value = features.get(key, default)
-    if value is None:
-        return default
+def _number(features, name, default=0.0):
+    value = features.get(name, default)
     try:
-        if isinstance(value, float) and isnan(value):
-            return default
-    except Exception:
-        pass
-    return value
+        result = float(value)
+        return default if isnan(result) else result
+    except (TypeError, ValueError):
+        return default
 
-
-# ==============================================================
-# Threshold Revision — v0.5 Hardening  (all thresholds ×5)
-#
-# Original → New
-#   Repeated Short USB Connects : connect >= 10, disconnect >= 10
-#                               → connect >= 50, disconnect >= 50
-# ==============================================================
 
 def detect_device_scenarios(features):
-
     detections = []
+    transfer_count = max(
+        _number(features, "daily_files_to_removable_count"),
+        _number(features, "external_drive_file_copy"),
+        _number(features, "usb_file_transfer_count"),
+        _number(features, "large_usb_transfer"),
+    )
+    connects = max(_number(features, "usb_connect_count"), _number(features, "daily_device_connect_count"))
+    unauthorized = features.get("unauthorized_usb_detected") is True
 
-    def add_detection(name, severity, score, confidence, reasons):
+    if transfer_count > 0:
+        severity = "HIGH" if transfer_count >= 20 else "MEDIUM"
         detections.append({
-            "scenario": name,
+            "scenario": "Bulk USB File Transfer",
+            "scenario_id": "S3",
             "severity": severity,
-            "score": score,
-            "confidence": confidence,
-            "reasons": reasons
+            "score": 80 if transfer_count >= 20 else 60,
+            "confidence": "HIGH",
+            "reasons": [f"files_or_transfer_units={transfer_count:g}"],
         })
-
-    usb_connect_count       = safe_get(features, "usb_connect_count")
-    usb_disconnect_count    = safe_get(features, "usb_disconnect_count")
-    after_hours_usb_usage   = safe_get(features, "after_hours_usb_usage")
-    daily_device_connect    = safe_get(features, "daily_device_connect_count")
-    daily_device_flag       = safe_get(features, "daily_device_usage_flag")
-    first_usb_usage_time    = safe_get(features, "first_usb_usage_time")
-    last_usb_usage_time     = safe_get(features, "last_usb_usage_time")
-
-    # ----------------------------------------------------------
-    # Scenario 1 — Repeated Short USB Connects (Extreme Rapid Insertion Burst)
-    # Thresholds: connect >= 300, disconnect >= 300
-    # ----------------------------------------------------------
-    if (usb_connect_count >= 300 and usb_disconnect_count >= 300):
-        add_detection(
-            name="Repeated Short USB Connects",
-            severity="MEDIUM",
-            score=10,
-            confidence="HIGH",
-            reasons=[
-                f"usb_connect_count={usb_connect_count} (threshold >=300)",
-                f"usb_disconnect_count={usb_disconnect_count} (threshold >=300)"
-            ]
-        )
+    elif unauthorized:
+        detections.append({
+            "scenario": "Unapproved USB Device",
+            "scenario_id": "S3_PRECURSOR",
+            "severity": "MEDIUM",
+            "score": 40,
+            "confidence": "MEDIUM",
+            "reasons": ["unauthorized_usb_detected=true; no transfer evidence"],
+        })
+    elif connects > 0:
+        detections.append({
+            "scenario": "USB Device Activity",
+            "scenario_id": "S3_PRECURSOR",
+            "severity": "LOW",
+            "score": 10,
+            "confidence": "LOW",
+            "reasons": [f"device_connect_count={connects:g}; transfer evidence is unavailable"],
+        })
 
     return detections

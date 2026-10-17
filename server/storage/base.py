@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from typing import Any
+from contextlib import contextmanager
 
 
 class StorageError(RuntimeError):
@@ -8,6 +9,9 @@ class StorageError(RuntimeError):
 
 
 class BaseStorage:
+    @contextmanager
+    def acquire_entity_lock(self, entity_id: str):
+        yield
     def store_raw_payload(self, envelope: dict[str, Any], decrypted_payload: dict[str, Any]) -> None:
         raise NotImplementedError()
 
@@ -78,6 +82,12 @@ class BaseStorage:
 
     def list_recent_risk_scores(self, username: str | None, hostname: str | None, limit: int = 7) -> list[dict[str, Any]]:
         raise NotImplementedError()
+
+    def get_max_risk_score_in_window(self, username: str, hours: int = 4) -> float:
+        raise NotImplementedError()
+
+    def get_recent_risk_events_in_window(self, username: str, hours: int = 4, limit: int = 50) -> list[dict[str, Any]]:
+        return []
 
     def get_pc_status(self, seconds_since_online: int = 15) -> dict[str, Any]:
         """Returns unique PC count, online count, offline count based on last_seen_at"""

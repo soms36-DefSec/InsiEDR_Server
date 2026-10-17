@@ -20,16 +20,16 @@ RUN npm run build
 # ─────────────────────────────────────────────────────────────────────────────
 # Stage 2 – Python dependency build (compilers stay out of the runtime)
 # ─────────────────────────────────────────────────────────────────────────────
-FROM python:3.10-slim AS python-builder
+FROM python:3.11-slim AS python-builder
 
 WORKDIR /build
 RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential libpq-dev \
     && rm -rf /var/lib/apt/lists/*
-COPY requirements.txt requirements-postgres.txt ./
-RUN pip wheel --no-cache-dir --wheel-dir=/wheels -r requirements.txt -r requirements-postgres.txt
+COPY requirements.txt requirements-postgres.txt constraints.txt ./
+RUN pip wheel --no-cache-dir --wheel-dir=/wheels -r requirements.txt -r requirements-postgres.txt -c constraints.txt
 
-FROM python:3.10-slim AS runtime
+FROM python:3.11-slim AS runtime
 
 WORKDIR /app
 
@@ -43,11 +43,11 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 # Copy requirements files first to leverage Docker cache
-COPY requirements.txt requirements-postgres.txt ./
+COPY requirements.txt requirements-postgres.txt constraints.txt ./
 
 # Copy pre-compiled wheels from builder and install
 COPY --from=python-builder /wheels /wheels
-RUN pip install --no-cache-dir --no-index --find-links=/wheels -r requirements.txt -r requirements-postgres.txt \
+RUN pip install --no-cache-dir --no-index --find-links=/wheels -r requirements.txt -r requirements-postgres.txt -c constraints.txt \
     && rm -rf /wheels
 
 # Copy runtime source without local configuration or development artifacts.

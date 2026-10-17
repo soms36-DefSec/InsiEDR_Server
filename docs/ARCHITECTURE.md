@@ -78,32 +78,57 @@ When telemetry arrives at `POST /api/logs`:
 
 ---
 
-## 3. The 4-Tier Detection Pipeline (`ModelBridge`)
+## 3. The Multi-Stage Detection Pipeline & ML Integration Boundary
 
-Decrypted telemetry is extracted into a normalized feature vector across four domains:
-* **Logon Activity**: Logon frequency, after-hours ratio, distinct machine counts.
-* **File Activity**: Total reads, modifications, daily unique filenames, Honeytoken trips.
-* **Device Activity**: USB insertions, unapproved hardware connects.
-* **HTTP / Network**: Upload volumes, external domains, file-sharing domain visits.
+Decrypted telemetry is extracted into a normalized feature vector across core behavioral domains (Logon, File, Device, HTTP/Network, Process, Memory).
 
-### Layer 1: Deterministic Heuristics (`heuristics/`)
-* Evaluates non-negotiable behavioral boundaries based on the CERT Insider Threat dataset.
-* Immediately generates a deterministic severity level (`INFO`, `LOW`, `MEDIUM`, `HIGH`, `CRITICAL`).
-* Example: Any interaction with a known decoy file immediately trips a `CRITICAL` severity rating with 100% confidence.
+### Core Deterministic Server Pipeline (Active, Standalone)
 
-### Layer 2: Domain Isolation Forest (`model/`)
-* Unsupervised outlier scoring (`domain_isolation_forest.pkl`).
-* Evaluates domain-specific distributions (File, Logon, Device, HTTP) against learned baseline parameters.
-* Identifies "unknown unknowns" that violate statistical normality without tripping a hardcoded rule.
+The server evaluates risk deterministically on ingestion without requiring active ML inference services:
 
-### Layer 3: Supervised XGBoost Classifier (`model/`)
-* Multiclass gradient-boosted decision tree (`scenario_xgb.pkl`).
-* Classifies feature combinations into specific insider threat scenario classes (e.g., Scenario 1: IT sabotage, Scenario 2: Intellectual property theft, Scenario 3: Bulk data exfiltration).
+1. **Heuristics Detection Engine (`heuristics/`)**:
+   - **CERT Behavioral Rules**: Evaluates non-negotiable insider threat indicators mapped to canonical CERT scenarios (S1 IT Sabotage, S2 IP Theft, S3 Exfiltration, S4 Cloud Exfiltration, etc.).
+   - **Direct Threat Detectors**: Real-time evaluation of endpoint sensor findings:
+     - `S1_CRED_DUMP` (CRITICAL, score 100): Suspected LSASS credential dumping.
+     - `S1_INJECTION` (HIGH, score 85): In-memory unbacked executable code regions or threats.
+     - `NETWORK_TUNNELING` (HIGH, score 80): Reverse shell/tunneling process count or DNS tunneling.
+     - `HONEYTOKEN` (CRITICAL, score 100): Direct tripwire interaction with canary/decoy assets.
+     - `S1` (HIGH, score 85): Persistence modifications correlated with after-hours logon or authentication bursts.
+   - **Correlation Clusters & Superposition**: Groups related rules into non-linear clusters to prevent artificial score stacking, applying sub-linear decay on secondary signals and cross-domain superposition.
 
-### Layer 4: RedRVFL Temporal Sequence Modeler (`model/`)
-* Random Vector Functional Link (RedRVFL) network with RandomLSTM recurrent units (`rvfl_model.pkl`).
-* Evaluates rolling sequences of historical user days.
-* Computes temporal behavioral velocity: identifies whether activity is accelerating toward exfiltration or decaying back to normal.
+2. **Authentication Burst Detector (`server/risk/signals.py`)**:
+   - Evaluates host-scoped short-window (5-minute) successful-logon velocity, failure ratios, workstation breadth, and off-hours activity.
+   - Emits factual burst categories. Current aggregate event-log telemetry does not support account-specific brute-force or password-spray attribution.
+
+3. **User-Profile Baseline & Z-Score Engine (`server/baseline/engine.py`, `server/risk/signals.py`)**:
+   - EMA baselines are keyed by the root payload username, representing the active primary session; this is not kernel-enforced SID attribution, and flattened host activity may still affect counters.
+   - Enforces dual variance floors (`_std_floor`) to prevent division by zero or false positive explosions during periods of low activity.
+   - **Anti-Poisoning Gate**: Observations are only admitted to update the baseline when the evaluated risk is below threshold (`Risk < 40`), preventing adversaries from slowly training the baseline to accept malicious behaviors.
+   - Applies hourly observation throttling to prevent high-frequency telemetry bursts from biasing the profile.
+
+4. **Risk Aggregator & Corroborator (`server/risk/aggregator.py`)**:
+   - Fuses heuristics, authentication bursts, and baseline deviations into a calibrated composite score (0–100) and severity rating (`LOW`, `MEDIUM`, `HIGH`, `CRITICAL`).
+
+### Identity-Scoped Telemetry Roadmap
+
+The current extractor matches user-keyed collector maps by the root payload username. It does not create independent identities for Windows SIDs or processes. Before introducing per-user or per-process baselines and z-scores, evolve the telemetry contract and storage model together:
+
+1. **Declare scope on every metric group:** use an explicit scope such as `host`, `user_session`, or `process`. Do not infer user scope from a collector's presence in a payload that has a root username.
+2. **Attach stable identity fields appropriate to that scope:** include `tenant_id` and `agent_id`; add `user_sid` for user-scoped events and `process_guid` (plus its owning `user_sid` where available) for process-scoped events. Keep `username` as display metadata, not as the identity key.
+3. **Partition extraction and baseline state:** preserve scope and identity during feature extraction, and use typed composite keys such as `(tenant_id, agent_id, user_sid)` or `(tenant_id, agent_id, user_sid, process_guid)`. Keep host-scoped features on a host key and prevent implicit fallback from process/user data to root-session features.
+4. **Migrate and validate before enabling:** retain existing username-keyed baselines as legacy active-session baselines, add the new scoped baselines separately, and only train or score a new scope when its identity is present and validated. Add schema-versioned fixtures and cross-scope isolation checks before rollout.
+
+Until this contract and migration exist, describe current user baselines as active-session-associated host telemetry, not as isolated per-user or per-process behavior.
+
+### External Machine Learning Integration Boundary
+
+Advanced statistical and deep learning models operate as an external model training & inference tier:
+* **Dataset Export Handlers**: The server provides high-throughput streaming exports (`/api/v1/export/training-dataset.csv`, `.xlsx`, `.ndjson`) to feed offline ML training workflows.
+* **External Model Pipeline (Optional Integration)**:
+  - **Domain Isolation Forest**: Unsupervised domain anomaly detection across feature distributions.
+  - **Supervised XGBoost Classifier**: Multiclass classification into CERT insider threat scenarios.
+  - **RedRVFL Temporal Modeler**: Random Vector Functional Link network with RandomLSTM units modeling multi-day velocity trajectories.
+* When ML inference workers are active, their scores integrate into `RiskAggregator` via the pluggable detector contract. If ML workers are offline or disabled (`INSIEDR_ENABLE_MODEL_PIPELINE=false`), the server operates at full capability using deterministic heuristics, auth burst detection, and baseline z-scores.
 
 ---
 

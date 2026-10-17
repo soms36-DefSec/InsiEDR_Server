@@ -1,87 +1,44 @@
-# InsiEDR Multi-Layer Detection Pipeline
+# InsiEDR Detection Pipeline
 
-The InsiEDR detection framework combines deterministic rules with a multi-stage machine learning pipeline to detect insider threat patterns that evade conventional endpoint controls.
+This page documents the live deterministic, authentication, and user-baseline risk path. ML inference and training are owned by the ML team and plug into the same detector-result interface; this document does not define their implementation.
 
----
+## Scenario IDs
 
-## 1. Threat Scenarios (CERT Insider Threat Mapping)
+| ID | Meaning | Evidence required |
+| --- | --- | --- |
+| `S1` | IT sabotage | Destructive file activity with after-hours authentication, an authentication burst, or a verified service, privilege, persistence, or driver change. Deletion alone is a precursor. |
+| `S2` | Data hoarding / broad file collection | High file volume and breadth, sensitive-file access, or a user-baseline deviation. Ordinary audit events are not evidence of copying. |
+| `S3` | Removable-media exfiltration | A file-to-removable transfer counter. Device insertion alone is `S3_PRECURSOR`. |
+| `S4` | Cloud exfiltration | Upload activity correlated with sensitive-file access or unusual collection. A file-sharing site visit alone is `S4_PRECURSOR`. |
+| `HONEYTOKEN` | Decoy interaction | The decoy collector reports `threat_triggered=true`; this is an immediate critical signal. |
 
-InsiEDR models threat behaviors derived from the CERT Insider Threat Dataset specification:
+Scenario IDs are shared by heuristic detections and CERT correlation output. `S1_CRED_DUMP` and `S1_INJECTION` are dedicated endpoint-security scenarios; `NETWORK_TUNNELING` is a separate network indicator and does not mean cloud exfiltration (`S4`). `AUTH_BURST`, `AUTH_LATERAL`, `FILE_DELETE`, and `S*_PRECURSOR` are supporting signal IDs, not confirmed CERT scenarios.
 
-* **Scenario 1 (IT Sabotage / Disgruntled Employee)**:
-  * User logs in after business hours and accesses systems they normally do not visit.
-  * Attempts to tamper with privileges, services, or persistence mechanisms.
-* **Scenario 2 (Intellectual Property Theft / Data Hoarding)**:
-  * User begins browsing and copying an unusually high volume of files across distinct directories.
-  * Accumulates sensitive documents before an impending termination or departure.
-* **Scenario 3 (Data Exfiltration via Removable Media)**:
-  * Abnormal file collection followed immediately by unauthorized USB flash drive insertion and bulk transfer.
-* **Scenario 4 (Cloud Exfiltration)**:
-  * Large outbound data bursts directed to unauthorized cloud storage or file-sharing websites.
-* **Honeytoken / Bait Traps**:
-  * Decoy files (`decoy_monitor.py`) planted in predictable directories. Any interaction triggers an immediate, zero-false-positive `CRITICAL` alert.
+## Live analytical path
 
----
+1. **Feature extraction:** root payload identity (`username`, `hostname`, and `agent_id`) is authoritative. User-keyed collector data is unwrapped only for the matching root username. Host-scoped collectors inherit root identity for the live risk event; an unmatched user-keyed collector is not merged into another user's features.
+2. **Deterministic heuristics:** rules evaluate logon, file, HTTP, removable-media, endpoint-security, and honeytoken evidence. LSASS credential-dumping reports are critical; unbacked executable memory and process/DNS tunneling indicators are high severity. File-sharing visits and device insertions are low-confidence precursors until transfer evidence exists.
+3. **Authentication burst:** the five-minute short-term EDR fields detect high failure ratios, repeated failures, rapid authentication across workstations, and repeated off-hours logons. Because current collectors aggregate from the Windows Security event log without per-account attribution, these metrics are treated as host-scoped indicators (`HIGH_FAILURE_BURST`, `MULTI_WORKSTATION_BURST`, `VELOCITY_BURST`, `OFF_HOURS_BURST`) rather than asserting specific tactical attack labels (e.g. brute force against a specific account or password spray). They do not independently establish a multi-stage sequence.
+4. **Baseline and z-score:** baseline rows are keyed by the root payload username, which represents the agent's active primary session. This is not kernel-enforced per-user SID attribution: host-wide activity observed while that session is active can still affect flattened file, HTTP, device, or egress counters. Known host-scoped authentication counters are excluded from personal and role baseline features, and the agent's host-wide `logon_velocity_zscore` is not passed into the per-user z-score path. If a user has fewer than 5 observations, the engine falls back to their role peer baseline (`__role_{role_name}__`), and finally to organizational safe priors (`DEFAULT_FEATURE_PRIORS`) during cold start. Role cohort baselines track member updates independently and serialize writes using PostgreSQL transaction-level advisory locks (`pg_advisory_xact_lock`) so concurrent Uvicorn worker processes neither throttle nor overwrite one another. Inactive cohort member entries older than 48 hours are automatically pruned. Baselines sample at most once per user per hour and only accept observations whose final risk is below `MEDIUM` (score < 40), limiting duplicate-snapshot influence and anomaly poisoning. Deviations are decomposed into 4 orthogonal domains (`logon`, `file`, `network`, `device`); when anomalies occur simultaneously across $\ge 2$ orthogonal domains ($\ge 2.5\sigma$), an Euclidean compound norm with multi-domain corroboration can raise the score above the strongest single-domain score.
+5. **Stateful Multi-Stage Kill-Chain Tracking:** temporal sequence evaluation correlates host stages (`CREDENTIAL_ACCESS`, `LATERAL_MOVEMENT`, `EXECUTION_PERSISTENCE`, `COLLECTION_STAGING`, `EXFILTRATION_SABOTAGE`) across a rolling 4-hour window for the same agent. Progression requires a stage in a prior event and a different newly observed stage in the current event. Multiple stages reported by one snapshot do not establish a sequence. A qualifying progression across 2 stages applies an 85.0 (`HIGH`) floor; 3 or more stages apply a 95.0 (`CRITICAL`) floor and satisfy the corroboration guard.
+6. **Aggregation:** active detector weights are renormalized over detectors that ran. The deterministic heuristic score is a floor, so absent model output cannot suppress it. Prior risk may raise the result through temporal smoothing, but cannot lower the current score.
 
-## 2. The 4 Analytical Layers
+The model team may add outputs as detector results with a name, score in `[0,100]`, confidence, and optional evidence. Missing model output is excluded from the ensemble rather than treated as a zero-risk model prediction.
 
-```
- Raw Feature Vector (Logon, File, Device, HTTP)
-        │
-        ├───> [ Layer 1: Deterministic Heuristics ] ────> Immediate Severity & Scenario Tags
-        │
-        ├───> [ Layer 2: Isolation Forest ] ───────────> Domain Anomaly Scores (0 - 100)
-        │
-        ├───> [ Layer 3: XGBoost Classifier ] ─────────> Scenario Probabilities (s1, s2, s3, normal)
-        │
-        └───> [ Layer 4: RedRVFL Sequence Modeler ] ───> Temporal Behavioral Risk (0 - 100)
-                                                                 │
-                                                                 ▼
-                                                  [ Composite Risk Aggregator ]
-```
+## Risk levels
 
-### Layer 1: Deterministic Heuristics
-The heuristic engine evaluates rigid behavioral boundaries:
-* Multi-PC lateral movement ($\ge 3$ distinct machines in 24 hours).
-* After-hours logon ratio spikes ($> 50\%$ outside normal working hours).
-* Bulk file harvesting ($> 500$ distinct files modified/read).
-* Removable media access combined with elevated file operations.
+| Score | Level |
+| ---: | --- |
+| 0–39 | `LOW` |
+| 40–69 | `MEDIUM` |
+| 70–89 | `HIGH` |
+| 90–100 | `CRITICAL` |
 
-### Layer 2: Domain Isolation Forest
-* Algorithms: Scikit-learn `IsolationForest`.
-* Computes anomaly scores across domain subsets:
-  $$\text{Score}_{\text{domain}} = - \frac{\mathbb{E}[h(x)]}{c(n)}$$
-* Produces four domain-level scores:
-  * `logon_risk` (0 - 100)
-  * `file_risk` (0 - 100)
-  * `device_risk` (0 - 100)
-  * `http_risk` (0 - 100)
+## Data and baseline constraints
 
-### Layer 3: Supervised XGBoost Classifier
-* Model artifact: `scenario_xgb.pkl`.
-* Trained on engineered behavioral features from historical insider threat events.
-* Generates a calibrated multi-class probability vector:
-  $$P(\text{Scenario}_k \mid X)$$
-
-### Layer 4: RedRVFL (Random Vector Functional Link) Network
-Traditional models treat events as isolated snapshots. InsiEDR employs an **RVFL network with RandomLSTM recurrent connections**:
-* Takes historical user day vectors over rolling time horizons (e.g., 7 to 30 days).
-* Directly captures chronological progression:
-  $$\text{Reconnaissance} \longrightarrow \text{Hoarding} \longrightarrow \text{Staging} \longrightarrow \text{Exfiltration}$$
-* Yields a continuous `behavioral_risk` score (0 - 100) that exhibits natural temporal decay as benign behavior resumes.
-
----
-
-## 3. Composite Risk Aggregation
-
-The final `composite_risk_score` is computed by the Risk Aggregator (`server/risk/aggregator.py`):
-$$\text{Risk}_{\text{final}} = \max\left(S_{\text{heuristics}}, \; \alpha \cdot S_{\text{IF}} + \beta \cdot S_{\text{XGB}} + \gamma \cdot S_{\text{RVFL}}\right)$$
-
-Where:
-* $S_{\text{heuristics}}$ acts as an absolute floor (a Honeytoken trip guarantees a score of 100).
-* Weights $\alpha, \beta, \gamma$ balance anomaly detection against sequence trajectory.
-* Scores map into severity tiers:
-  * **0 – 39**: `LOW`
-  * **40 – 69**: `MEDIUM`
-  * **70 – 89**: `HIGH`
-  * **90 – 100**: `CRITICAL`
+- Monitor exports may be host-attributed even when the live root payload contains a resolved username. Use `payload_id` to join live storage records. For CSVs without `payload_id`, a `(hostname, timestamp rounded to the nearest second)` join is an export-time fallback and must be checked for collisions.
+- Telemetry snapshots repeat rolling or daily counters. Do not treat rows as independent actions or baseline samples.
+- Missing fields remain unavailable; they must not be interpreted as zero activity.
+- The current collectors do not provide all evidence needed for high-confidence hoarding or exfiltration. In particular, file copy counts, sensitive-file classification, USB transfer volume, and cloud upload bytes may be unavailable. In those cases the system emits a precursor or does not claim a confirmed scenario.
+- Baselines are keyed to the root username/active primary session, not guaranteed SID-attributed activity. Host-level authentication logs are evaluated as host indicators, not credited or debited to the individual user baseline. If the root username is missing, the risk event is marked `unknown` and no user baseline is read or updated.
+- A kill-chain progression requires at least one stage from an earlier event and a different stage newly present in the current event; stages co-reported by one snapshot do not constitute progression.

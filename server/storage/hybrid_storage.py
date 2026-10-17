@@ -366,11 +366,17 @@ class HybridStorage(BaseStorage):
     def get_max_risk_score_in_window(self, username: str, hours: int) -> float:
         return self.threat.get_max_risk_score_in_window(username=username, hours=hours)
 
+    def get_recent_risk_events_in_window(self, username: str, hours: int = 4, limit: int = 50) -> List[Dict[str, Any]]:
+        return self.threat.get_recent_risk_events_in_window(username=username, hours=hours, limit=limit)
+
     def get_user_risk_scores(self, username: str, limit: int = 30) -> List[Dict[str, Any]]:
         return self.threat.get_user_risk_scores(username=username, limit=limit)
 
     def get_user_predictions(self, username: str) -> Optional[Dict[str, Any]]:
         return self.threat.get_user_predictions(username)
+
+    def acquire_entity_lock(self, entity_id: str):
+        return self.threat.acquire_entity_lock(entity_id)
 
     # --------------------------------------------------------------------------
     # Fleet & Analytics Aggregations

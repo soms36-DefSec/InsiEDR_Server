@@ -193,6 +193,52 @@ async def process_encrypted_request(req) -> tuple[int, dict[str, Any]]:
         _ingest_slots.release()
 
 
+async def _read_bounded_request_body(req: Any, max_bytes: int) -> dict[str, Any]:
+    """
+    Read incoming request stream bounded by max_bytes.
+    Protects against memory exhaustion from unannounced or chunked payloads.
+    """
+    raw_bytes: bytes | None = None
+
+    if hasattr(req, "stream") and callable(req.stream):
+        total_bytes = 0
+        chunks: list[bytes] = []
+        try:
+            async for chunk in req.stream():
+                total_bytes += len(chunk)
+                if total_bytes > max_bytes:
+                    raise IngestError(f"request size exceeds limit of {max_bytes} bytes", status_code=413)
+                chunks.append(chunk)
+            raw_bytes = b"".join(chunks)
+            if hasattr(req, "_body"):
+                req._body = raw_bytes
+        except IngestError:
+            raise
+        except Exception as exc:
+            # Stream reading failed; fail-closed rather than falling back to an unmetered read.
+            raise IngestError("error reading request body stream", status_code=400) from exc
+    elif hasattr(req, "body") and callable(req.body):
+        if inspect.iscoroutinefunction(req.body):
+            raw_bytes = await req.body()
+        else:
+            raw_bytes = req.body()
+        if len(raw_bytes) > max_bytes:
+            raise IngestError(f"request size exceeds limit of {max_bytes} bytes", status_code=413)
+    elif hasattr(req, "json") and callable(req.json):
+        if inspect.iscoroutinefunction(req.json):
+            return await req.json()
+        return req.json()
+    elif hasattr(req, "get_json") and callable(req.get_json):
+        return req.get_json(force=True)
+    else:
+        raise IngestError("unable to parse request JSON body")
+
+    try:
+        return json.loads(raw_bytes.decode("utf-8"))
+    except Exception as exc:
+        raise IngestError("invalid JSON body") from exc
+
+
 async def _process_encrypted_request(req) -> tuple[int, dict[str, Any]]:
     # 0. Master Ingestion Switch Check (Early Exit)
     if not config.enable_log_ingestion:
@@ -210,6 +256,13 @@ async def _process_encrypted_request(req) -> tuple[int, dict[str, Any]]:
     is_secure = getattr(req, "is_secure", False)
     if not is_secure and hasattr(req, "url"):
         is_secure = (req.url.scheme == "https")
+    # Only trust x-forwarded-proto if coming from a trusted local or internal reverse proxy peer
+    client_host = getattr(getattr(req, "client", None), "host", "") or ""
+    is_trusted_proxy = not client_host or client_host in ("127.0.0.1", "::1", "localhost", "testclient") or client_host.startswith(
+        ("10.", "172.16.", "172.17.", "172.18.", "172.19.", "172.20.", "172.21.", "172.22.", "172.23.", "172.24.", "172.25.", "172.26.", "172.27.", "172.28.", "172.29.", "172.30.", "172.31.", "192.168.")
+    )
+    if not is_secure and is_trusted_proxy and hasattr(req, "headers"):
+        is_secure = (req.headers.get("x-forwarded-proto", "").lower() == "https")
     if config.require_https and not is_secure:
         raise IngestError("HTTPS is required for telemetry ingestion", status_code=403)
 
@@ -236,21 +289,8 @@ async def _process_encrypted_request(req) -> tuple[int, dict[str, Any]]:
     except ForbiddenError as e:
         raise IngestError(str(getattr(e, "detail", str(e))), status_code=403)
 
-    try:
-        if hasattr(req, "json") and callable(req.json):
-            if inspect.iscoroutinefunction(req.json):
-                body = await req.json()
-            else:
-                body = req.json()
-        elif hasattr(req, "get_json") and callable(req.get_json):
-            body = req.get_json(force=True)
-        elif hasattr(req, "body") and callable(req.body):
-            raw_bytes = await req.body()
-            body = json.loads(raw_bytes.decode("utf-8"))
-        else:
-            raise IngestError("unable to parse request JSON body")
-    except Exception as exc:
-        raise IngestError("invalid JSON body") from exc
+    # 3. Bounded Request Body Read (Protects against chunked memory exhaustion)
+    body = await _read_bounded_request_body(req, config.max_request_bytes)
 
     envelope = validate_envelope_shape(body)
     _validate_age(envelope.get("created_at"), "envelope.created_at")

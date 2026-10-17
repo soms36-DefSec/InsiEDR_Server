@@ -1677,6 +1677,27 @@ class PostgresStorage(BaseStorage):
                     conn.rollback()
                     return 0.0
 
+    def get_recent_risk_events_in_window(self, username: str, hours: int = 4, limit: int = 50) -> list[dict[str, Any]]:
+        """Returns recent risk events for the given user in the past N hours."""
+        with self.connection() as conn:
+            with closing(conn.cursor()) as cursor:
+                try:
+                    cursor.execute(
+                        """
+                        SELECT payload_id, agent_id, username, risk_score, risk_level,
+                               correlated_signals_json, summary, created_at
+                        FROM risk_events
+                        WHERE username = %s AND created_at >= CURRENT_TIMESTAMP - (%s * INTERVAL '1 hour')
+                        ORDER BY created_at DESC
+                        LIMIT %s
+                        """,
+                        (username, int(hours), int(limit)),
+                    )
+                    return self._rows_to_dicts(cursor)
+                except Exception:
+                    conn.rollback()
+                    return []
+
     def save_baseline(self, baseline: dict[str, Any]) -> None:
         with self.connection() as conn:
             with closing(conn.cursor()) as cursor:
@@ -1743,6 +1764,22 @@ class PostgresStorage(BaseStorage):
                 except Exception:
                     conn.rollback()
                     return None
+
+    @contextmanager
+    def acquire_entity_lock(self, entity_id: str):
+        """
+        Acquire a PostgreSQL transaction-level advisory lock to serialize concurrent
+        updates across multiple Uvicorn worker processes.
+        """
+        with self.connection() as conn:
+            with closing(conn.cursor()) as cursor:
+                try:
+                    cursor.execute("SELECT pg_advisory_xact_lock(hashtext(%s))", (f"baseline:{entity_id}",))
+                    yield
+                    conn.commit()
+                except Exception:
+                    conn.rollback()
+                    raise
 
     def get_pc_status(self, seconds_since_online: int = 300) -> dict[str, Any]:
         """Use the fleet repository's shared five-minute presence snapshot."""

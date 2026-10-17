@@ -203,7 +203,7 @@ class ServerConfig:
     def validate_production_readiness(self) -> None:
         """
         Hard fail-safe validation when running in production.
-        Prevents starting with permissive auth, missing keys, or insecure defaults (audit finding I01).
+        Prevents starting with permissive auth, missing keys, or insecure defaults (audit findings I01, SEC-04).
         """
         if not self.is_production:
             return
@@ -215,6 +215,57 @@ class ServerConfig:
             errors.append("INSIEDR_AGENT_BEARER_TOKEN or INSIEDR_AGENT_TOKENS must be set in production")
         if not self.secret_key:
             errors.append("INSIEDR_SECRET_KEY must be configured in production")
+        if not self.require_https:
+            errors.append("INSIEDR_REQUIRE_HTTPS cannot be disabled in production")
+        if self.store_plaintext_payloads:
+            errors.append("INSIEDR_STORE_PLAINTEXT_PAYLOADS cannot be enabled in production")
+        if self.enable_plaintext_crypto:
+            errors.append("INSIEDR_ENABLE_PLAINTEXT_CRYPTO cannot be enabled in production")
+        if self.cors_origins == ["*"] and not self._env_bool("INSIEDR_ALLOW_WILDCARD_CORS", False):
+            errors.append("INSIEDR_CORS_ORIGINS cannot be wildcard '*' in production without INSIEDR_ALLOW_WILDCARD_CORS=true")
+
+        def is_placeholder(val: str | None) -> bool:
+            if not val:
+                return False
+            cleaned = str(val).strip().lower()
+            return (
+                cleaned.startswith("replace_with_")
+                or cleaned.startswith("your_")
+                or "placeholder" in cleaned
+                or "change-me" in cleaned
+                or "change_me" in cleaned
+                or "example" in cleaned
+                or cleaned in {
+                    "op-live-sec-key-998244353",
+                    "ag-live-bearer-token-421778901",
+                    "dev-secret-key-do-not-use-in-production",
+                    "shared_fleet_token",
+                }
+            )
+
+        if self.secret_key and is_placeholder(self.secret_key):
+            errors.append("INSIEDR_SECRET_KEY is set to an insecure placeholder value")
+
+        if self.operator_api_key and is_placeholder(self.operator_api_key):
+            errors.append("INSIEDR_OPERATOR_API_KEY is set to an insecure placeholder value")
+
+        if self.agent_bearer_token and is_placeholder(self.agent_bearer_token):
+            errors.append("INSIEDR_AGENT_BEARER_TOKEN is set to an insecure placeholder value")
+
+        if self.aes_key_env and is_placeholder(self.aes_key_env):
+            errors.append("INSIEDR_AES_KEY is set to an insecure placeholder value")
+
+        if self.operator_roles:
+            for tok in self.operator_roles:
+                if is_placeholder(tok):
+                    errors.append("INSIEDR_OPERATOR_ROLES contains an insecure placeholder token")
+                    break
+
+        if self.agent_tokens:
+            for tok, ag_id in self.agent_tokens.items():
+                if is_placeholder(tok) or is_placeholder(ag_id):
+                    errors.append("INSIEDR_AGENT_TOKENS contains an insecure placeholder token or agent ID")
+                    break
 
         if errors:
             raise RuntimeError(
@@ -361,7 +412,8 @@ class ServerConfig:
 
     @property
     def require_https(self) -> bool:
-        return os.environ.get("INSIEDR_REQUIRE_HTTPS", "true").lower() in ("1", "true", "yes")
+        default_val = "true" if self.is_production else "false"
+        return os.environ.get("INSIEDR_REQUIRE_HTTPS", default_val).lower() in ("1", "true", "yes")
 
     @property
     def agent_bearer_token(self) -> str | None:
@@ -455,7 +507,7 @@ class ServerConfig:
 
     @property
     def baseline_window_days(self) -> int:
-        """Baseline Window Size for ML EMA decay calculations."""
+        """Baseline window used to set the user-profile EMA decay rate."""
         raw = os.environ.get("INSIEDR_BASELINE_WINDOW_DAYS", "14")
         try:
             value = int(raw)

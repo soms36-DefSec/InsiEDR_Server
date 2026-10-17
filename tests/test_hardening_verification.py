@@ -899,8 +899,78 @@ def test_production_auth_readiness_validation(monkeypatch):
     monkeypatch.setenv("INSIEDR_OPERATOR_API_KEY", "prod-op-token-123")
     monkeypatch.setenv("INSIEDR_AGENT_BEARER_TOKEN", "prod-agent-token-456")
     monkeypatch.setenv("INSIEDR_SECRET_KEY", "prod-secret-key-super-secure")
+    monkeypatch.setenv("INSIEDR_CORS_ORIGINS", "https://dashboard.example.com")
+    monkeypatch.setenv("INSIEDR_REQUIRE_HTTPS", "true")
+    monkeypatch.setenv("INSIEDR_STORE_PLAINTEXT_PAYLOADS", "false")
+    monkeypatch.setenv("INSIEDR_ENABLE_PLAINTEXT_CRYPTO", "false")
     app = create_app(storage=None, apply_migrations=False)
     assert app is not None
+
+
+def test_production_hardening_insecure_defaults_rejected(monkeypatch):
+    """Verify SEC-04: production mode rejects plaintext storage, plaintext crypto, HTTP, and wildcard CORS."""
+    from server.config import ServerConfig
+
+    monkeypatch.setenv("INSIEDR_ENVIRONMENT", "production")
+    monkeypatch.setenv("INSIEDR_OPERATOR_API_KEY", "prod-op-token-123")
+    monkeypatch.setenv("INSIEDR_AGENT_BEARER_TOKEN", "prod-agent-token-456")
+    monkeypatch.setenv("INSIEDR_SECRET_KEY", "prod-secret-key-super-secure")
+    monkeypatch.setenv("INSIEDR_CORS_ORIGINS", "https://dashboard.example.com")
+    monkeypatch.setenv("INSIEDR_REQUIRE_HTTPS", "true")
+    monkeypatch.setenv("INSIEDR_STORE_PLAINTEXT_PAYLOADS", "false")
+    monkeypatch.setenv("INSIEDR_ENABLE_PLAINTEXT_CRYPTO", "false")
+
+    # 1. Plaintext payloads rejection
+    monkeypatch.setenv("INSIEDR_STORE_PLAINTEXT_PAYLOADS", "true")
+    with pytest.raises(RuntimeError, match="INSIEDR_STORE_PLAINTEXT_PAYLOADS cannot be enabled in production"):
+        ServerConfig().validate_production_readiness()
+    monkeypatch.setenv("INSIEDR_STORE_PLAINTEXT_PAYLOADS", "false")
+
+    # 2. Plaintext crypto rejection
+    monkeypatch.setenv("INSIEDR_ENABLE_PLAINTEXT_CRYPTO", "true")
+    with pytest.raises(RuntimeError, match="INSIEDR_ENABLE_PLAINTEXT_CRYPTO cannot be enabled in production"):
+        ServerConfig().validate_production_readiness()
+    monkeypatch.setenv("INSIEDR_ENABLE_PLAINTEXT_CRYPTO", "false")
+
+    # 3. Require HTTPS rejection if disabled
+    monkeypatch.setenv("INSIEDR_REQUIRE_HTTPS", "false")
+    with pytest.raises(RuntimeError, match="INSIEDR_REQUIRE_HTTPS cannot be disabled in production"):
+        ServerConfig().validate_production_readiness()
+    monkeypatch.setenv("INSIEDR_REQUIRE_HTTPS", "true")
+
+    # 4. Placeholder secret rejection
+    monkeypatch.setenv("INSIEDR_SECRET_KEY", "change-me-to-a-secure-random-secret")
+    with pytest.raises(RuntimeError, match="INSIEDR_SECRET_KEY is set to an insecure placeholder"):
+        ServerConfig().validate_production_readiness()
+    monkeypatch.setenv("INSIEDR_SECRET_KEY", "prod-secret-key-super-secure")
+
+    # 5. Wildcard CORS rejection without explicit override
+    monkeypatch.delenv("INSIEDR_CORS_ORIGINS", raising=False)
+    with pytest.raises(RuntimeError, match="INSIEDR_CORS_ORIGINS cannot be wildcard"):
+        ServerConfig().validate_production_readiness()
+
+    # 6. Wildcard CORS allowed if explicit override flag is set
+    monkeypatch.setenv("INSIEDR_ALLOW_WILDCARD_CORS", "true")
+    ServerConfig().validate_production_readiness()
+
+    # 7. Placeholder operator key rejection (e.g. from .env.example)
+    monkeypatch.setenv("INSIEDR_OPERATOR_API_KEY", "REPLACE_WITH_STRONG_OPERATOR_API_KEY")
+    with pytest.raises(RuntimeError, match="INSIEDR_OPERATOR_API_KEY is set to an insecure placeholder"):
+        ServerConfig().validate_production_readiness()
+    monkeypatch.setenv("INSIEDR_OPERATOR_API_KEY", "prod-op-token-123")
+
+    # 8. Placeholder agent tokens rejection
+    monkeypatch.setenv("INSIEDR_AGENT_TOKENS", "AGENT-001:REPLACE_WITH_AGENT_001_TOKEN")
+    with pytest.raises(RuntimeError, match="INSIEDR_AGENT_TOKENS contains an insecure placeholder"):
+        ServerConfig().validate_production_readiness()
+    monkeypatch.delenv("INSIEDR_AGENT_TOKENS", raising=False)
+
+    # 9. Placeholder AES key rejection
+    monkeypatch.setenv("INSIEDR_AES_KEY", "YOUR_64_HEX_CHARACTERS_32_BYTES_AES_KEY_HERE")
+    with pytest.raises(RuntimeError, match="INSIEDR_AES_KEY is set to an insecure placeholder"):
+        ServerConfig().validate_production_readiness()
+    monkeypatch.delenv("INSIEDR_AES_KEY", raising=False)
+
 
 
 def test_redis_task_queue_complete_and_fail_clean_processing():

@@ -15,8 +15,9 @@ env/
 ENV/
 
 # Local environment and secrets
-# .env (Commented out so it can be pushed for deployment)
-# .env.*
+.env
+.env.*
+.env.local
 !.env.example
 *.key
 *.pem

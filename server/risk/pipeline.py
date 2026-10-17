@@ -3,6 +3,9 @@ from __future__ import annotations
 import logging
 from typing import Any, Dict
 from server.risk.aggregator import RiskAggregator
+from server.risk.signals import detect_auth_burst, score_zscore
+from server.baseline.engine import BaselineEngine
+from server.config import config
 
 logger = logging.getLogger("insiedr.risk.pipeline")
 
@@ -17,6 +20,9 @@ FEATURE_ALIASES = {
     "daily_device_connect_count": ("usb_connect_count",),
     "daily_unique_pc_count": ("unique_pc_count",),
     "suspicious_url_count": ("watchlisted_url_count",),
+    # Persistence monitor currently emits a boolean instead of a count. A true
+    # value remains usable by the existing numeric evidence checks as 1.
+    "persistence_modification_count": ("modifications_detected",),
 }
 
 
@@ -53,7 +59,8 @@ def extract_features_from_payload(payload: Dict[str, Any]) -> Dict[str, Any]:
         if k in payload:
             features[k] = payload[k]
 
-    # 2. Extract from collectors array
+    # 2. Extract from collectors array. Keep root identity authoritative: most
+    # SYSTEM collectors are host-scoped and intentionally omit username.
     collectors = payload.get("collectors", [])
     if isinstance(collectors, list):
         for col in collectors:
@@ -62,16 +69,7 @@ def extract_features_from_payload(payload: Dict[str, Any]) -> Dict[str, Any]:
             col_payload = col.get("payload")
             if not isinstance(col_payload, dict):
                 continue
-            for k, v in col_payload.items():
-                if isinstance(v, dict):
-                    for sub_k, sub_v in v.items():
-                        if isinstance(sub_v, dict):
-                            for leaf_k, leaf_v in sub_v.items():
-                                features.setdefault(leaf_k, leaf_v)
-                        else:
-                            features.setdefault(sub_k, sub_v)
-                else:
-                    features.setdefault(k, v)
+            _flatten_features(col_payload, features, features.get("username"))
 
     # 3. Apply canonical aliases
     for canonical, aliases in FEATURE_ALIASES.items():
@@ -81,14 +79,50 @@ def extract_features_from_payload(payload: Dict[str, Any]) -> Dict[str, Any]:
                     features[canonical] = features[alias]
                     break
 
-    # 4. Computed composite features
-    if "file_access_count" not in features:
+    # 4. Derive file deletion counts from confirmed sampled integrity event operations
+    # Note: This reflects the count of explicitly sampled DELETE operations in the
+    # telemetry batch, not necessarily the total number of deletions on the endpoint.
+    if "file_delete_count" not in features and "daily_file_delete_count" not in features:
+        delete_ops = [
+            str(v).strip().upper() for k, v in features.items()
+            if k.startswith("integrity_events_") and k.endswith("_op") and v
+        ]
+        if delete_ops:
+            features["file_delete_count"] = float(sum(1 for op in delete_ops if op in ("DELETE", "DELETION")))
+
+
+    # 5. Computed composite features
+    if "file_access_count" not in features and any(
+        name in features for name in ("daily_file_open_count", "file_open_count", "daily_file_write_count", "file_write_count", "daily_file_delete_count", "file_delete_count")
+    ):
         open_c = _numeric(features.get("daily_file_open_count", features.get("file_open_count", 0)))
         write_c = _numeric(features.get("daily_file_write_count", features.get("file_write_count", 0)))
         del_c = _numeric(features.get("daily_file_delete_count", features.get("file_delete_count", 0)))
         features["file_access_count"] = open_c + write_c + del_c
 
     return features
+
+
+def _flatten_features(source: Dict[str, Any], target: Dict[str, Any], username: Any = None) -> None:
+    clean_user = str(username or "").strip().casefold()
+    user_metric_hints = {
+        "logon_count", "logoff_count", "failed_logons", "successful_logons",
+        "after_hours_logon", "interactive_duration_seconds", "daily_unique_pc_count",
+    }
+    for key, value in source.items():
+        if isinstance(value, dict):
+            if clean_user and value and all(isinstance(item, dict) for item in value.values()):
+                user_entry = next((item for user, item in value.items() if str(user).strip().casefold() == clean_user), None)
+                if user_entry is not None:
+                    _flatten_features(user_entry, target, username)
+                    continue
+                if any(user_metric_hints.intersection(item) for item in value.values()):
+                    # Do not combine another user's logon counters into this
+                    # payload if the active root user cannot be matched.
+                    continue
+            _flatten_features(value, target, username)
+        else:
+            target.setdefault(str(key), value)
 
 
 def process_telemetry_risk(storage, payload: Dict[str, Any]) -> Dict[str, Any]:
@@ -98,14 +132,48 @@ def process_telemetry_risk(storage, payload: Dict[str, Any]) -> Dict[str, Any]:
     """
     payload_id = str(payload.get("payload_id", ""))
     agent_id = str(payload.get("agent_id", ""))
-    username = str(payload.get("username", "unknown"))
+    username_value = str(payload.get("username") or "").strip()
+    username = username_value or "unknown"
 
     try:
         raw_features = extract_features_from_payload(payload)
 
-        # Execute Risk Aggregator (evaluates Heuristics and CERT scenarios)
+        # Score against the user's prior baseline before updating it. Ingested
+        # snapshots are sampled hourly and only low-risk observations train it.
+        detector_results = []
+        baseline_engine = None
+        deviations: Dict[str, float] = {}
+        baseline_features = _user_baseline_features(raw_features)
+        if username_value and hasattr(storage, "load_baseline") and hasattr(storage, "save_baseline"):
+            try:
+                baseline_engine = BaselineEngine(storage, window_days=config.baseline_window_days)
+                role = raw_features.get("user_role")
+                deviations = baseline_engine.get_deviation_vector(username_value, baseline_features, role=role)
+            except Exception as baseline_err:
+                logger.debug("User baseline unavailable for %s: %s", username_value, baseline_err)
+        detector_results.extend((
+            detect_auth_burst(raw_features),
+            # Only user-baseline features enter the user z-score path. In
+            # particular, do not let the host-wide agent logon velocity score
+            # leak back into a per-user anomaly score.
+            score_zscore(deviations, baseline_features, config.zscore_calibration_threshold),
+        ))
+
+        # Execute deterministic heuristics plus auth-burst and user-baseline
+        # detectors. Model inference remains an external detector integration.
         aggregator = RiskAggregator(storage)
-        risk_result = aggregator.aggregate_detectors([], username=username, raw_features=raw_features)
+        risk_result = aggregator.aggregate_detectors(detector_results, username=username_value or None, raw_features=raw_features)
+
+        if baseline_engine is not None and risk_result.get("risk_score", 0.0) < 40.0:
+            try:
+                baseline_engine.update_baseline(
+                    username_value,
+                    _user_baseline_features(raw_features),
+                    observed_at=payload.get("collected_at"),
+                    role=raw_features.get("user_role"),
+                )
+            except Exception as baseline_err:
+                logger.debug("User baseline update skipped for %s: %s", username_value, baseline_err)
 
         event_dict = {
             "payload_id": payload_id,
@@ -146,3 +214,39 @@ def process_telemetry_risk(storage, payload: Dict[str, Any]) -> Dict[str, Any]:
             "summary": "Error evaluating risk.",
             "correlated_signals_json": {},
         }
+
+
+def _user_baseline_features(features: Dict[str, Any]) -> Dict[str, float]:
+    """
+    Extract baseline inputs associated with the active root session.
+
+    Host-scoped authentication event-log metrics are excluded. Other flattened
+    collector counters may still reflect host activity; the current telemetry
+    does not provide kernel-enforced SID attribution for every collector.
+    """
+    user_feature_names = (
+        "daily_unique_filename_count",
+        "daily_new_filename_count",
+        "file_access_count",
+        "file_sharing_site_visits",
+        "daily_http_request_count",
+        "daily_external_domain_ratio",
+        "daily_device_connect_count",
+        "bytes_sent",
+    )
+    result: Dict[str, float] = {}
+    for name in user_feature_names:
+        if name not in features or features[name] is None:
+            continue
+        try:
+            value = float(features[name])
+        except (TypeError, ValueError):
+            continue
+        if value == value:
+            result[name] = value
+    return result
+
+
+def _baseline_features(features: Dict[str, Any]) -> Dict[str, float]:
+    """Backward compatible alias."""
+    return _user_baseline_features(features)

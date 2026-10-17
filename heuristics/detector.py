@@ -13,14 +13,17 @@ from heuristics.device_rules import detect_device_scenarios
 CORRELATION_GROUPS = {
     # File Exfiltration & Access
     "Bulk File Collection": "FILE_EXFIL_GROUP",
-    "Anomalous File Access": "FILE_EXFIL_GROUP",
-    "Credential File Hunting": "FILE_EXFIL_GROUP",
-    "After-Hours File Activity": "FILE_EXFIL_GROUP",
-    "Weekend File Collection": "FILE_EXFIL_GROUP",
+    "Broad File Collection": "FILE_EXFIL_GROUP",
+    "Sensitive File Collection": "FILE_EXFIL_GROUP",
+    "File Transfer to Removable Media": "DEVICE_USB_GROUP",
+    "Mass File Deletion": "FILE_SABOTAGE_GROUP",
+    "Honeytoken Access": "HONEYTOKEN_GROUP",
+    "After-Hours Persistence Tampering": "SABOTAGE_GROUP",
     "Rapid File Modification": "FILE_RANSOM_GROUP",
     
     # Network / HTTP
-    "Cloud Storage Upload": "HTTP_EXFIL_GROUP",
+    "Cloud Upload Correlated with File Collection": "HTTP_EXFIL_GROUP",
+    "File-Sharing Site Visit": "HTTP_PRECURSOR_GROUP",
     "Restricted Domain Access": "SUSPICIOUS_HTTP_GROUP",
     "High Network Traffic": "HTTP_EXFIL_GROUP",
     "After-Hours Browsing": "SUSPICIOUS_HTTP_GROUP",
@@ -31,7 +34,9 @@ CORRELATION_GROUPS = {
     "Short Repeated Sessions": "LOGON_SESSION_GROUP",
     "Possible Account Sharing": "LOGON_ASSET_GROUP",
     "Weekend Logon Activity": "LOGON_TIME_GROUP",
-    "Failed Authentication Burst": "LOGON_AUTH_GROUP",
+    "Failed Authentication Activity": "LOGON_AUTH_GROUP",
+    "After-Hours Logon Anomaly": "LOGON_TIME_GROUP",
+    "Multi-PC Access Anomaly": "LOGON_ASSET_GROUP",
     
     # Removable Media / USB
     "USB Storage Device Inserted": "DEVICE_USB_GROUP",
@@ -90,11 +95,11 @@ _COMPILED_PATH_REGEXES = [re.compile(p, re.IGNORECASE) for p in BENIGN_PATH_PATT
 
 def calculate_overall_severity(score: float) -> str:
     """Calculates unified heuristic severity based on normalized 0-100 score."""
-    if score >= 85.0:
+    if score >= 90.0:
         return "CRITICAL"
-    if score >= 60.0:
+    if score >= 70.0:
         return "HIGH"
-    if score >= 35.0:
+    if score >= 40.0:
         return "MEDIUM"
     return "LOW"
 
@@ -102,15 +107,23 @@ def calculate_overall_severity(score: float) -> str:
 def _infer_domain(scenario_name: str) -> str:
     """Infers the domain (LOGON, FILE, HTTP, DEVICE) from scenario name."""
     s = scenario_name.lower()
+    if "http" in s or "cloud" in s or "domain" in s or "network" in s or "browsing" in s or "sharing" in s or "upload" in s:
+        return "HTTP"
     if "file" in s or "credential" in s:
         return "FILE"
     if "usb" in s or "device" in s:
         return "DEVICE"
     if "logon" in s or "session" in s or "pc" in s or "account" in s or "auth" in s:
         return "LOGON"
-    if "http" in s or "cloud" in s or "domain" in s or "network" in s or "browsing" in s:
-        return "HTTP"
     return "FILE"
+
+
+def _safe_number(value: Any) -> float:
+    try:
+        number = float(value or 0)
+        return number if number == number else 0.0
+    except (TypeError, ValueError):
+        return 0.0
 
 
 def detect_insider_threat(features: Dict[str, Any], system_profile: Optional[str] = None) -> Dict[str, Any]:
@@ -145,6 +158,79 @@ def detect_insider_threat(features: Dict[str, Any], system_profile: Optional[str
     raw_detections.extend(file_results)
     raw_detections.extend(http_results)
     raw_detections.extend(device_results)
+
+    # Keep endpoint-security signals in their original boolean/count forms.
+    credential_dumping = features.get("credential_dumping_suspected") is True or str(
+        features.get("credential_dumping_suspected", "")
+    ).strip().lower() in {"1", "true", "yes"}
+    if credential_dumping:
+        raw_detections.append({
+            "scenario": "LSASS Credential Dumping Suspected",
+            "scenario_id": "S1_CRED_DUMP",
+            "severity": "CRITICAL",
+            "score": 100,
+            "confidence": "VERY_HIGH",
+            "reasons": ["LSASS monitor reported suspected credential dumping"],
+        })
+
+    executable_regions = _safe_number(features.get("unbacked_executable_regions"))
+    memory_threats = features.get("threats_detected") is True or str(
+        features.get("threats_detected", "")
+    ).strip().lower() in {"1", "true", "yes"}
+    if executable_regions > 0 or memory_threats:
+        raw_detections.append({
+            "scenario": "Unbacked Executable Memory",
+            "scenario_id": "S1_INJECTION",
+            "severity": "HIGH",
+            "score": 85,
+            "confidence": "HIGH",
+            "reasons": [
+                f"memory scanner reported {executable_regions:g} unbacked executable region(s)"
+                if executable_regions > 0 else "memory scanner reported a threat"
+            ],
+        })
+
+    tunneling_processes = _safe_number(features.get("tunneling_process_count"))
+    dns_tunneling = features.get("tunneling_detected") is True or str(
+        features.get("tunneling_detected", "")
+    ).strip().lower() in {"1", "true", "yes"}
+    if tunneling_processes > 0 or dns_tunneling:
+        raw_detections.append({
+            "scenario": "Network Tunneling Indicator",
+            "scenario_id": "NETWORK_TUNNELING",
+            "severity": "HIGH",
+            "score": 80,
+            "confidence": "HIGH",
+            "reasons": [
+                f"process watcher reported {tunneling_processes:g} tunneling process(es)"
+                if tunneling_processes > 0 else "DNS monitor reported tunneling activity"
+            ],
+        })
+
+    decoy_triggered = features.get("threat_triggered") is True or str(features.get("threat_triggered", "")).strip().lower() in {"1", "true", "yes"}
+    if decoy_triggered:
+        raw_detections.append({
+            "scenario": "Honeytoken Access",
+            "scenario_id": "HONEYTOKEN",
+            "severity": "CRITICAL",
+            "score": 100,
+            "confidence": "VERY_HIGH",
+            "reasons": ["decoy monitor reported a honeytoken interaction"],
+        })
+    persistence_changed = features.get("modifications_detected") is True or str(features.get("modifications_detected", "")).strip().lower() in {"1", "true", "yes"}
+    after_hours = _safe_number(features.get("after_hours_logon"))
+    failed_ratio = _safe_number(features.get("edr_failed_auth_ratio_window") or features.get("auth_fail_rate_300s"))
+    failed_rate = _safe_number(features.get("edr_failed_auth_events_per_minute_window"))
+    auth_burst = failed_ratio >= 0.8 and failed_rate * 5 >= 5
+    if persistence_changed and (after_hours >= 2 or auth_burst):
+        raw_detections.append({
+            "scenario": "After-Hours Persistence Tampering",
+            "scenario_id": "S1",
+            "severity": "HIGH",
+            "score": 85,
+            "confidence": "HIGH",
+            "reasons": ["persistence modification correlated with after-hours access or auth burst"],
+        })
 
     if not raw_detections:
         return {
@@ -237,8 +323,9 @@ def detect_insider_threat(features: Dict[str, Any], system_profile: Optional[str
     if not active_domains:
         final_risk = 0.0
     elif len(active_domains) == 1:
-        # Single isolated domain activity is scaled down to prevent false positive spikes
-        final_risk = domain_peaks[active_domains[0]] * 0.40
+        # A strong single-domain signal remains actionable, while the confidence
+        # discount prevents ordinary volume from becoming a high severity alert.
+        final_risk = domain_peaks[active_domains[0]] * 0.80
     else:
         total_w = sum(DOMAIN_BASE_WEIGHTS.get(d, 0.25) for d in active_domains)
         weighted_val = sum(domain_peaks[d] * DOMAIN_BASE_WEIGHTS.get(d, 0.25) for d in active_domains)
@@ -251,7 +338,7 @@ def detect_insider_threat(features: Dict[str, Any], system_profile: Optional[str
             
         final_risk = min(100.0, base_risk + diversity_bonus)
 
-    bounded_risk = max(0.0, min(100.0, final_risk))
+    bounded_risk = 100.0 if decoy_triggered else max(0.0, min(100.0, final_risk))
     severity = calculate_overall_severity(bounded_risk)
 
     # Sort detections highest severity/score first
