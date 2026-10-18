@@ -3,6 +3,7 @@ import { TopNavbar } from './TopNavbar';
 import { pluginRegistry } from '../../plugins/registry';
 import type { EDRPlugin, PluginContextData } from '../../plugins/registry';
 import { useRealTimeStream } from '../../hooks/useRealTimeStream';
+import { FleetStatusCards } from './FleetStatusCards';
 import { ErrorBoundary } from '../ui/ErrorBoundary';
 
 export const AppLayout: React.FC = () => {
@@ -81,6 +82,8 @@ export const AppLayout: React.FC = () => {
                 {activePlugin?.description || 'Fleet risk posture, real-time threat feed, and heuristic correlation engine'}
               </p>
             </div>
+
+            <FleetStatusCards summary={summary} stale={Boolean(error && summary)} />
           </div>
 
           {/* Active Plugin View Content */}
