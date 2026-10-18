@@ -33,7 +33,8 @@ export function useRealTimeStream() {
             latestAppliedSeq.current = seq;
             setSummary(previous => ({ ...value, stats: previous?.stats ?? value.stats }));
             setLastUpdated(value.freshness?.generated_at ? new Date(value.freshness.generated_at) : new Date());
-            setError(value.freshness?.stale ? 'Showing the last successful fleet snapshot; refreshing.' : null);
+            const isOverdue = Boolean(value.freshness?.stale && (value.freshness.age_seconds ?? 0) > 60);
+            setError(isOverdue ? 'Fleet metrics are temporarily delayed; refreshing.' : null);
             setIsLoading(false);
           }).catch((reason: unknown) => {
             if (!abort.signal.aborted) {

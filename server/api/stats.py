@@ -172,7 +172,7 @@ def dashboard_summary(include_stats: bool = True, storage=Depends(get_storage),
         return jsonable_encoder(res)
 
     result = snapshot(storage, actor, 'dashboard-summary', load_summary,
-                      fresh_seconds=15, group='fleet')
+                      fresh_seconds=30, group='fleet')
     if include_stats:
         try:
             result['stats'] = _fleet_stats(storage, actor)

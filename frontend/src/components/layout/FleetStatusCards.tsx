@@ -92,10 +92,13 @@ export function FleetStatusCards({ summary, compact = false, stale = false }: {
     const timer = window.setInterval(() => setClock(Date.now()), 5000);
     return () => window.clearInterval(timer);
   }, []);
-  const aged = (freshness: NonNullable<typeof summary>['freshness']) => Boolean(freshness && (
-    freshness.stale || !freshness.generated_at ||
-    clock - Date.parse(freshness.generated_at) >= (freshness.fresh_for_seconds ?? 120) * 1000
-  ));
+  const aged = (freshness: NonNullable<typeof summary>['freshness']) => {
+    if (!freshness || !freshness.generated_at) return true;
+    const threshold = freshness.fresh_for_seconds ?? 60;
+    const gracePeriodMs = Math.max(60, threshold * 2) * 1000;
+    const elapsedMs = clock - Date.parse(freshness.generated_at);
+    return elapsedMs >= gracePeriodMs || Boolean(freshness.stale && (freshness.age_seconds ?? 0) >= threshold * 2);
+  };
   const isStale = (Boolean(stale || aged(summary?.freshness)) && effectiveValid !== null) || (!hasValidCounts && lastValidCounts !== null);
 
   const totalEvents = summary?.stats?.collector_results ?? summary?.stats?.logs;

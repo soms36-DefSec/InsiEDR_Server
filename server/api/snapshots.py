@@ -51,7 +51,9 @@ def workload_slot(group):
                 yield False
                 return
             try:
-                lease = client.lock(f'insiedr:workload:v2:{group}', timeout=120, thread_local=False)
+                lease_timeout = 30 if group in ('fleet', 'logs') else 120
+                renew_interval = 8 if group in ('fleet', 'logs') else 20
+                lease = client.lock(f'insiedr:workload:v2:{group}', timeout=lease_timeout, thread_local=False)
                 got_lease = lease.acquire(blocking=False)
                 if got_lease:
                     api_cache.l2._is_connected = True
@@ -63,9 +65,9 @@ def workload_slot(group):
                 return
 
             def renew():
-                while not stop.wait(20):
+                while not stop.wait(renew_interval):
                     try:
-                        lease.extend(120, replace_ttl=True)
+                        lease.extend(lease_timeout, replace_ttl=True)
                     except Exception:
                         logger.error('Lost %s workload lease; database query limits bound remaining work', group)
                         return
@@ -126,7 +128,7 @@ def snapshot(storage, actor, name, loader, *, filters=None, group='analytics',
                 api_cache.set(key, updated, ttl=max_age)
                 return updated
             except Exception:
-                api_cache.set(key + ':backoff', True, ttl=30)
+                api_cache.set(key + ':backoff', True, ttl=5)
                 raise
 
     if record is None:
@@ -139,6 +141,8 @@ def snapshot(storage, actor, name, loader, *, filters=None, group='analytics',
             def run():
                 try:
                     refresh()
+                except AnalyticsUnavailableError:
+                    logger.debug('%s snapshot refresh deferred (lease busy)', name)
                 except Exception as exc:
                     logger.warning('%s snapshot refresh deferred (%s)', name, type(exc).__name__)
                 finally:
