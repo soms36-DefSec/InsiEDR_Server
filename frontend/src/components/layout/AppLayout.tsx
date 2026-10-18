@@ -83,7 +83,7 @@ export const AppLayout: React.FC = () => {
               </p>
             </div>
 
-            <FleetStatusCards summary={summary} stale={Boolean(error && summary)} />
+            <FleetStatusCards summary={summary} />
           </div>
 
           {/* Active Plugin View Content */}

@@ -48,7 +48,7 @@ function parseCount(val: unknown): number | null {
   return null;
 }
 
-export function FleetStatusCards({ summary, compact = false, stale = false }: {
+export function FleetStatusCards({ summary, compact = false, stale: _stale = false }: {
   summary: DashboardSummary | null;
   compact?: boolean;
   stale?: boolean;
@@ -86,20 +86,6 @@ export function FleetStatusCards({ summary, compact = false, stale = false }: {
   const effectiveValid = hasValidCounts
     ? { total: parsedTotal, online: parsedOnline, offline: parsedOffline }
     : lastValidCounts;
-
-  const [clock, setClock] = useState(Date.now);
-  useEffect(() => {
-    const timer = window.setInterval(() => setClock(Date.now()), 5000);
-    return () => window.clearInterval(timer);
-  }, []);
-  const aged = (freshness: NonNullable<typeof summary>['freshness']) => {
-    if (!freshness || !freshness.generated_at) return true;
-    const threshold = freshness.fresh_for_seconds ?? 60;
-    const gracePeriodMs = Math.max(60, threshold * 2) * 1000;
-    const elapsedMs = clock - Date.parse(freshness.generated_at);
-    return elapsedMs >= gracePeriodMs || Boolean(freshness.stale && (freshness.age_seconds ?? 0) >= threshold * 2);
-  };
-  const isStale = (Boolean(stale || aged(summary?.freshness)) && effectiveValid !== null) || (!hasValidCounts && lastValidCounts !== null);
 
   const totalEvents = summary?.stats?.collector_results ?? summary?.stats?.logs;
   const counts: Record<FleetFilter, number | string | undefined> = {
@@ -155,7 +141,6 @@ export function FleetStatusCards({ summary, compact = false, stale = false }: {
         {visibleMetrics.map(({ key, label }) => {
           const online = key === 'online';
           const isLogs = key === 'logs';
-          const cardStale = (key === 'logs' ? aged(summary?.stats?.freshness) : isStale);
 
           return (
             <button
@@ -165,12 +150,10 @@ export function FleetStatusCards({ summary, compact = false, stale = false }: {
               type="button"
               aria-expanded={open === key}
               aria-controls={open === key ? `${id}-endpoints` : undefined}
-              aria-label={`${label}: ${counts[key] ?? 'unavailable'}${cardStale ? ' (stale)' : ''}. Show details`}
+              aria-label={`${label}: ${counts[key] ?? 'unavailable'}. Show details`}
               title={
                 isLogs
                   ? 'All-time collector events'
-                  : cardStale
-                  ? 'Metrics may be stale: refresh failed or unavailable'
                   : undefined
               }
               onClick={() => {
@@ -205,15 +188,6 @@ export function FleetStatusCards({ summary, compact = false, stale = false }: {
                     <span aria-hidden="true" className={`w-1.5 h-1.5 rounded-full shrink-0 ${online ? 'bg-emerald-500 motion-safe:animate-pulse' : 'bg-slate-400'}`} />
                   )}
                   {label}
-                  {cardStale && (
-                    <span
-                      className={`uppercase tracking-normal font-medium px-1 rounded ${
-                        compact ? 'text-[9px] bg-amber-100 text-amber-700' : 'text-[9px] bg-amber-50 text-amber-600 border border-amber-200/60'
-                      }`}
-                    >
-                      stale
-                    </span>
-                  )}
                 </span>
                 <span className={`font-semibold tabular-nums leading-none ${compact ? 'text-xs' : 'text-xl'} ${
                   online ? 'text-emerald-700' : isLogs ? 'text-blue-900 font-mono' : 'text-slate-900'
