@@ -27,6 +27,7 @@ export const KpiGrid: React.FC<KpiGridProps> = ({
   const pc = summary?.pc_status || { total_pcs: 0, online_pcs: 0, offline_pcs: 0 };
   const rc = summary?.risk_counts || { critical: 0, high: 0, medium: 0, low: 0 };
   const totalEvents = summary?.total_risk_events || summary?.stats?.risk_events || 0;
+  const retainedLogsCount = summary?.stats?.collector_results ?? (summary?.stats as Record<string, unknown> | undefined)?.logs ?? (summary?.stats as Record<string, unknown> | undefined)?.total_logs;
   const modelStatus = health?.model_pipeline || 'ready';
 
   const totalEvaluated = (rc.critical + rc.high + rc.medium + rc.low) || (pc.total_pcs || 1);
@@ -271,6 +272,12 @@ export const KpiGrid: React.FC<KpiGridProps> = ({
         </div>
 
         <div className="mt-4 pt-3 border-t border-slate-100 space-y-1.5 text-[11px]">
+          <div className="flex items-center justify-between text-slate-600">
+            <span className="text-slate-400">Retained Logs:</span>
+            <span className="font-semibold text-slate-800 tabular-nums font-mono">
+              {typeof retainedLogsCount === 'number' ? retainedLogsCount.toLocaleString() : (retainedLogsCount ? String(retainedLogsCount) : '—')}
+            </span>
+          </div>
           <div className="flex items-center justify-between text-slate-600">
             <span className="text-slate-400">Heuristics Rules:</span>
             <span className="font-medium text-slate-800">Logon, File, USB, Web</span>
