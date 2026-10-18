@@ -263,11 +263,12 @@ class ClickHouseStorage:
             if SCHEMA_FILE.is_file():
                 sql_content = SCHEMA_FILE.read_text(encoding="utf-8")
                 # Split statements by semicolon
-                statements = [stmt.strip() for stmt in sql_content.split(";") if stmt.strip()]
+                # Ensure database context is active for schema statements
+                self._client.command(f"USE {self.database}")
                 for stmt in statements:
                     if stmt.upper().startswith("USE "):
                         continue
-                    self._client.command(stmt, settings={"default_database": self.database})
+                    self._client.command(stmt)
                 # CREATE IF NOT EXISTS does not update settings on existing tables.
                 # Bounded block dedup complements, but does not replace, read dedup.
                 for table in ('raw_payloads', 'collector_results', 'collector_events_v2', 'normalized_features',
