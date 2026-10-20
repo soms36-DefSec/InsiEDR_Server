@@ -38,8 +38,14 @@ logger = logging.getLogger("insiedr.clickhouse.batcher")
 
 class ClickHouseBatcher:
     """
-    Thread-safe asynchronous micro-batch buffer with bounded memory and on-disk
+    Thread-safe asynchronous micro-batch buffer with bounded queued data and on-disk
     Dead-Letter Queue (DLQ); callers must distinguish enqueue from persistence.
+
+    Capacity Bounds:
+    `max_buffer_bytes` and `batch_bytes` enforce per-table bounds based on estimated
+    serialized UTF-8 JSON row sizes. They bound queued payload volume rather than
+    serving as hard process-memory fences, as they do not account for CPython object
+    overhead or records held in-flight during active flushes.
     """
 
     def __init__(
@@ -50,8 +56,9 @@ class ClickHouseBatcher:
         max_retries: int = 3,
         dlq_dir: str | Path = "data/dlq",
         dlq_enabled: bool = True,
-        max_buffer_rows: int = 10000,
-        max_buffer_bytes: int = 25 * 1024 * 1024,
+        max_buffer_rows: int | None = None,
+        max_buffer_bytes: int | None = None,
+        batch_bytes: int | None = None,
     ) -> None:
         self._insert_fn = insert_fn
         self.batch_size = batch_size
@@ -59,7 +66,30 @@ class ClickHouseBatcher:
         self.max_retries = max_retries
         self.dlq_dir = Path(dlq_dir)
         self.dlq_enabled = dlq_enabled
+
+        if max_buffer_rows is None:
+            max_buffer_rows = max(10000, batch_size * 2)
+        elif max_buffer_rows < batch_size:
+            raise ValueError(
+                f"max_buffer_rows ({max_buffer_rows}) cannot be less than batch_size ({batch_size}); "
+                "buffer capacity must be at least equal to batch flush threshold to prevent premature overflow into DLQ"
+            )
         self.max_buffer_rows = max_buffer_rows
+
+        if batch_bytes is None:
+            if max_buffer_bytes is not None:
+                batch_bytes = min(max_buffer_bytes, 8 * 1024 * 1024)
+            else:
+                batch_bytes = 8 * 1024 * 1024
+
+        if max_buffer_bytes is None:
+            max_buffer_bytes = max(batch_bytes * 2, 25 * 1024 * 1024)
+        elif max_buffer_bytes < batch_bytes:
+            raise ValueError(
+                f"max_buffer_bytes ({max_buffer_bytes}) cannot be less than batch_bytes ({batch_bytes}); "
+                "buffer byte capacity must be at least equal to batch byte flush threshold to prevent premature overflow into DLQ"
+            )
+        self.batch_bytes = batch_bytes
         self.max_buffer_bytes = max_buffer_bytes
 
         # Per-table record queues
@@ -94,8 +124,8 @@ class ClickHouseBatcher:
                 daemon=True,
             )
             self._worker_thread.start()
-            logger.info("ClickHouse micro-batch worker started (batch_size=%d, interval=%.1fs, max_rows=%d, dlq=%s)",
-                        self.batch_size, self.flush_interval, self.max_buffer_rows,
+            logger.info("ClickHouse micro-batch worker started (batch_size=%d, batch_bytes=%d, interval=%.1fs, max_rows=%d, max_bytes=%d, dlq=%s)",
+                        self.batch_size, self.batch_bytes, self.flush_interval, self.max_buffer_rows, self.max_buffer_bytes,
                         "enabled" if self.dlq_enabled else "disabled")
 
     def stop(self, timeout: float = 10.0) -> None:
@@ -175,8 +205,8 @@ class ClickHouseBatcher:
                 self._table_bytes[table] = current_bytes
                 self.total_queued += len(admitted_rows)
 
-            # If any table reaches batch size, wake up flush worker immediately
-            if len(self._buffers[table]) >= self.batch_size:
+            # If any table reaches batch size or batch byte threshold, wake up flush worker immediately
+            if len(self._buffers[table]) >= self.batch_size or self._table_bytes[table] >= self.batch_bytes:
                 self._cond.notify_all()
 
         # Spool evicted rows directly to DLQ outside the buffer lock
@@ -222,7 +252,10 @@ class ClickHouseBatcher:
     def _flush_loop(self) -> None:
         while True:
             with self._cond:
-                ready = any(len(rows) >= self.batch_size for rows in self._buffers.values())
+                ready = any(
+                    len(rows) >= self.batch_size or self._table_bytes.get(tbl, 0) >= self.batch_bytes
+                    for tbl, rows in self._buffers.items()
+                )
                 if not ready:
                     self._cond.wait(timeout=self.flush_interval)
                 if not self._running:

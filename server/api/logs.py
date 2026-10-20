@@ -83,6 +83,8 @@ async def get_logs(
     from server.api.cache import api_cache
     actor = getattr(operator, "actor", "anon")
     cache_key = f"logs:list:{actor}:{limit}:{offset}:{agent_id or ''}:{hostname or ''}:{username or ''}:{collector or ''}:{status or ''}:{start_time or ''}:{end_time or ''}"
+    if getattr(type(storage),'cache_revision',None) is not None:
+        cache_key += f':v3:{storage.cache_revision}'
     hit = api_cache.get(cache_key)
     if hit is not None:
         return hit
@@ -150,6 +152,8 @@ async def get_telemetry(
             f"{search or ''}:{start_time.isoformat() if start_time else ''}:{end_time.isoformat() if end_time else ''}:"
             f"{include_enrichment}:{include_total}:{cursor or ''}:{search_scope}"
         )
+        if getattr(type(storage),'cache_revision',None) is not None:
+            cache_key += f':v3:{storage.cache_revision}'
         hit = api_cache.get(cache_key)
         if hit is not None:
             return hit

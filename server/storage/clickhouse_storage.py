@@ -88,7 +88,9 @@ class ClickHouseStorage:
         database: str = "insiedr_analytics",
         batch_size: int = 500,
         flush_interval: float = 1.0,
-        max_buffer_bytes: int = 25 * 1024 * 1024,
+        batch_bytes: int | None = None,
+        max_buffer_bytes: int | None = None,
+        max_buffer_rows: int | None = None,
         secure: bool = False,
         verify: bool = True,
         ca_cert: str | None = None,
@@ -126,11 +128,40 @@ class ClickHouseStorage:
             self._init_connection()
 
         # Initialize asynchronous micro-batcher with Dead-Letter Queue (DLQ)
+        batcher_batch_bytes = batch_bytes
+        if batcher_batch_bytes is None:
+            env_batch_bytes = os.environ.get("INSIEDR_CH_BATCH_MAX_BYTES")
+            if env_batch_bytes:
+                try:
+                    batcher_batch_bytes = int(env_batch_bytes)
+                except ValueError:
+                    batcher_batch_bytes = None
+
+        batcher_max_buffer_bytes = max_buffer_bytes
+        if batcher_max_buffer_bytes is None:
+            env_buf_bytes = os.environ.get("INSIEDR_CH_BATCH_MAX_BUFFER_BYTES")
+            if env_buf_bytes:
+                try:
+                    batcher_max_buffer_bytes = int(env_buf_bytes)
+                except ValueError:
+                    batcher_max_buffer_bytes = None
+
+        batcher_max_buffer_rows = max_buffer_rows
+        if batcher_max_buffer_rows is None:
+            env_buf_rows = os.environ.get("INSIEDR_CH_BATCH_MAX_BUFFER_ROWS")
+            if env_buf_rows:
+                try:
+                    batcher_max_buffer_rows = int(env_buf_rows)
+                except ValueError:
+                    batcher_max_buffer_rows = None
+
         self.batcher = ClickHouseBatcher(
             insert_fn=self._raw_batch_insert,
             batch_size=batch_size,
+            batch_bytes=batcher_batch_bytes,
             flush_interval=flush_interval,
-            max_buffer_bytes=max_buffer_bytes,
+            max_buffer_bytes=batcher_max_buffer_bytes,
+            max_buffer_rows=batcher_max_buffer_rows,
             dlq_enabled=dlq_enabled,
             dlq_dir=dlq_dir,
         )
@@ -382,11 +413,24 @@ class ClickHouseStorage:
                 raise ValueError('Outbox record must be an object')
             if record['target_table'] == 'raw_payloads':
                 payload = value.get('payload') or {}
+                envelope = value.get('envelope') or {}
                 if payload.get('_plaintext_stripped'):
-                    continue  # Deliberately excluded by the stored privacy policy.
+                    # The outbox producer retained collector identity/status, not
+                    # plaintext bodies. Replicate those observations instead of
+                    # acknowledging an outbox row without inserting any events.
+                    import copy
+                    payload = copy.deepcopy(payload)
+                    for collector in payload.get('collectors', []):
+                        collector['payload'] = {}
+                        collector.pop('features', None)
+                        if isinstance(collector.get('error'),dict):
+                            collector['error'] = {'type':collector['error'].get('type'),
+                                                  'message':'[redacted]'}
+                    envelope = {k:v for k,v in envelope.items() if k in
+                                ('protocol_version','scheme','payload_id','key_id','created_at')}
                 if not payload.get('payload_id'):
                     raise ValueError('Outbox payload has no stable identity')
-                self.store_raw_payload(value.get('envelope') or {}, payload,
+                self.store_raw_payload(envelope, payload,
                                        _sink=sink, received_at=record['created_at'])
             elif record['target_table'] in allowed:
                 sink.add(record['target_table'], value)

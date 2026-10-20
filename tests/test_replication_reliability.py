@@ -131,7 +131,13 @@ def test_privacy_stripped_and_unknown_targets():
     item = record()
     item['record_json']['payload']['_plaintext_stripped'] = True
     ch.replicate_outbox_batch([item])
-    ch._client.insert.assert_not_called()
+    calls = ch._client.insert.call_args_list
+    assert any(c.kwargs['table'] == 'collector_results' for c in calls)
+    for c in calls:
+        if 'payload_json' in c.kwargs['column_names']:
+            index = c.kwargs['column_names'].index('payload_json')
+            assert all(row[index] == '{}' for row in c.kwargs['data'])
+    assert not any(c.kwargs['table'] == 'normalized_features' for c in calls)
     with pytest.raises(ValueError, match='Unsupported'):
         ch.replicate_outbox_batch([dict(item, target_table='unexpected')])
 

@@ -46,10 +46,16 @@ def _stream_csv_logs(storage, filters: dict[str, Any], limit: int) -> Generator[
 
     offset = 0
     exported = 0
+    cursor = None
 
     while exported < limit:
         batch_limit = min(CHUNK_BATCH_SIZE, limit - exported)
-        rows = storage.list_logs(limit=batch_limit, offset=offset, **filters)
+        page = None
+        if getattr(type(storage),'cache_revision',None) is not None:
+            page = storage.get_telemetry_page(limit=batch_limit,cursor=cursor,**filters)
+            rows = page['logs']
+        else:
+            rows = storage.list_logs(limit=batch_limit, offset=offset, **filters)
         if not rows:
             break
 
@@ -80,6 +86,10 @@ def _stream_csv_logs(storage, filters: dict[str, Any], limit: int) -> Generator[
         count = len(rows)
         exported += count
         offset += count
+        if page is not None:
+            cursor = page['next_cursor']
+            if not cursor:
+                break
         if count < batch_limit:
             break
 
@@ -88,10 +98,16 @@ def _stream_json_logs(storage, filters: dict[str, Any], limit: int) -> Generator
     """Generator yielding JSON lines (NDJSON) for telemetry logs."""
     offset = 0
     exported = 0
+    cursor = None
 
     while exported < limit:
         batch_limit = min(CHUNK_BATCH_SIZE, limit - exported)
-        rows = storage.list_logs(limit=batch_limit, offset=offset, **filters)
+        page = None
+        if getattr(type(storage),'cache_revision',None) is not None:
+            page = storage.get_telemetry_page(limit=batch_limit,cursor=cursor,**filters)
+            rows = page['logs']
+        else:
+            rows = storage.list_logs(limit=batch_limit, offset=offset, **filters)
         if not rows:
             break
 
@@ -114,6 +130,10 @@ def _stream_json_logs(storage, filters: dict[str, Any], limit: int) -> Generator
         count = len(rows)
         exported += count
         offset += count
+        if page is not None:
+            cursor = page['next_cursor']
+            if not cursor:
+                break
         if count < batch_limit:
             break
 

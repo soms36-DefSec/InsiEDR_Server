@@ -12,12 +12,16 @@ from server.storage.clickhouse_storage import ClickHouseStorage, _format_dt, _js
 
 
 def test_clickhouse_batcher_size_trigger():
+    import threading
+
     flushed_tables = []
     flushed_records = []
+    flush_event = threading.Event()
 
     def mock_insert(table, rows):
         flushed_tables.append(table)
         flushed_records.extend(rows)
+        flush_event.set()
 
     batcher = ClickHouseBatcher(insert_fn=mock_insert, batch_size=3, flush_interval=10.0, dlq_enabled=False)
     batcher.start()
@@ -25,12 +29,12 @@ def test_clickhouse_batcher_size_trigger():
     # Adding 2 rows should not flush yet
     batcher.add("test_table", {"val": 1})
     batcher.add("test_table", {"val": 2})
-    time.sleep(0.1)
+    assert not flush_event.wait(timeout=0.05)
     assert len(flushed_records) == 0
 
     # Adding 3rd row triggers threshold flush
     batcher.add("test_table", {"val": 3})
-    time.sleep(0.2)
+    assert flush_event.wait(timeout=3.0), "Worker did not trigger size flush within timeout"
     assert len(flushed_records) == 3
     assert flushed_tables == ["test_table"]
 
@@ -252,3 +256,144 @@ def test_dlq_corrupted_line_handling(tmp_path: Path):
     assert count == 0
     assert recovered_rows == []
     assert corrupt_file.exists()
+
+
+def test_clickhouse_batcher_buffer_rows_validation():
+    """Verify ClickHouseBatcher validates max_buffer_rows >= batch_size and defaults safely."""
+    import pytest
+
+    # 1. Default when None: should provide 2x batch_size or at least 10,000
+    b1 = ClickHouseBatcher(insert_fn=lambda t, r: None, batch_size=15000, dlq_enabled=False)
+    assert b1.max_buffer_rows == 30000
+
+    b2 = ClickHouseBatcher(insert_fn=lambda t, r: None, batch_size=500, dlq_enabled=False)
+    assert b2.max_buffer_rows == 10000
+
+    # 2. Explicit valid value
+    b3 = ClickHouseBatcher(insert_fn=lambda t, r: None, batch_size=15000, max_buffer_rows=30000, dlq_enabled=False)
+    assert b3.max_buffer_rows == 30000
+
+    # 3. Invalid: max_buffer_rows < batch_size must fail fast
+    with pytest.raises(ValueError, match="cannot be less than batch_size"):
+        ClickHouseBatcher(insert_fn=lambda t, r: None, batch_size=15000, max_buffer_rows=10000, dlq_enabled=False)
+
+
+def test_clickhouse_storage_passes_max_buffer_rows():
+    """Verify ClickHouseStorage correctly passes max_buffer_rows to the batcher."""
+    mock_client = MagicMock()
+    mock_client.command.return_value = None
+
+    storage = ClickHouseStorage(
+        client=mock_client,
+        batch_size=15000,
+        max_buffer_rows=30000,
+    )
+    assert storage.batcher.batch_size == 15000
+    assert storage.batcher.max_buffer_rows == 30000
+
+
+def test_clickhouse_batcher_byte_trigger():
+    """Verify that exceeding the byte limit triggers an immediate flush before row threshold or timer."""
+    import threading
+
+    flushed_tables = []
+    flushed_records = []
+    flush_event = threading.Event()
+
+    def mock_insert(table, rows):
+        flushed_tables.append(table)
+        flushed_records.extend(rows)
+        flush_event.set()
+
+    # High row threshold (1000) and long timer (10s)
+    batcher = ClickHouseBatcher(
+        insert_fn=mock_insert,
+        batch_size=1000,
+        batch_bytes=500,
+        flush_interval=10.0,
+        dlq_enabled=False,
+    )
+    batcher.start()
+
+    # Small row (~100 bytes) - should not trigger
+    batcher.add("test_table", {"payload": "A" * 80})
+    assert not flush_event.wait(timeout=0.05)
+    assert len(flushed_records) == 0
+
+    # Second row (~500 bytes) pushes total table bytes past batch_bytes (500)
+    batcher.add("test_table", {"payload": "B" * 450})
+    # Event-driven wait eliminates timing sensitivity on slow runners
+    assert flush_event.wait(timeout=3.0), "Worker did not trigger byte flush within timeout"
+
+    # Must flush both rows immediately without waiting for 1000 rows or 10.0s timer
+    assert len(flushed_records) == 2
+    assert flushed_tables == ["test_table"]
+    assert batcher.total_overflow_dropped == 0
+
+    batcher.stop()
+
+
+def test_clickhouse_batcher_byte_validation():
+    """Verify ClickHouseBatcher validates max_buffer_bytes >= batch_bytes and defaults safely."""
+    import pytest
+
+    # 1. Default when None: should provide 2x batch_bytes or at least 25 MB
+    b1 = ClickHouseBatcher(insert_fn=lambda t, r: None, batch_bytes=8 * 1024 * 1024, dlq_enabled=False)
+    assert b1.batch_bytes == 8 * 1024 * 1024
+    assert b1.max_buffer_bytes >= 16 * 1024 * 1024
+
+    # 2. Explicit valid value
+    b2 = ClickHouseBatcher(insert_fn=lambda t, r: None, batch_bytes=1000, max_buffer_bytes=2000, dlq_enabled=False)
+    assert b2.batch_bytes == 1000
+    assert b2.max_buffer_bytes == 2000
+
+    # 3. Invalid: max_buffer_bytes < batch_bytes must fail fast
+    with pytest.raises(ValueError, match="cannot be less than batch_bytes"):
+        ClickHouseBatcher(insert_fn=lambda t, r: None, batch_bytes=5000, max_buffer_bytes=2000, dlq_enabled=False)
+
+
+def test_clickhouse_storage_passes_byte_limits():
+    """Verify ClickHouseStorage correctly passes batch_bytes and max_buffer_bytes to the batcher."""
+    mock_client = MagicMock()
+    mock_client.command.return_value = None
+
+    storage = ClickHouseStorage(
+        client=mock_client,
+        batch_size=15000,
+        batch_bytes=8388608,
+        max_buffer_bytes=16777216,
+        max_buffer_rows=30000,
+    )
+    assert storage.batcher.batch_bytes == 8388608
+    assert storage.batcher.max_buffer_bytes == 16777216
+
+
+def test_clickhouse_batcher_ceiling_overflow_behavior(tmp_path: Path):
+    """Verify that an incoming batch exceeding remaining buffer capacity intentionally spills to DLQ."""
+    dlq_dir = tmp_path / "dlq_ceiling"
+    dlq_dir.mkdir(parents=True, exist_ok=True)
+
+    # Threshold 400 bytes, hard capacity ceiling 800 bytes
+    batcher = ClickHouseBatcher(
+        insert_fn=lambda t, r: None,
+        batch_size=100,
+        batch_bytes=400,
+        max_buffer_bytes=800,
+        flush_interval=100.0,
+        dlq_dir=dlq_dir,
+        dlq_enabled=True,
+    )
+
+    # 1. Normal addition within capacity (approx 250 bytes)
+    batcher.add("raw_payloads", {"msg": "X" * 200})
+    assert batcher._table_bytes.get("raw_payloads", 0) <= 800
+    assert batcher.total_overflow_dropped == 0
+
+    # 2. Large addition: 3 rows of ~250 bytes each (~750 bytes). Total 250 + 750 = 1000 > 800 ceiling.
+    incoming_batch = [{"msg": "Y" * 200} for _ in range(3)]
+    batcher.add_many("raw_payloads", incoming_batch)
+
+    # Buffer MUST NOT exceed 800 bytes; excess must be intentionally evicted to DLQ
+    assert batcher._table_bytes.get("raw_payloads", 0) <= 800
+    assert batcher.total_overflow_dropped > 0
+    assert len(list(dlq_dir.glob("*.jsonl"))) > 0

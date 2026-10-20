@@ -355,19 +355,37 @@ class ServerConfig:
 
     @property
     def ch_batch_max_rows(self) -> int:
-        """Maximum rows held in the ClickHouse in-memory batch buffer."""
+        """Maximum rows held in the ClickHouse in-memory batch buffer before size flush."""
         try:
             return int(os.environ.get("INSIEDR_CH_BATCH_MAX_ROWS", "10000"))
         except ValueError:
             return 10000
 
     @property
-    def ch_batch_max_bytes(self) -> int:
-        """Maximum bytes held in the ClickHouse in-memory batch buffer (default 10 MB)."""
+    def ch_batch_max_buffer_rows(self) -> int:
+        """Maximum rows held in ClickHouse batcher per-table buffer before DLQ overflow."""
+        default_buf = max(self.ch_batch_max_rows * 2, 20000)
         try:
-            return int(os.environ.get("INSIEDR_CH_BATCH_MAX_BYTES", str(10 * 1024 * 1024)))
+            return int(os.environ.get("INSIEDR_CH_BATCH_MAX_BUFFER_ROWS", str(default_buf)))
         except ValueError:
-            return 10 * 1024 * 1024
+            return default_buf
+
+    @property
+    def ch_batch_max_bytes(self) -> int:
+        """Maximum bytes held in the ClickHouse in-memory batch buffer before flush (default 8 MB)."""
+        try:
+            return int(os.environ.get("INSIEDR_CH_BATCH_MAX_BYTES", str(8 * 1024 * 1024)))
+        except ValueError:
+            return 8 * 1024 * 1024
+
+    @property
+    def ch_batch_max_buffer_bytes(self) -> int:
+        """Maximum bytes held in ClickHouse batcher per-table buffer before DLQ overflow (default 16 MB)."""
+        default_buf_bytes = max(self.ch_batch_max_bytes * 2, 16 * 1024 * 1024)
+        try:
+            return int(os.environ.get("INSIEDR_CH_BATCH_MAX_BUFFER_BYTES", str(default_buf_bytes)))
+        except ValueError:
+            return default_buf_bytes
 
     @property
     def ch_batch_flush_interval(self) -> float:

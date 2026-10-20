@@ -169,7 +169,9 @@ def pii_and_secret_scrubber(ctx: TelemetryContext) -> TelemetryContext:
     collectors = ctx.decrypted_payload.get("collectors")
     if isinstance(collectors, list):
         for col in collectors:
-            if isinstance(col, dict) and "payload" in col:
-                col["payload"] = _scrub_object(col["payload"])
+            if isinstance(col, dict):
+                for field in ('payload','error'):
+                    if field in col:
+                        col[field] = _scrub_object(col[field])
 
     return ctx

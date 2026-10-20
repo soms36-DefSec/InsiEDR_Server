@@ -57,6 +57,8 @@ async def get_telemetry_explorer(
             f"{status or ''}:{search or ''}:{start_time.isoformat() if start_time else ''}:"
             f"{end_time.isoformat() if end_time else ''}:{agent_id or ''}"
         )
+        if getattr(type(storage),'cache_revision',None) is not None:
+            cache_key += f':v3:{storage.cache_revision}'
         hit = api_cache.get(cache_key)
         if hit is not None:
             return hit

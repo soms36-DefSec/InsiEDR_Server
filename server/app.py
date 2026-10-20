@@ -105,7 +105,9 @@ def create_app(*, storage=None, apply_migrations: bool = True) -> FastAPI:
                                 dlq_dir=config.dlq_dir,
                                 batch_size=config.ch_batch_max_rows,
                                 flush_interval=config.ch_batch_flush_interval,
-                                max_buffer_bytes=config.ch_batch_max_bytes,
+                                batch_bytes=config.ch_batch_max_bytes,
+                                max_buffer_bytes=config.ch_batch_max_buffer_bytes,
+                                max_buffer_rows=config.ch_batch_max_buffer_rows,
                             )
                         except Exception as ch_err:
                             logging.getLogger("insiedr.app").warning("ClickHouse storage init failed, operating with PG fallback: %s", ch_err)
@@ -132,6 +134,12 @@ def create_app(*, storage=None, apply_migrations: bool = True) -> FastAPI:
 
 
         # Task queue worker
+        if os.environ.get('INSIEDR_RAM_TELEMETRY_ENABLED', 'false').lower() in ('true', '1', 'yes'):
+            from server.storage.ram_telemetry import build_ram_storage
+            storage = build_ram_storage(storage)
+            app.state.storage = storage
+            app.extensions['insiedr_storage'] = storage
+
         if storage is not None:
             try:
                 from server.task_queue import start_worker
@@ -212,6 +220,8 @@ def create_app(*, storage=None, apply_migrations: bool = True) -> FastAPI:
 
         if hasattr(app.state, "storage") and app.state.storage and hasattr(app.state.storage, "close"):
             try:
+                if getattr(type(app.state.storage),'aclose_cache',None) is not None:
+                    await app.state.storage.aclose_cache()
                 app.state.storage.close()
             except Exception as exc:
                 logging.getLogger("insiedr.app").warning("Storage close notice: %s", exc)
@@ -263,6 +273,8 @@ def create_app(*, storage=None, apply_migrations: bool = True) -> FastAPI:
     app.include_router(health_bp)
     app.include_router(stats_bp)
     app.include_router(events_bp)
+    from server.api.live_telemetry import router as live_telemetry_router
+    app.include_router(live_telemetry_router)
     app.include_router(export_bp)
     app.include_router(docs_bp)
     app.include_router(keys_bp)

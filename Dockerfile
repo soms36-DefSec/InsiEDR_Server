@@ -60,7 +60,7 @@ COPY --from=frontend-builder /build/server/dashboard/dist/ ./server/dashboard/di
 
 RUN groupadd --gid 10001 insiedr \
     && useradd --uid 10001 --gid insiedr --no-create-home insiedr \
-    && mkdir -p /app/data/dlq \
+    && mkdir -p /app/data/dlq /app/data/ingest-journal \
     && chown -R insiedr:insiedr /app/data
 USER 10001:10001
 

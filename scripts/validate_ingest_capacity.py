@@ -75,9 +75,10 @@ async def run(args):
                         async with admission:
                             response = await client.post(args.url, json=envelope, headers=headers)
                         counts[str(response.status_code)] += 1
-                        if response.status_code in (200, 202):
+                        if response.status_code == 202:
                             body = response.json()
-                            if body.get('payload_id') == envelope['payload_id'] and body.get('ok'):
+                            if (body.get('payload_id') == envelope['payload_id']
+                                    and body.get('ok') is True and body.get('status') == 'accepted'):
                                 counts['acknowledged'] += 1
                             else:
                                 counts['invalid_ack'] += 1
@@ -102,9 +103,13 @@ async def run(args):
     latency.sort()
     def percentile(fraction):
         return round(latency[min(len(latency) - 1, int(len(latency) * fraction))], 2) if latency else None
+    collector_observations_per_payload = len(template['collectors'])
     report = {'agent_prefix': prefix, 'agents': args.agents, 'elapsed_seconds': round(elapsed, 2),
               'attempts': len(latency), 'counts': dict(counts),
               'acknowledged_per_second': round(counts['acknowledged'] / elapsed, 2),
+              'collector_observations_per_payload': collector_observations_per_payload,
+              'estimated_collector_observations_per_second': round(
+                  counts['acknowledged'] * collector_observations_per_payload / elapsed, 2),
               'attempt_latency_ms': {'p50': percentile(.5), 'p95': percentile(.95), 'p99': percentile(.99)},
               'note': 'Synthetic client results; verify outbox drain, disk growth and database row counts separately.'}
     Path(args.output).parent.mkdir(parents=True, exist_ok=True)

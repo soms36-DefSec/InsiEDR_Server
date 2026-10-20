@@ -157,6 +157,16 @@ def _check_duplicate_policy(storage, envelope: dict[str, Any], payload: dict[str
     existing = get_payload(str(payload.get("payload_id")))
     if not existing:
         return False
+    if existing.get('envelope_hash'):
+        if existing.get('agent_id') != str(payload.get('agent_id')):
+            raise IngestError('duplicate payload_id with different content or identity')
+        if existing['envelope_hash'] == _hash_json(envelope):
+            return True
+        if not existing.get('decrypted_payload_hash'):
+            raise IngestError('duplicate payload_id with different content or identity')
+        # Preserve supported legacy crypto retry behavior: when there is no
+        # ciphertext hash (e.g. Fernet token envelopes), verify original plaintext
+        # identity below rather than requiring the same randomized envelope.
     existing_envelope = existing.get("encrypted_envelope_json") or {}
     if isinstance(existing_envelope, str):
         try:
@@ -185,12 +195,25 @@ _ingest_slots = threading.BoundedSemaphore(max(1, int(os.environ.get('INSIEDR_IN
 async def process_encrypted_request(req) -> tuple[int, dict[str, Any]]:
     # Admission precedes buffering/decrypting a request. There is no unbounded
     # in-process queue; agents retain their durable spool until a successful ACK.
-    if not _ingest_slots.acquire(blocking=False):
+    storage = getattr(getattr(getattr(req, 'app', None), 'state', None), 'storage', None)
+    use_dynamic = getattr(type(storage), 'enter_ingest', None) is not None
+    request_bytes=None
+    if use_dynamic:
+        try:
+            declared=int(req.headers.get('content-length',''))
+            request_bytes=declared if declared>0 else None
+        except (ValueError,TypeError):
+            pass
+    entered = storage.enter_ingest(request_bytes) if use_dynamic else _ingest_slots.acquire(blocking=False)
+    if not entered:
         raise StorageUnavailableError('Ingestion is busy; retain payload and retry')
     try:
         return await _process_encrypted_request(req)
     finally:
-        _ingest_slots.release()
+        if use_dynamic:
+            storage.leave_ingest(entered)
+        else:
+            _ingest_slots.release()
 
 
 async def _read_bounded_request_body(req: Any, max_bytes: int) -> dict[str, Any]:
@@ -362,11 +385,13 @@ async def _process_encrypted_request(req) -> tuple[int, dict[str, Any]]:
 
         def _persist():
             if _check_duplicate_policy(storage, envelope, payload):
+                if getattr(type(storage),'ensure_live',None) is not None:
+                    storage.ensure_live(str(payload_id))
                 return False
-            storage.store_raw_payload(envelope, payload)
+            inserted = storage.store_raw_payload(envelope, payload)
             # Read caches expire on short TTLs. Scanning/deleting Redis keys for
             # every envelope destroys caching and adds synchronous disk work.
-            return True
+            return inserted is not False
 
         persisted = await anyio.to_thread.run_sync(_persist)
         if not persisted:
@@ -375,7 +400,10 @@ async def _process_encrypted_request(req) -> tuple[int, dict[str, Any]]:
         # Dispatch real-time agent status update to SSE stream
         try:
             from server.api.events import dispatch_agent_event, dispatch_telemetry_event
-            dispatch_telemetry_event(str(payload_id))
+            if getattr(type(storage), 'risk_in_replay', False):
+                dispatch_telemetry_event(str(payload_id), invalidate=False)
+            else:
+                dispatch_telemetry_event(str(payload_id))
             dispatch_agent_event({
                 "agent_id": payload.get("agent_id"),
                 "hostname": payload.get("hostname"),
@@ -389,7 +417,8 @@ async def _process_encrypted_request(req) -> tuple[int, dict[str, Any]]:
         # Evaluate heuristics and risk scoring asynchronously
         try:
             from server.risk.pipeline import process_telemetry_risk
-            await anyio.to_thread.run_sync(process_telemetry_risk, storage, payload)
+            if not getattr(type(storage), 'risk_in_replay', False):
+                await anyio.to_thread.run_sync(process_telemetry_risk, storage, payload)
         except Exception as risk_err:
             logging.getLogger("insiedr.api.ingest").warning("Risk evaluation non-fatal notice: %s", risk_err)
 

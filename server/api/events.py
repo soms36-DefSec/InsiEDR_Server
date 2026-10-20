@@ -226,10 +226,12 @@ def dispatch_agent_event(agent_dict: dict[str, Any]) -> None:
     broadcaster.publish("agents", "agent_status", agent_dict)
 
 
-def dispatch_telemetry_event(payload_id: str) -> None:
+def dispatch_telemetry_event(payload_id: str, *, invalidate: bool = True) -> None:
     # An invalidation carries no unsanitized collector payload. The authenticated
     # REST query remains authoritative for privacy policy and current filters.
     broadcaster.publish("telemetry", "telemetry_changed", {"payload_id": payload_id})
+    if not invalidate:
+        return
     try:
         from server.api.cache import api_cache
         api_cache.clear_pattern("telemetry:*")

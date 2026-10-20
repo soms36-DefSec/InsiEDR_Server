@@ -30,6 +30,7 @@ def snapshot_key(storage, actor, name, filters=None):
                 os.environ.get('INSIEDR_TELEMETRY_READ_BACKEND', 'postgres'),
                 os.environ.get('INSIEDR_CH_COLLECTOR_SCHEMA_VERSION', '1'),
                 os.environ.get('INSIEDR_CH_ROLLUPS_ENABLED', 'false')]
+    identity.append(os.environ.get('INSIEDR_RAM_TELEMETRY_ENABLED','false'))
     return 'snapshot:v2:' + hashlib.sha256(json.dumps(identity, sort_keys=True, default=str).encode()).hexdigest()
 
 
