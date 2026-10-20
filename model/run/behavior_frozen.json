@@ -1,0 +1,166 @@
+{
+  "timestamp": 1792529278.5503998,
+  "sha256": "133fb549a241e5c674c2f3271c42c281634346d8760f1ca46b7e88eec55cefa7",
+  "behaviors": [
+    "CREDENTIAL_DUMP",
+    "USB_EXFILTRATION_PRECURSOR",
+    "IT_SABOTAGE",
+    "CLOUD_EXFILTRATION_PRECURSOR",
+    "DATA_HOARDING",
+    "HONEYTOKEN_TRIP",
+    "RECON",
+    "STAGING"
+  ],
+  "thresholds": [
+    0.6457338333129883,
+    0.5253514647483826,
+    0.2712467312812805,
+    0.610335111618042,
+    0.6841868162155151,
+    0.30485063791275024,
+    0.7563599944114685,
+    null
+  ],
+  "search": {
+    "CREDENTIAL_DUMP": {
+      "selected": {
+        "threshold": 0.6457338333129883,
+        "precision": 0.71900826446281,
+        "recall": 0.7372881355932204
+      },
+      "feasible_candidates": 80
+    },
+    "USB_EXFILTRATION_PRECURSOR": {
+      "selected": {
+        "threshold": 0.5253514647483826,
+        "precision": 0.7142857142857143,
+        "recall": 0.6395348837209303
+      },
+      "feasible_candidates": 51
+    },
+    "IT_SABOTAGE": {
+      "selected": {
+        "threshold": 0.2712467312812805,
+        "precision": 0.8921568627450981,
+        "recall": 0.9680851063829787
+      },
+      "feasible_candidates": 63
+    },
+    "CLOUD_EXFILTRATION_PRECURSOR": {
+      "selected": {
+        "threshold": 0.610335111618042,
+        "precision": 0.7524752475247525,
+        "recall": 0.5891472868217055
+      },
+      "feasible_candidates": 69
+    },
+    "DATA_HOARDING": {
+      "selected": {
+        "threshold": 0.6841868162155151,
+        "precision": 0.7040816326530612,
+        "recall": 0.711340206185567
+      },
+      "feasible_candidates": 58
+    },
+    "HONEYTOKEN_TRIP": {
+      "selected": {
+        "threshold": 0.30485063791275024,
+        "precision": 0.7857142857142857,
+        "recall": 0.8461538461538461
+      },
+      "feasible_candidates": 66
+    },
+    "RECON": {
+      "selected": {
+        "threshold": 0.7563599944114685,
+        "precision": 0.8888888888888888,
+        "recall": 0.2
+      },
+      "feasible_candidates": 3
+    },
+    "STAGING": {
+      "selected": null,
+      "feasible_candidates": 0
+    }
+  },
+  "calibration": {
+    "micro_f1": 0.7117601844734819,
+    "macro_f1": 0.6051698533888823,
+    "predicted_multilabel_days": 16,
+    "true_multilabel_days": 56,
+    "labels": {
+      "CREDENTIAL_DUMP": {
+        "precision": 0.71900826446281,
+        "recall": 0.7372881355932204,
+        "f1": 0.7280334728033473,
+        "support": 118,
+        "ap": 0.785458624274814,
+        "enabled": true,
+        "threshold": 0.6457338333129883
+      },
+      "USB_EXFILTRATION_PRECURSOR": {
+        "precision": 0.7142857142857143,
+        "recall": 0.6395348837209303,
+        "f1": 0.6748466257668712,
+        "support": 86,
+        "ap": 0.6960026676662354,
+        "enabled": true,
+        "threshold": 0.5253514647483826
+      },
+      "IT_SABOTAGE": {
+        "precision": 0.8921568627450981,
+        "recall": 0.9680851063829787,
+        "f1": 0.9285714285714286,
+        "support": 94,
+        "ap": 0.9749498503078843,
+        "enabled": true,
+        "threshold": 0.2712467312812805
+      },
+      "CLOUD_EXFILTRATION_PRECURSOR": {
+        "precision": 0.7524752475247525,
+        "recall": 0.5891472868217055,
+        "f1": 0.6608695652173913,
+        "support": 129,
+        "ap": 0.6619479590138931,
+        "enabled": true,
+        "threshold": 0.610335111618042
+      },
+      "DATA_HOARDING": {
+        "precision": 0.7040816326530612,
+        "recall": 0.711340206185567,
+        "f1": 0.7076923076923077,
+        "support": 97,
+        "ap": 0.7692644291371598,
+        "enabled": true,
+        "threshold": 0.6841868162155151
+      },
+      "HONEYTOKEN_TRIP": {
+        "precision": 0.7857142857142857,
+        "recall": 0.8461538461538461,
+        "f1": 0.8148148148148148,
+        "support": 91,
+        "ap": 0.8555571533951747,
+        "enabled": true,
+        "threshold": 0.30485063791275024
+      },
+      "RECON": {
+        "precision": 0.8888888888888888,
+        "recall": 0.2,
+        "f1": 0.32653061224489793,
+        "support": 40,
+        "ap": 0.30535110543657645,
+        "enabled": true,
+        "threshold": 0.7563599944114685
+      },
+      "STAGING": {
+        "precision": 0.0,
+        "recall": 0.0,
+        "f1": 0.0,
+        "support": 40,
+        "ap": 0.31366658804082154,
+        "enabled": false,
+        "threshold": null
+      }
+    }
+  }
+}

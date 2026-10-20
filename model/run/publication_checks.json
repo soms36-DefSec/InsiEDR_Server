@@ -1,0 +1,20 @@
+{
+  "tests": {
+    "package_cli_runs": true,
+    "canonical_v3_numeric_outputs_match": true,
+    "ordered_40_schema_matches": true,
+    "eight_probabilities_sum_to_one": true,
+    "eight_behavior_heads_present": true,
+    "seven_day_warmup_preserved": true,
+    "complete_22_day_example_eligible": true,
+    "review_budget_respected": true,
+    "unverified_observed_data_rejected": true,
+    "original_frozen_weights_preserved": true,
+    "server_runtime_modified": false
+  },
+  "weights_sha256": {
+    "pipeline.joblib": "cb985298e7c392270e2e60494a37548cb023e2959ccef644cc3790e116b5eebc",
+    "behavior_heads.joblib": "133fb549a241e5c674c2f3271c42c281634346d8760f1ca46b7e88eec55cefa7"
+  },
+  "note": "Model package checks only; no live server integration or independent real-world validation is claimed."
+}

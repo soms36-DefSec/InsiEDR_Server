@@ -1,0 +1,137 @@
+{
+  "timestamp": "2026-10-20T20:46:07.315480+00:00",
+  "model_sha256": "cb985298e7c392270e2e60494a37548cb023e2959ccef644cc3790e116b5eebc",
+  "classes": [
+    "BENIGN",
+    "CLOUD_EXFILTRATION_PRECURSOR",
+    "CREDENTIAL_DUMP",
+    "DATA_HOARDING",
+    "IT_SABOTAGE",
+    "USB_EXFILTRATION_PRECURSOR",
+    "HONEYTOKEN_TRIP",
+    "KILL_CHAIN_APT"
+  ],
+  "review_policy": {
+    "supervised_cutoff": 0.41032636165618896,
+    "novelty_cutoff": null
+  },
+  "thresholds": {
+    "threat_probability": 0.5247461037635804,
+    "drift_error": 0.37640477627357144,
+    "host_error": 0.35438880388307903
+  },
+  "calibration": {
+    "policy": {
+      "supervised_cutoff": 0.41032636165618896,
+      "novelty_cutoff": null
+    },
+    "tp": 53,
+    "fp": 13,
+    "precision": 0.803030303030303,
+    "recall": 0.7361111111111112,
+    "cohorts": [
+      {
+        "reviewed": 14,
+        "tp": 12,
+        "fp": 2,
+        "fn": 6,
+        "tn": 196,
+        "precision": 0.8571428571428571,
+        "recall": 0.6666666666666666,
+        "normal_review_rate": 0.010101010101010102,
+        "balanced_accuracy": 0.8282828282828283
+      },
+      {
+        "reviewed": 12,
+        "tp": 11,
+        "fp": 1,
+        "fn": 7,
+        "tn": 197,
+        "precision": 0.9166666666666666,
+        "recall": 0.6111111111111112,
+        "normal_review_rate": 0.005050505050505051,
+        "balanced_accuracy": 0.803030303030303
+      },
+      {
+        "reviewed": 20,
+        "tp": 15,
+        "fp": 5,
+        "fn": 3,
+        "tn": 193,
+        "precision": 0.75,
+        "recall": 0.8333333333333334,
+        "normal_review_rate": 0.025252525252525252,
+        "balanced_accuracy": 0.904040404040404
+      },
+      {
+        "reviewed": 20,
+        "tp": 15,
+        "fp": 5,
+        "fn": 3,
+        "tn": 193,
+        "precision": 0.75,
+        "recall": 0.8333333333333334,
+        "normal_review_rate": 0.025252525252525252,
+        "balanced_accuracy": 0.904040404040404
+      }
+    ]
+  },
+  "supervised_only_calibration": {
+    "policy": {
+      "supervised_cutoff": 0.41032636165618896,
+      "novelty_cutoff": null
+    },
+    "tp": 53,
+    "fp": 13,
+    "precision": 0.803030303030303,
+    "recall": 0.7361111111111112,
+    "cohorts": [
+      {
+        "reviewed": 14,
+        "tp": 12,
+        "fp": 2,
+        "fn": 6,
+        "tn": 196,
+        "precision": 0.8571428571428571,
+        "recall": 0.6666666666666666,
+        "normal_review_rate": 0.010101010101010102,
+        "balanced_accuracy": 0.8282828282828283
+      },
+      {
+        "reviewed": 12,
+        "tp": 11,
+        "fp": 1,
+        "fn": 7,
+        "tn": 197,
+        "precision": 0.9166666666666666,
+        "recall": 0.6111111111111112,
+        "normal_review_rate": 0.005050505050505051,
+        "balanced_accuracy": 0.803030303030303
+      },
+      {
+        "reviewed": 20,
+        "tp": 15,
+        "fp": 5,
+        "fn": 3,
+        "tn": 193,
+        "precision": 0.75,
+        "recall": 0.8333333333333334,
+        "normal_review_rate": 0.025252525252525252,
+        "balanced_accuracy": 0.904040404040404
+      },
+      {
+        "reviewed": 20,
+        "tp": 15,
+        "fp": 5,
+        "fn": 3,
+        "tn": 193,
+        "precision": 0.75,
+        "recall": 0.8333333333333334,
+        "normal_review_rate": 0.025252525252525252,
+        "balanced_accuracy": 0.904040404040404
+      }
+    ]
+  },
+  "novelty_enabled": false,
+  "protocol_sha256": "34ae8a23ba4cd827abef944979b38a73683eb67dc8e3d8cd12a06ca9e64b6187"
+}

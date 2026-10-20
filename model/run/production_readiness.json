@@ -1,0 +1,30 @@
+{
+  "model_name": "Model V3",
+  "status": "RESEARCH_CANDIDATE_NOT_PRODUCTION_READY",
+  "synthetic_checks": {
+    "final_standard": {
+      "queue_precision_80": true,
+      "queue_recall_70": true,
+      "normal_host_review_rate_2": false,
+      "scenario_macro_f1_70": false,
+      "kill_chain_naming_recall_50": false
+    },
+    "final_normal_stress": {
+      "queue_precision_80": false,
+      "queue_recall_70": true,
+      "normal_host_review_rate_2": false,
+      "scenario_macro_f1_70": false,
+      "kill_chain_naming_recall_50": false
+    }
+  },
+  "note": "These reporting gates do not select weights/cutoffs and do not override failed results.",
+  "unresolved": [
+    "No independently observed endpoint evaluation or real prevalence estimate",
+    "No validated ordered campaign detector; scalar risk forecasts lose phase detail",
+    "Unseen attack mechanisms not established by changing random seeds",
+    "Small attack sample counts and synthetic phase-label ambiguity",
+    "Eight direct feature omissions remain an unverified redundancy assumption",
+    "Real collector aggregation/availability and identity attribution require integration testing",
+    "Operational alert delay, drift thresholds, recovery and throughput not field-validated"
+  ]
+}

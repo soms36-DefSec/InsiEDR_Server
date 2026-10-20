@@ -1,0 +1,322 @@
+{
+  "training": {
+    "micro_f1": 0.7585162755488266,
+    "macro_f1": 0.6391316312645601,
+    "predicted_multilabel_days": 18,
+    "true_multilabel_days": 51,
+    "labels": {
+      "CREDENTIAL_DUMP": {
+        "precision": 0.7536231884057971,
+        "recall": 0.8455284552845529,
+        "f1": 0.7969348659003831,
+        "support": 123,
+        "ap": 0.8713389324097859,
+        "enabled": true,
+        "threshold": 0.6457338333129883
+      },
+      "USB_EXFILTRATION_PRECURSOR": {
+        "precision": 0.8181818181818182,
+        "recall": 0.7411764705882353,
+        "f1": 0.7777777777777778,
+        "support": 85,
+        "ap": 0.8003385800129473,
+        "enabled": true,
+        "threshold": 0.5253514647483826
+      },
+      "IT_SABOTAGE": {
+        "precision": 0.8303571428571429,
+        "recall": 0.9893617021276596,
+        "f1": 0.9029126213592233,
+        "support": 94,
+        "ap": 0.9951727634415002,
+        "enabled": true,
+        "threshold": 0.2712467312812805
+      },
+      "CLOUD_EXFILTRATION_PRECURSOR": {
+        "precision": 0.8301886792452831,
+        "recall": 0.7272727272727273,
+        "f1": 0.775330396475771,
+        "support": 121,
+        "ap": 0.8078083024107232,
+        "enabled": true,
+        "threshold": 0.610335111618042
+      },
+      "DATA_HOARDING": {
+        "precision": 0.6744186046511628,
+        "recall": 0.6105263157894737,
+        "f1": 0.6408839779005525,
+        "support": 95,
+        "ap": 0.6529864689189163,
+        "enabled": true,
+        "threshold": 0.6841868162155151
+      },
+      "HONEYTOKEN_TRIP": {
+        "precision": 0.8055555555555556,
+        "recall": 0.9666666666666667,
+        "f1": 0.8787878787878788,
+        "support": 90,
+        "ap": 0.9602867647405887,
+        "enabled": true,
+        "threshold": 0.30485063791275024
+      },
+      "RECON": {
+        "precision": 1.0,
+        "recall": 0.20512820512820512,
+        "f1": 0.3404255319148936,
+        "support": 39,
+        "ap": 0.5512705893515997,
+        "enabled": true,
+        "threshold": 0.7563599944114685
+      },
+      "STAGING": {
+        "precision": 0.0,
+        "recall": 0.0,
+        "f1": 0.0,
+        "support": 39,
+        "ap": 0.5827128310815327,
+        "enabled": false,
+        "threshold": null
+      }
+    }
+  },
+  "calibration": {
+    "micro_f1": 0.7117601844734819,
+    "macro_f1": 0.6051698533888823,
+    "predicted_multilabel_days": 16,
+    "true_multilabel_days": 56,
+    "labels": {
+      "CREDENTIAL_DUMP": {
+        "precision": 0.71900826446281,
+        "recall": 0.7372881355932204,
+        "f1": 0.7280334728033473,
+        "support": 118,
+        "ap": 0.785458624274814,
+        "enabled": true,
+        "threshold": 0.6457338333129883
+      },
+      "USB_EXFILTRATION_PRECURSOR": {
+        "precision": 0.7142857142857143,
+        "recall": 0.6395348837209303,
+        "f1": 0.6748466257668712,
+        "support": 86,
+        "ap": 0.6960026676662354,
+        "enabled": true,
+        "threshold": 0.5253514647483826
+      },
+      "IT_SABOTAGE": {
+        "precision": 0.8921568627450981,
+        "recall": 0.9680851063829787,
+        "f1": 0.9285714285714286,
+        "support": 94,
+        "ap": 0.9749498503078843,
+        "enabled": true,
+        "threshold": 0.2712467312812805
+      },
+      "CLOUD_EXFILTRATION_PRECURSOR": {
+        "precision": 0.7524752475247525,
+        "recall": 0.5891472868217055,
+        "f1": 0.6608695652173913,
+        "support": 129,
+        "ap": 0.6619479590138931,
+        "enabled": true,
+        "threshold": 0.610335111618042
+      },
+      "DATA_HOARDING": {
+        "precision": 0.7040816326530612,
+        "recall": 0.711340206185567,
+        "f1": 0.7076923076923077,
+        "support": 97,
+        "ap": 0.7692644291371598,
+        "enabled": true,
+        "threshold": 0.6841868162155151
+      },
+      "HONEYTOKEN_TRIP": {
+        "precision": 0.7857142857142857,
+        "recall": 0.8461538461538461,
+        "f1": 0.8148148148148148,
+        "support": 91,
+        "ap": 0.8555571533951747,
+        "enabled": true,
+        "threshold": 0.30485063791275024
+      },
+      "RECON": {
+        "precision": 0.8888888888888888,
+        "recall": 0.2,
+        "f1": 0.32653061224489793,
+        "support": 40,
+        "ap": 0.30535110543657645,
+        "enabled": true,
+        "threshold": 0.7563599944114685
+      },
+      "STAGING": {
+        "precision": 0.0,
+        "recall": 0.0,
+        "f1": 0.0,
+        "support": 40,
+        "ap": 0.31366658804082154,
+        "enabled": false,
+        "threshold": null
+      }
+    }
+  },
+  "behavior_final_standard": {
+    "micro_f1": 0.7781350482315113,
+    "macro_f1": 0.6313898638331874,
+    "predicted_multilabel_days": 1,
+    "true_multilabel_days": 8,
+    "labels": {
+      "CREDENTIAL_DUMP": {
+        "precision": 0.9032258064516129,
+        "recall": 0.875,
+        "f1": 0.8888888888888888,
+        "support": 32,
+        "ap": 0.9379233867692376,
+        "enabled": true,
+        "threshold": 0.6457338333129883
+      },
+      "USB_EXFILTRATION_PRECURSOR": {
+        "precision": 0.7647058823529411,
+        "recall": 0.6190476190476191,
+        "f1": 0.6842105263157895,
+        "support": 21,
+        "ap": 0.7377519168699109,
+        "enabled": true,
+        "threshold": 0.5253514647483826
+      },
+      "IT_SABOTAGE": {
+        "precision": 0.8928571428571429,
+        "recall": 1.0,
+        "f1": 0.9433962264150944,
+        "support": 25,
+        "ap": 1.0,
+        "enabled": true,
+        "threshold": 0.2712467312812805
+      },
+      "CLOUD_EXFILTRATION_PRECURSOR": {
+        "precision": 1.0,
+        "recall": 0.7096774193548387,
+        "f1": 0.8301886792452831,
+        "support": 31,
+        "ap": 0.8193375172811458,
+        "enabled": true,
+        "threshold": 0.610335111618042
+      },
+      "DATA_HOARDING": {
+        "precision": 0.75,
+        "recall": 0.7142857142857143,
+        "f1": 0.7317073170731707,
+        "support": 21,
+        "ap": 0.7708977944466774,
+        "enabled": true,
+        "threshold": 0.6841868162155151
+      },
+      "HONEYTOKEN_TRIP": {
+        "precision": 0.8095238095238095,
+        "recall": 0.7391304347826086,
+        "f1": 0.7727272727272727,
+        "support": 23,
+        "ap": 0.8243052841995945,
+        "enabled": true,
+        "threshold": 0.30485063791275024
+      },
+      "RECON": {
+        "precision": 1.0,
+        "recall": 0.1111111111111111,
+        "f1": 0.2,
+        "support": 9,
+        "ap": 0.35014646376832254,
+        "enabled": true,
+        "threshold": 0.7563599944114685
+      },
+      "STAGING": {
+        "precision": 0.0,
+        "recall": 0.0,
+        "f1": 0.0,
+        "support": 9,
+        "ap": 0.35813066576444436,
+        "enabled": false,
+        "threshold": null
+      }
+    }
+  },
+  "behavior_final_stress": {
+    "micro_f1": 0.6858789625360231,
+    "macro_f1": 0.5711902877092867,
+    "predicted_multilabel_days": 6,
+    "true_multilabel_days": 14,
+    "labels": {
+      "CREDENTIAL_DUMP": {
+        "precision": 0.7692307692307693,
+        "recall": 0.8333333333333334,
+        "f1": 0.8,
+        "support": 36,
+        "ap": 0.8802399911311032,
+        "enabled": true,
+        "threshold": 0.6457338333129883
+      },
+      "USB_EXFILTRATION_PRECURSOR": {
+        "precision": 0.6875,
+        "recall": 0.55,
+        "f1": 0.6111111111111112,
+        "support": 20,
+        "ap": 0.6455341122092421,
+        "enabled": true,
+        "threshold": 0.5253514647483826
+      },
+      "IT_SABOTAGE": {
+        "precision": 1.0,
+        "recall": 1.0,
+        "f1": 1.0,
+        "support": 24,
+        "ap": 1.0,
+        "enabled": true,
+        "threshold": 0.2712467312812805
+      },
+      "CLOUD_EXFILTRATION_PRECURSOR": {
+        "precision": 0.7058823529411765,
+        "recall": 0.7058823529411765,
+        "f1": 0.7058823529411765,
+        "support": 34,
+        "ap": 0.7975696729525779,
+        "enabled": true,
+        "threshold": 0.610335111618042
+      },
+      "DATA_HOARDING": {
+        "precision": 0.42857142857142855,
+        "recall": 0.36,
+        "f1": 0.391304347826087,
+        "support": 25,
+        "ap": 0.3761061961587596,
+        "enabled": true,
+        "threshold": 0.6841868162155151
+      },
+      "HONEYTOKEN_TRIP": {
+        "precision": 0.76,
+        "recall": 0.7916666666666666,
+        "f1": 0.7755102040816326,
+        "support": 24,
+        "ap": 0.7595596792788398,
+        "enabled": true,
+        "threshold": 0.30485063791275024
+      },
+      "RECON": {
+        "precision": 0.6666666666666666,
+        "recall": 0.18181818181818182,
+        "f1": 0.2857142857142857,
+        "support": 11,
+        "ap": 0.22952137527662578,
+        "enabled": true,
+        "threshold": 0.7563599944114685
+      },
+      "STAGING": {
+        "precision": 0.0,
+        "recall": 0.0,
+        "f1": 0.0,
+        "support": 11,
+        "ap": 0.2393994994717307,
+        "enabled": false,
+        "threshold": null
+      }
+    }
+  }
+}

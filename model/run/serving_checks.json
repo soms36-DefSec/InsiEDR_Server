@@ -1,0 +1,13 @@
+{
+  "full_cli_queue_matches_frozen": true,
+  "eight_scenario_and_eight_behavior_outputs": true,
+  "duplicate_keys_rejected": true,
+  "reordered_feature_schema_rejected": true,
+  "negative_measurement_rejected": true,
+  "ratio_violation_rejected": true,
+  "nonbinary_flag_rejected": true,
+  "missing_completeness_abstains": true,
+  "ten_days_cannot_form_15_targets": true,
+  "labels_campaign_flags_excluded": true,
+  "explicit_asof_rejects_stale_history": true
+}

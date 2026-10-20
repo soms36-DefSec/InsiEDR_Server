@@ -1,0 +1,32 @@
+{
+  "behaviors": [
+    "CREDENTIAL_DUMP",
+    "USB_EXFILTRATION_PRECURSOR",
+    "IT_SABOTAGE",
+    "CLOUD_EXFILTRATION_PRECURSOR",
+    "DATA_HOARDING",
+    "HONEYTOKEN_TRIP",
+    "RECON",
+    "STAGING"
+  ],
+  "training_seeds": [
+    66001,
+    66002,
+    66041,
+    66042
+  ],
+  "calibration_seeds": [
+    66611,
+    66612,
+    66613,
+    66614
+  ],
+  "final_standard_seed": 66631,
+  "final_stress_seed": 66632,
+  "inputs": 40,
+  "labels": "Intended injection phases from collector_evidence_labels.csv; do not label all kill-chain days with all primitives",
+  "fit": "8 independent binary XGBoost heads; depth2,160trees,lr.035,minchild20,lambda40,alpha3,gamma.5,subsample.75,colsample.8; capped sqrt imbalance weight20",
+  "cutoff": "Per label, maximize pooled recall with pooled precision>=70%, >=5 positive predictions, and each calibration precision>=50%; otherwise abstain for label",
+  "scope": "Supplementary behavior evidence, not a new queue, not an independently trained campaign sequence detector",
+  "limitations": "Phase annotations are intended synthetic mechanisms, not proof each random increment was nonzero. Final cohorts share mechanisms; no unseen-family claim."
+}

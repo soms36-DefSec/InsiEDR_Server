@@ -1,0 +1,53 @@
+{
+  "model_name": "Model V3 robustness candidate",
+  "classes": [
+    "BENIGN",
+    "CLOUD_EXFILTRATION_PRECURSOR",
+    "CREDENTIAL_DUMP",
+    "DATA_HOARDING",
+    "IT_SABOTAGE",
+    "USB_EXFILTRATION_PRECURSOR",
+    "HONEYTOKEN_TRIP",
+    "KILL_CHAIN_APT"
+  ],
+  "spec": {
+    "name": "eight_class_level_d3_cap5",
+    "rep": "level",
+    "depth": 3,
+    "trees": 240,
+    "child": 40,
+    "weight_cap": 5
+  },
+  "training_seeds": [
+    66001,
+    66002,
+    66041,
+    66042
+  ],
+  "calibration_seeds": [
+    66611,
+    66612,
+    66613,
+    66614
+  ],
+  "clustered_training_seeds": [
+    66041,
+    66042
+  ],
+  "clustered_calibration_seeds": [
+    66613,
+    66614
+  ],
+  "final_standard_seed": 66621,
+  "final_normal_stress_seed": 66622,
+  "features": "Unchanged 40 engineered inputs",
+  "temporal": "Refit normal-only Ridge heads using chronological out-of-fold upstream risks; 7 inputs, 3 random-LSTM64 layers, alpha1000, weighted15, upward error",
+  "policy": "Fixed pair_threat ranking, independent second-largest IF-domain single-day novelty evidence; supervised queue first, max20, no padding",
+  "novelty_gate": "Add only if calibration gains attack hosts, pooled precision>=80%, recall>=50%, >=15 accepted, each precision>=70%,recall>=40%,normal-review<=2%; otherwise disabled",
+  "known_scenarios": "All seven attack families are now supervised known classes. No claim of unseen-family testing.",
+  "limitation": "All generated populations share attack mechanisms; new seeds are not independent real-world validation",
+  "immutable_old_models": {
+    "C:\\Users\\Guruchandar\\OneDrive\\\u0414\u043e\u043a\u0443\u043c\u0435\u043d\u0442\u044b\\ChatGPT\\insiEDR\\architecture_pipeline_v2\\run\\pipeline.joblib": "c9113a4c85fcd5726171acb5cd8d87105032c952492f1fde249dcea3ddace63a",
+    "C:\\Users\\Guruchandar\\OneDrive\\\u0414\u043e\u043a\u0443\u043c\u0435\u043d\u0442\u044b\\ChatGPT\\insiEDR\\precision_first_v3\\run\\frozen_policy.json": "521985cfef988ce571958edc5da1b2815fe965584ced1c84ae7cb76d10921221"
+  }
+}

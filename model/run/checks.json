@@ -1,0 +1,16 @@
+{
+  "tests": {
+    "eight_probability_columns": true,
+    "probabilities_sum_to_one": true,
+    "both_new_classes_in_training": true,
+    "label_free_reload_matches": true,
+    "final_model_hash_unchanged": true,
+    "original_models_unchanged": true,
+    "all_final_exact_training_duplicates_zero": true,
+    "treeshap_additive_within_tolerance": true,
+    "novelty_can_review_with_zero_classifier_score": true,
+    "row_order_invariance": true,
+    "future_prefix_invariance": true
+  },
+  "treeshap_max_margin_residual": 4.0531158447265625e-06
+}
