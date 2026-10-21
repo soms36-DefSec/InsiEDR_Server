@@ -335,7 +335,7 @@ def inject_soc_dashboard_threats(pg: PostgresStorage) -> None:
                 cur.execute("""
                     INSERT INTO raw_payloads (payload_id, agent_id, hostname, username, received_at)
                     VALUES (%s, %s, %s, %s, %s)
-                    ON CONFLICT (payload_id) DO UPDATE SET received_at = EXCLUDED.received_at
+                    ON CONFLICT DO NOTHING
                 """, (payload_id, agent_id, hostname, username, event_time))
 
                 # 3. Build correlated_signals_json matching frontend expectations
