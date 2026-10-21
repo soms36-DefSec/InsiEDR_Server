@@ -20,6 +20,8 @@ CREATE TABLE IF NOT EXISTS collector_events_v2 (
     error_type LowCardinality(Nullable(String)),
     error_message Nullable(String),
     source_quality LowCardinality(String),
+    agent_quality_json String DEFAULT '',
+    feature_quality_json String DEFAULT '',
     username LowCardinality(String),
     received_at DateTime64(3, 'UTC'),
     version UInt64
@@ -63,7 +65,9 @@ CREATE TABLE IF NOT EXISTS collector_results (
     payload_json            String CODEC(ZSTD(1)),
     error_type              LowCardinality(Nullable(String)),
     error_message           Nullable(String),
-    source_quality          LowCardinality(String)
+    source_quality          LowCardinality(String),
+    agent_quality_json      String DEFAULT '',
+    feature_quality_json    String DEFAULT ''
 ) ENGINE = MergeTree()
 PARTITION BY toYYYYMM(collector_collected_at)
 ORDER BY (collector, collector_collected_at, hostname, payload_id)
@@ -162,6 +166,66 @@ CREATE TABLE IF NOT EXISTS telemetry_events (
 PARTITION BY toYYYYMM(timestamp)
 ORDER BY (agent_id, collector_name, toUnixTimestamp64Milli(timestamp), event_id)
 TTL toDateTime(timestamp) + INTERVAL 90 DAY;
+
+-- Daily40 cache contract. Null means unavailable, never measured zero.
+-- The adapter populates this only after source and window verification.
+CREATE TABLE IF NOT EXISTS endpoint_daily_feature_rollups (
+    agent_id String,
+    hostname String,
+    review_date Date,
+    observation_complete UInt8,
+    journal_gap_detected UInt8,
+    feature_contract_verified UInt8,
+    sensor_coverage_verified UInt8,
+    timezone_verified UInt8,
+    source_kind LowCardinality(String),
+    missing_sensors_json String,
+    coverage_details_json String,
+    feature_contract_version String,
+    successful_logons Nullable(Float64),
+    failed_logons Nullable(Float64),
+    after_hours_logon_ratio Nullable(Float64),
+    unique_pc_count Nullable(Float64),
+    pc_access_entropy Nullable(Float64),
+    interactive_duration_seconds Nullable(Float64),
+    mean_session_duration_seconds Nullable(Float64),
+    weekend_activity Nullable(Float64),
+    usb_connect_count Nullable(Float64),
+    usb_disconnect_count Nullable(Float64),
+    after_hours_usb_ratio Nullable(Float64),
+    distinct_usb_devices Nullable(Float64),
+    file_access_count Nullable(Float64),
+    unique_filename_count Nullable(Float64),
+    new_filename_count Nullable(Float64),
+    file_delete_count Nullable(Float64),
+    file_access_entropy Nullable(Float64),
+    protected_file_touch_count Nullable(Float64),
+    http_request_count Nullable(Float64),
+    unique_domain_count Nullable(Float64),
+    new_domain_count Nullable(Float64),
+    external_domain_ratio Nullable(Float64),
+    domain_access_entropy Nullable(Float64),
+    file_sharing_visit_count Nullable(Float64),
+    mean_process_count Nullable(Float64),
+    peak_process_count Nullable(Float64),
+    admin_process_count Nullable(Float64),
+    temp_exec_count Nullable(Float64),
+    bytes_sent Nullable(Float64),
+    bytes_received Nullable(Float64),
+    external_connection_count Nullable(Float64),
+    unique_remote_ip_count Nullable(Float64),
+    clipboard_copy_count Nullable(Float64),
+    lsass_handle_request_count Nullable(Float64),
+    memory_dump_attempt_count Nullable(Float64),
+    decoy_access_count Nullable(Float64),
+    wmi_query_count Nullable(Float64),
+    named_pipe_event_count Nullable(Float64),
+    dns_query_count Nullable(Float64),
+    outbound_attachment_count Nullable(Float64),
+    version UInt64
+) ENGINE = ReplacingMergeTree(version)
+PARTITION BY toYYYYMM(review_date)
+ORDER BY (agent_id, review_date);
 
 -- 8. Process Events: Dedicated process sensor telemetry
 CREATE TABLE IF NOT EXISTS process_events (

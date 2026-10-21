@@ -80,7 +80,8 @@ class RiskAggregator:
             "heuristics": 0.90 if h_result.get("scenario_count", 0) > 0 else 0.0
         }
 
-        for result in detector_results or []:
+        active_detector_results = [r for r in detector_results or [] if not r.get("is_shadow")]
+        for result in active_detector_results:
             name = result.get("detector_name", "unknown").lower()
             score = float(result.get("score", 0.0))
             conf = float(result.get("confidence", 0.70))
@@ -108,7 +109,7 @@ class RiskAggregator:
             c = confidences[source]
             if c <= 0.0 or (source == "ml_pipeline" and not any(
                 any(tag in str(result.get("detector_name", "")).lower() for tag in ("pipeline", "model", "random_forest", "isolation_forest", "advanced"))
-                for result in detector_results or []
+                for result in active_detector_results
             )):
                 dynamic_weights[source] = 0.0
                 continue
@@ -154,13 +155,13 @@ class RiskAggregator:
                 reasons.append(f"Sustained anomaly pattern in 4h window (Past Max: {past_max_score:.1f})")
 
         # 5. CERT Scenario Evaluation
-        cert_scenarios = self._map_cert_scenarios(detector_results, raw_features, h_result)
+        cert_scenarios = self._map_cert_scenarios(active_detector_results, raw_features, h_result)
         correlated_signals["cert_scenarios"] = cert_scenarios
         scenario_floors = {"LOW": 0.0, "MEDIUM": 40.0, "HIGH": 70.0, "CRITICAL": 90.0}
         final_score = max(final_score, max((scenario_floors.get(s.get("severity", "LOW"), 0.0) for s in cert_scenarios), default=0.0))
 
         # 6. Stateful Multi-Stage Kill-Chain Sequence Tracking
-        current_stages = self._map_tactical_stages(detector_results, raw_features, h_result, cert_scenarios)
+        current_stages = self._map_tactical_stages(active_detector_results, raw_features, h_result, cert_scenarios)
         current_agent_id = str((raw_features or {}).get("agent_id") or "").strip()
         # The current auth/endpoint indicators are host-scoped. Do not build a
         # sequence by joining two different agents that happen to share a user.

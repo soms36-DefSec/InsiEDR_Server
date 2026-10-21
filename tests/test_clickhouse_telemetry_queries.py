@@ -74,8 +74,45 @@ def test_v2_writer_and_legacy_count_api_select_same_schema():
     storage.replicate_outbox_batch([record()])
     collector_call = next(call for call in client.insert.call_args_list
                           if call.kwargs['table'] == 'collector_events_v2')
-    assert {'username', 'received_at', 'version'} <= set(collector_call.kwargs['column_names'])
+    assert {'username', 'received_at', 'version', 'agent_quality_json',
+            'feature_quality_json'} <= set(collector_call.kwargs['column_names'])
     assert storage.count_collector_results(username='alice') == 1
     query = client.query.call_args.args[0]
     assert 'FROM collector_events_v2 FINAL' in query
     assert 'raw_payloads' not in query
+
+
+def test_schema_bootstrap_defines_statements_and_adds_agent_quality_columns():
+    client = Mock()
+    storage = ClickHouseStorage(client=client)
+    try:
+        storage.ensure_schema()
+        statements = [call.args[0] for call in client.command.call_args_list]
+        assert any(stmt.startswith('CREATE TABLE IF NOT EXISTS collector_results')
+                   for stmt in statements)
+        assert any('ADD COLUMN IF NOT EXISTS agent_quality_json' in stmt
+                   for stmt in statements)
+        assert any('ADD COLUMN IF NOT EXISTS feature_quality_json' in stmt
+                   for stmt in statements)
+    finally:
+        storage.batcher.stop()
+
+
+def test_agent_quality_is_preserved_separately_from_derived_source_quality():
+    from tests.test_replication_reliability import record
+    client = Mock()
+    storage = ClickHouseStorage(client=client)
+    item = record()
+    item['record_json']['payload']['collectors'][0].update(
+        quality='partial', feature_quality={'count': 'unsupported'})
+    try:
+        storage.replicate_outbox_batch([item])
+        call = next(c for c in client.insert.call_args_list
+                    if c.kwargs['table'] == 'collector_results')
+        columns = call.kwargs['column_names']
+        values = dict(zip(columns, call.kwargs['data'][0]))
+        assert values['agent_quality_json'] == '"partial"'
+        assert '"count":"unsupported"' in values['feature_quality_json']
+        assert values['source_quality'] == 'high'
+    finally:
+        storage.batcher.stop()

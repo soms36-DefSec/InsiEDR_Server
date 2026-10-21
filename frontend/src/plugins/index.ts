@@ -14,7 +14,8 @@
 import { pluginRegistry } from './registry';
 import { SocMatrixPlugin } from './soc-matrix/SocMatrixPlugin';
 import { TelemetryExplorerPlugin } from './telemetry-explorer/TelemetryExplorerPlugin';
-import { ShieldAlert, Terminal } from 'lucide-react';
+import { ReviewQueuePlugin } from './review-queue/ReviewQueuePlugin';
+import { ShieldAlert, Terminal, ListOrdered } from 'lucide-react';
 
 export function initializePlugins(): void {
   // 1. SOC Threat Matrix: Primary operational overview, live threat feed, and heuristic risk scoring
@@ -41,6 +42,16 @@ export function initializePlugins(): void {
     component: TelemetryExplorerPlugin,
     category: 'investigation',
     order: 2,
+  });
+
+  pluginRegistry.register({
+    id: 'review-queue',
+    name: 'Model V3 Review Queue',
+    description: 'Host-scoped shadow reviews, warmup, and analyst feedback',
+    icon: ListOrdered,
+    component: ReviewQueuePlugin,
+    category: 'investigation',
+    order: 3,
   });
 }
 

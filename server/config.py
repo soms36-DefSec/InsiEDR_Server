@@ -117,6 +117,11 @@ class ServerConfig:
         return os.environ.get("INSIEDR_REDIS_URL") or os.environ.get("REDIS_URL")
 
     @property
+    def enable_model_pipeline(self) -> bool:
+        """Opt-in promotion after the Model V3 shadow review period."""
+        return os.environ.get("INSIEDR_ENABLE_MODEL_PIPELINE", "false").strip().lower() == "true"
+
+    @property
     def cors_origins(self) -> list[str]:
         raw = os.environ.get("INSIEDR_CORS_ORIGINS", "")
         if raw.strip():

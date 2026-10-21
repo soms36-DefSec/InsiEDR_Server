@@ -172,6 +172,13 @@ def process_telemetry_risk(storage, payload: Dict[str, Any]) -> Dict[str, Any]:
             score_zscore(deviations, baseline_features, config.zscore_calibration_threshold),
         ))
 
+        # The model is scored in an isolated daily worker. This bounded Redis
+        # lookup only adds fresh, fully warmed endpoint context.
+        from server.risk.ml_cache import get_cached_ml_detector
+        ml_result = get_cached_ml_detector(agent_id)
+        if ml_result is not None:
+            detector_results.append(ml_result)
+
         # Execute deterministic heuristics plus auth-burst and user-baseline
         # detectors. Model inference remains an external detector integration.
         aggregator = RiskAggregator(storage)

@@ -293,13 +293,25 @@ class ClickHouseStorage:
             self._client.command(f"CREATE DATABASE IF NOT EXISTS {self.database}")
             if SCHEMA_FILE.is_file():
                 sql_content = SCHEMA_FILE.read_text(encoding="utf-8")
-                # Split statements by semicolon
-                # Ensure database context is active for schema statements
+                # The schema file uses SQL line comments and semicolon-delimited
+                # statements. Remove comments before dispatching each command.
+                schema_sql = "\n".join(
+                    line for line in sql_content.splitlines()
+                    if not line.lstrip().startswith("--")
+                )
+                statements = [stmt.strip() for stmt in schema_sql.split(";") if stmt.strip()]
                 self._client.command(f"USE {self.database}")
                 for stmt in statements:
                     if stmt.upper().startswith("USE "):
                         continue
                     self._client.command(stmt)
+                # Existing tables retain old columns after CREATE IF NOT EXISTS.
+                # Blank defaults distinguish historical rows with no agent attestation.
+                for table in ('collector_results', 'collector_events_v2'):
+                    self._client.command(
+                        f"ALTER TABLE {table} ADD COLUMN IF NOT EXISTS agent_quality_json String DEFAULT ''")
+                    self._client.command(
+                        f"ALTER TABLE {table} ADD COLUMN IF NOT EXISTS feature_quality_json String DEFAULT ''")
                 # CREATE IF NOT EXISTS does not update settings on existing tables.
                 # Bounded block dedup complements, but does not replace, read dedup.
                 for table in ('raw_payloads', 'collector_results', 'collector_events_v2', 'normalized_features',
@@ -569,6 +581,8 @@ class ClickHouseStorage:
                 "error_type": error.get("type"),
                 "error_message": error.get("message"),
                 "source_quality": source_quality,
+                "agent_quality_json": json.dumps(cr["quality"], separators=(",", ":")) if "quality" in cr else "",
+                "feature_quality_json": json.dumps(cr["feature_quality"], separators=(",", ":")) if "feature_quality" in cr else "",
             }
             if getattr(self, "collector_schema_version", 1) == 2:
                 col_row.update(username=username_val,

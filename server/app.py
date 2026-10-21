@@ -279,6 +279,8 @@ def create_app(*, storage=None, apply_migrations: bool = True) -> FastAPI:
     app.include_router(docs_bp)
     app.include_router(keys_bp)
     app.include_router(dashboard_bp)
+    from server.api.model_review import router as model_review_router
+    app.include_router(model_review_router)
 
     @app.get("/", include_in_schema=False)
     async def root():
