@@ -54,6 +54,7 @@ RUN pip install --no-cache-dir --no-index --find-links=/wheels -r requirements.t
 COPY server/ ./server/
 COPY shared/ ./shared/
 COPY scripts/ ./scripts/
+COPY heuristics/ ./heuristics/
 
 # Add freshly compiled frontend assets; local dist is excluded by .dockerignore.
 COPY --from=frontend-builder /build/server/dashboard/dist/ ./server/dashboard/dist/

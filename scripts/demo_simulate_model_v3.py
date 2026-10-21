@@ -30,9 +30,23 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 from server.config import config
-from server.risk.daily_adapter import CONTRACT_VERSION, RAW_FEATURES
 from server.storage.postgres_storage import PostgresStorage
 from server.storage.repositories.model_repo import ModelReviewRepository
+
+CONTRACT_VERSION = "v3_daily40_observed_v1"
+RAW_FEATURES: tuple[str, ...] = (
+    "successful_logons", "failed_logons", "after_hours_logon_ratio", "unique_pc_count",
+    "pc_access_entropy", "interactive_duration_seconds", "mean_session_duration_seconds",
+    "weekend_activity", "usb_connect_count", "usb_disconnect_count", "after_hours_usb_ratio",
+    "distinct_usb_devices", "file_access_count", "unique_filename_count", "new_filename_count",
+    "file_delete_count", "file_access_entropy", "protected_file_touch_count", "http_request_count",
+    "unique_domain_count", "new_domain_count", "external_domain_ratio", "domain_access_entropy",
+    "file_sharing_visit_count", "mean_process_count", "peak_process_count", "admin_process_count",
+    "temp_exec_count", "bytes_sent", "bytes_received", "external_connection_count",
+    "unique_remote_ip_count", "clipboard_copy_count", "lsass_handle_request_count",
+    "memory_dump_attempt_count", "decoy_access_count", "wmi_query_count", "named_pipe_event_count",
+    "dns_query_count", "outbound_attachment_count",
+)
 
 
 def get_pg_dsn() -> str:
