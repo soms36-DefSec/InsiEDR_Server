@@ -200,6 +200,9 @@ class ServerConfig:
         """Whether agent ingestion token authentication is enforced."""
         if self.is_production:
             return True
+        agent_raw = os.environ.get("INSIEDR_AGENT_AUTH_ENFORCED")
+        if agent_raw is not None:
+            return agent_raw.lower() in ("1", "true", "yes", "on")
         raw = os.environ.get("INSIEDR_AUTH_ENFORCED")
         if raw is not None:
             return raw.lower() in ("1", "true", "yes", "on")

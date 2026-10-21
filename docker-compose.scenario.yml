@@ -1,0 +1,73 @@
+name: insiedr-scenario
+
+services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:?Run init-env}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Run init-env}
+      POSTGRES_DB: insiedr_scenario
+    ports: ["127.0.0.1:15432:5432"]
+    volumes: [scenario_pg:/var/lib/postgresql/data]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
+      interval: 5s
+      retries: 20
+    networks: [scenario]
+
+  clickhouse:
+    image: clickhouse/clickhouse-server:24.3-alpine
+    environment:
+      CLICKHOUSE_DB: insiedr_scenario
+      CLICKHOUSE_USER: ${CLICKHOUSE_USER:?Run init-env}
+      CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD:?Run init-env}
+      CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT: "1"
+    ports: ["127.0.0.1:18123:8123"]
+    volumes:
+      - scenario_ch:/var/lib/clickhouse
+    healthcheck:
+      test: ["CMD-SHELL", "clickhouse-client --user $$CLICKHOUSE_USER --password $$CLICKHOUSE_PASSWORD --query 'SELECT 1'"]
+      interval: 5s
+      retries: 30
+    networks: [scenario]
+
+  redis:
+    image: redis:7-alpine
+    command: ["redis-server", "--requirepass", "${REDIS_PASSWORD:?Run init-env}"]
+    volumes: [scenario_redis:/data]
+    networks: [scenario]
+
+  backend:
+    build: .
+    env_file: .env.scenario
+    environment:
+      INSIEDR_ENVIRONMENT: staging
+      INSIEDR_SCENARIO_REPLAY_ENABLED: "true"
+      INSIEDR_ENABLE_MODEL_PIPELINE: "false"
+      INSIEDR_DATABASE_DSN: postgresql://${POSTGRES_USER:?Run init-env}:${POSTGRES_PASSWORD:?Run init-env}@db:5432/insiedr_scenario
+      INSIEDR_REDIS_URL: redis://:${REDIS_PASSWORD:?Run init-env}@redis:6379/0
+      INSIEDR_CLICKHOUSE_HOST: clickhouse
+      INSIEDR_CLICKHOUSE_PORT: "8123"
+      INSIEDR_CLICKHOUSE_DB: insiedr_scenario
+      INSIEDR_CLICKHOUSE_USER: ${CLICKHOUSE_USER:?Run init-env}
+      INSIEDR_CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD:?Run init-env}
+      INSIEDR_CLICKHOUSE_ENABLED: "true"
+      INSIEDR_TELEMETRY_READ_BACKEND: clickhouse
+      INSIEDR_CH_COLLECTOR_SCHEMA_VERSION: "1"
+      INSIEDR_DLQ_ENABLED: "false"
+      INSIEDR_ENABLE_STARTUP_BACKFILL: "false"
+    depends_on:
+      db: {condition: service_healthy}
+      clickhouse: {condition: service_healthy}
+      redis: {condition: service_started}
+    ports: ["127.0.0.1:5088:5000"]
+    networks: [scenario]
+
+volumes:
+  scenario_pg:
+  scenario_ch:
+  scenario_redis:
+
+networks:
+  scenario:
+    driver: bridge

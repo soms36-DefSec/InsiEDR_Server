@@ -2,6 +2,8 @@
 
 For the current replication guarantees, scheduled retention, monitoring, and rollout gates, see [Reliability rollout](docs/RELIABILITY_ROLLOUT.md). Capacity on the target HDD requires measured validation.
 
+For the isolated Model V3 dataset replay and website presentation workflow, see [Model V3 dataset replay](docs/MODEL_V3_DATASET_REPLAY.md).
+
 [![Backend](https://img.shields.io/badge/Backend-FastAPI%20ASGI-009688.svg?style=flat&logo=fastapi)](https://fastapi.tiangolo.com)
 [![Frontend](https://img.shields.io/badge/Frontend-React%2019%20%2B%20TypeScript%20%2B%20Vite-61DAFB.svg?style=flat&logo=react)](https://react.dev)
 [![Python](https://img.shields.io/badge/Python-3.11+-3776AB.svg?style=flat&logo=python)](https://www.python.org)

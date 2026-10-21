@@ -302,7 +302,7 @@ class ClickHouseStorage:
                 statements = [stmt.strip() for stmt in schema_sql.split(";") if stmt.strip()]
                 self._client.command(f"USE {self.database}")
                 for stmt in statements:
-                    if stmt.upper().startswith("USE "):
+                    if stmt.upper().startswith(("USE ", "CREATE DATABASE ")):
                         continue
                     self._client.command(stmt)
                 # Existing tables retain old columns after CREATE IF NOT EXISTS.

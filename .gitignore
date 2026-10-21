@@ -33,6 +33,7 @@ insiedr_demo.db
 .insiedr_queue/
 /agent_queue/
 /queue/
+data/scenario_replay/
 
 # Generated reports and dumps
 full_repo_dump.txt

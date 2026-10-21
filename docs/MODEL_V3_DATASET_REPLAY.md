@@ -1,0 +1,54 @@
+# Model V3 dataset replay on an isolated mirror
+
+This workflow uses a separate PostgreSQL, ClickHouse, and Redis stack. It never writes generated daily40 rows to the observed production tables. The 22-day history is synthetic and is admitted to the unchanged frozen model with `source_kind=synthetic`; scores and threshold-selected reviews live in the mirror's `scenario_replay` schema. The operator provenance endpoint identifies original timestamps, dataset, run ID, and source kind for each replayed log.
+
+## Preconditions
+
+- Windows host with Docker Desktop running Linux containers and the server repo's `.venv` and `model/.venv` installed. `model/.venv` must pass `scripts/check_model_v3_prerequisites.py`.
+- The three source folders must be present under `D:\Projects\AISH`: `Dataset_RealTime`, `Dataset_Simulated`, and `Dataset_Simulated_Harmonized`.
+- No production PostgreSQL or ClickHouse DSN should be supplied to the replay CLI. Its guard requires local connections and `_scenario` database names. The separate Compose file binds all published ports to loopback and uses dedicated volumes.
+- Do not point a deployed agent at this mirror. The configured agent tokens are generated solely for the seven dataset host IDs.
+
+## Prepare
+
+From `D:\Projects\AISH\InsiEDR_Server`:
+
+```powershell
+.venv\Scripts\python.exe scripts\scenario_replay.py init-env
+docker compose --env-file .env.scenario -f docker-compose.scenario.yml up -d --build
+.venv\Scripts\python.exe scripts\scenario_replay.py verify
+.venv\Scripts\python.exe scripts\scenario_replay.py prepare --run-id presentation-01
+```
+
+`init-env` creates a private, gitignored `.env.scenario` with fresh DB passwords, the AES key, operator key, and agent-bound tokens. The local mirror leaves operator reads open so the existing browser SSE stream can connect, while agent ingestion remains token-authenticated. Its published ports are loopback-only. `verify` runs sampled source frames through the existing live heuristic risk pipeline offline and prints actual scores. `prepare` date-shifts source-shaped background collector rows, writes 22 consecutive synthetic daily40 vectors ending yesterday, invokes `model/predict.py` unchanged, and stores its computed outputs in the mirror. Keep the printed run ID.
+
+Check `data/scenario_replay/presentation-01/model/summary.json`, `daily_predictions.csv`, `host_rankings.csv`, and `review_queue.csv`. Queue membership is selected by the frozen policy. A host below threshold still has a 22-day trajectory and its computed scores. No model result is inserted into the live risk cache or used to alter alert severity.
+
+The model input contains generated defaults and scenario intensity floors. These are generated features, never observed sensor readings; the floor can override a lower CSV value. Every applied floor and a raw-versus-harmonized collector schema audit are recorded in the run manifest. Historical search rows retain the original source timestamp in `agent_quality_json` and the shifted timestamp in the collector row.
+
+## Present
+
+Open `http://127.0.0.1:5088` and select Model V3 Review Queue. In another terminal:
+
+```powershell
+.venv\Scripts\python.exe scripts\scenario_replay.py play --run-id presentation-01
+```
+
+The runner sends encrypted, authenticated envelopes through `/api/logs`; the normal replay-window security check stays enabled. It shifts the envelope timestamps to now and preserves each original timestamp in collector quality metadata. The website displays collector logs, current and peak live heuristic risk, completed-day Model V3 scores and hypothesis, and the actual frozen-threshold Review Queue. The four-stage kill chain uses 24 frames in source time order. Default pacing is five seconds between frames: about one minute per ordinary scenario and two minutes for the kill chain. Use `--scenario SIM_CREDENTIAL_DUMP` to present one host.
+
+```powershell
+.venv\Scripts\python.exe scripts\scenario_replay.py status --run-id presentation-01
+.venv\Scripts\python.exe scripts\scenario_replay.py stop --run-id presentation-01
+```
+
+`stop` is checked before the next envelope. A stopped run can be resumed with `play`, which starts the selected source window from the beginning with new payload IDs.
+
+## Reset and limits
+
+```powershell
+.venv\Scripts\python.exe scripts\scenario_replay.py reset --run-id presentation-01
+```
+
+`reset` tears down **only** the `insiedr-scenario` Compose project and its dedicated PostgreSQL, ClickHouse, and Redis volumes. It retains local run artifacts for audit. Recreate the mirror and use a new run ID for another session.
+
+The scenario source is a laboratory dataset, not newly captured customer endpoint telemetry. Customer-facing descriptions must identify it as a controlled replay if provenance is discussed. Current source rows naturally produce different live severities: USB and cloud precursor activity can be low risk without transfer or upload evidence, and the sabotage deletion rule can also receive a lower aggregate score. Model V3 may select fewer than seven hosts or assign a different hypothesis. Two additional dataset-backed controls check missing-day abstention and benign behavior; they are absent from the seven-host presentation selector but remain available by agent ID in trajectory lookup. Do not alter risk scores, the model threshold, or source evidence to force an outcome.
