@@ -24,6 +24,7 @@ import json
 import os
 from pathlib import Path
 import sys
+import uuid
 
 # Ensure repository root is on sys.path
 ROOT = Path(__file__).resolve().parents[1]
@@ -152,6 +153,64 @@ DEMO_AGENTS = [
     },
 ]
 
+LIVE_SOC_THREATS = [
+    {
+        "agent_id": "AGENT-FINANCE-01",
+        "hostname": "DESKTOP-FIN-01",
+        "username": "fin_admin",
+        "risk_score": 97.1,
+        "risk_level": "CRITICAL",
+        "scenario": "DATA_HOARDING",
+        "summary": "Heuristics: Broad File Collection | Mass file touch across network shares after-hours followed by archive staging",
+        "domain_scores": {"FILE": 96.0, "LOGON": 85.0, "DEVICE": 40.0, "HTTP": 62.0},
+        "cert_scenarios": [{"id": "DATA_HOARDING", "description": "Mass Data Collection"}],
+    },
+    {
+        "agent_id": "AGENT-SOCL4-61",
+        "hostname": "SOCL4-61",
+        "username": "admin",
+        "risk_score": 94.0,
+        "risk_level": "CRITICAL",
+        "scenario": "KILL_CHAIN_APT",
+        "summary": "Heuristics: Honeytoken Access | Lateral Movement Attempt detected on administrative share",
+        "domain_scores": {"FILE": 78.0, "LOGON": 92.0, "DEVICE": 10.0, "HTTP": 85.0},
+        "cert_scenarios": [{"id": "KILL_CHAIN_APT", "description": "Multi-Stage Attack Chain"}],
+    },
+    {
+        "agent_id": "AGENT-ADMIN-03",
+        "hostname": "WS-SYSADMIN-03",
+        "username": "sys_admin",
+        "risk_score": 88.4,
+        "risk_level": "CRITICAL",
+        "scenario": "CREDENTIAL_DUMP",
+        "summary": "Heuristics: LSASS Credential Dumping Suspected | Unbacked Executable Memory",
+        "domain_scores": {"FILE": 35.0, "LOGON": 72.0, "DEVICE": 20.0, "HTTP": 45.0},
+        "cert_scenarios": [{"id": "CREDENTIAL_DUMP", "description": "Credential Access"}],
+    },
+    {
+        "agent_id": "AGENT-SOCL8-39",
+        "hostname": "SOCL8-39",
+        "username": "DSL-189",
+        "risk_score": 82.0,
+        "risk_level": "HIGH",
+        "scenario": "IT_SABOTAGE",
+        "summary": "Heuristics: Mass File Deletion | Suspicious administrative activity on sensitive volume",
+        "domain_scores": {"FILE": 88.0, "LOGON": 55.0, "DEVICE": 15.0, "HTTP": 30.0},
+        "cert_scenarios": [{"id": "IT_SABOTAGE", "description": "System Sabotage Attempt"}],
+    },
+    {
+        "agent_id": "AGENT-HR-07",
+        "hostname": "LAPTOP-HR-07",
+        "username": "hr_user",
+        "risk_score": 76.5,
+        "risk_level": "HIGH",
+        "scenario": "USB_EXFILTRATION_PRECURSOR",
+        "summary": "Heuristics: USB Device Activity | Removable media activity observed with sensitive document staging",
+        "domain_scores": {"FILE": 62.0, "LOGON": 45.0, "DEVICE": 88.0, "HTTP": 38.0},
+        "cert_scenarios": [{"id": "USB_EXFILTRATION_PRECURSOR", "description": "Removable Media Exfiltration Precursor"}],
+    },
+]
+
 
 def generate_feature_vector(agent_cfg: dict, day_offset: int, is_anomaly_day: bool) -> dict[str, float]:
     """Generate 40 realistic features compliant with the Model V3 schema and validation constraints."""
@@ -231,6 +290,139 @@ def generate_feature_vector(agent_cfg: dict, day_offset: int, is_anomaly_day: bo
     return vec
 
 
+def inject_soc_dashboard_threats(pg: PostgresStorage) -> None:
+    """Inject active risk events, agent registrations, and domain vectors for the main SOC dashboard."""
+    print("\n[*] Populating main SOC Dashboard (Risk Severity, Threat Stream, Attack Surface, Fleet Risk Matrix)...")
+    resolved_threats = []
+    with pg.connection() as conn:
+        with conn.cursor() as cur:
+            # Query existing fleet agents to preserve actual agent_id and username if present
+            cur.execute("SELECT agent_id, hostname, username_last_seen FROM agents")
+            existing_by_host = {r[1]: (r[0], r[2]) for r in cur.fetchall() if r[1]}
+
+            for idx, item in enumerate(LIVE_SOC_THREATS):
+                hostname = item["hostname"]
+                if hostname in existing_by_host:
+                    agent_id, existing_user = existing_by_host[hostname]
+                    username = existing_user or item["username"]
+                else:
+                    agent_id = item["agent_id"]
+                    username = item["username"]
+
+                payload_id = f"payload-{agent_id}-live"
+                # Stagger event times within the last 15 minutes (active threat window, avoiding 30m decay)
+                event_time = datetime.now(timezone.utc) - timedelta(minutes=idx * 3 + 1)
+
+                resolved_threats.append({
+                    **item,
+                    "agent_id": agent_id,
+                    "username": username,
+                    "payload_id": payload_id,
+                    "event_time": event_time,
+                })
+
+                # 1. Ensure agent is registered, marked active and online
+                cur.execute("""
+                    INSERT INTO agents (agent_id, hostname, username_last_seen, status, last_seen_at)
+                    VALUES (%s, %s, %s, 'active', NOW())
+                    ON CONFLICT (agent_id) DO UPDATE SET
+                        last_seen_at = NOW(),
+                        status = 'active',
+                        username_last_seen = COALESCE(agents.username_last_seen, EXCLUDED.username_last_seen)
+                """, (agent_id, hostname, username))
+
+                # 2. Insert into raw_payloads (required foreign key for risk_events)
+                cur.execute("""
+                    INSERT INTO raw_payloads (payload_id, agent_id, hostname, username, received_at)
+                    VALUES (%s, %s, %s, %s, %s)
+                    ON CONFLICT (payload_id) DO UPDATE SET received_at = EXCLUDED.received_at
+                """, (payload_id, agent_id, hostname, username, event_time))
+
+                # 3. Build correlated_signals_json matching frontend expectations
+                signals = {
+                    "cert_scenarios": item["cert_scenarios"],
+                    "heuristics": {
+                        "detections": [{"scenario": item["scenario"]}],
+                        "domain_scores": item["domain_scores"],
+                        "detected_scenarios": [item["scenario"]],
+                    },
+                    "predicted_scenario": {"scenario": item["scenario"]},
+                    "logon_risk": item["domain_scores"]["LOGON"],
+                    "file_risk": item["domain_scores"]["FILE"],
+                    "device_risk": item["domain_scores"]["DEVICE"],
+                    "http_risk": item["domain_scores"]["HTTP"],
+                }
+
+                # 4. Remove previous live event for this payload to avoid duplicate feed entries
+                cur.execute("DELETE FROM risk_events WHERE payload_id = %s", (payload_id,))
+
+                # 5. Insert active risk event
+                cur.execute("""
+                    INSERT INTO risk_events (
+                        payload_id, agent_id, username, risk_score, risk_level,
+                        correlated_signals_json, summary, created_at
+                    ) VALUES (%s, %s, %s, %s, %s, %s::jsonb, %s, %s)
+                """, (
+                    payload_id, agent_id, username,
+                    item["risk_score"], item["risk_level"],
+                    json.dumps(signals), item["summary"], event_time
+                ))
+        conn.commit()
+
+    # Also insert into ClickHouse risk_events if ClickHouse is accessible
+    try:
+        from server.storage.clickhouse_storage import ClickHouseStorage
+        ch = ClickHouseStorage(
+            host=config.clickhouse_host, port=config.clickhouse_port,
+            username=config.clickhouse_user, password=config.clickhouse_password,
+            database=config.clickhouse_db,
+        )
+        if ch.is_connected():
+            client = getattr(ch, "_client", ch)
+            ch_rows = []
+            for item in resolved_threats:
+                signals = {
+                    "cert_scenarios": item["cert_scenarios"],
+                    "heuristics": {
+                        "detections": [{"scenario": item["scenario"]}],
+                        "domain_scores": item["domain_scores"],
+                        "detected_scenarios": [item["scenario"]],
+                    },
+                    "predicted_scenario": {"scenario": item["scenario"]},
+                    "logon_risk": item["domain_scores"]["LOGON"],
+                    "file_risk": item["domain_scores"]["FILE"],
+                    "device_risk": item["domain_scores"]["DEVICE"],
+                    "http_risk": item["domain_scores"]["HTTP"],
+                }
+                ch_rows.append((
+                    str(uuid.uuid4()), item["payload_id"], item["agent_id"], item["username"],
+                    float(item["risk_score"]), item["risk_level"].lower(),
+                    json.dumps(signals), item["summary"], item["event_time"]
+                ))
+            client.insert("risk_events", ch_rows, column_names=(
+                "id", "payload_id", "agent_id", "username", "risk_score",
+                "risk_level", "correlated_signals_json", "summary", "created_at"
+            ))
+            ch.close()
+            print("[+] Injected live risk events into ClickHouse.")
+    except Exception as exc:
+        print(f"[-] ClickHouse sync skipped (PostgreSQL active): {exc}")
+
+    # Bust cached dashboard summary in Redis so UI immediately displays new data
+    try:
+        from server.risk.ml_cache import _redis_client
+        if config.redis_url:
+            r = _redis_client(config.redis_url)
+            keys = r.keys("snapshot:v2:*")
+            if keys:
+                r.delete(*keys)
+                print(f"[+] Invalidated {len(keys)} cached dashboard summary keys in Redis.")
+    except Exception as exc:
+        print(f"[-] Redis cache invalidate skipped: {exc}")
+
+    print(f"[+] Successfully injected {len(resolved_threats)} active risk events into SOC dashboard!")
+
+
 def run_direct_simulation(as_of: date) -> None:
     """Directly populate PostgreSQL scores and review queue table (Fast, 100% reliable)."""
     pg = PostgresStorage(get_pg_dsn(), minconn=1, maxconn=2)
@@ -308,6 +500,7 @@ def run_direct_simulation(as_of: date) -> None:
     repo.save_review_queue(as_of, queue_items)
     print(f"\n[+] Successfully injected {len(queue_items)} candidates into model_v3_review_queue!")
     print(f"[+] Successfully saved 22 daily scores for all {len(DEMO_AGENTS)} endpoints into endpoint_daily_model_scores.")
+    inject_soc_dashboard_threats(pg)
     pg.close()
 
 
@@ -374,19 +567,31 @@ def run_pipeline_simulation(as_of: date) -> None:
     result = run_daily_model_pipeline(ch, repo, redis_client, as_of=as_of, max_reviews=20)
     print(f"[+] Model V3 Batch Result:\n{json.dumps(result, indent=2)}")
 
+    inject_soc_dashboard_threats(pg)
     ch.close()
     pg.close()
 
 
 def clean_simulation() -> None:
-    """Clean demo endpoints from PostgreSQL and ClickHouse."""
+    """Clean demo endpoints from PostgreSQL, ClickHouse, and Redis."""
     pg = PostgresStorage(get_pg_dsn(), minconn=1, maxconn=2)
     with pg.connection() as conn:
         with conn.cursor() as cur:
             demo_ids = [a["agent_id"] for a in DEMO_AGENTS]
-            cur.execute("DELETE FROM model_v3_review_queue WHERE agent_id = ANY(%s)", (demo_ids,))
-            cur.execute("DELETE FROM endpoint_daily_model_scores WHERE agent_id = ANY(%s)", (demo_ids,))
-            cur.execute("DELETE FROM model_v3_review_feedback_audit WHERE agent_id = ANY(%s)", (demo_ids,))
+            soc_ids = [t["agent_id"] for t in LIVE_SOC_THREATS]
+            all_ids = list(set(demo_ids + soc_ids))
+
+            cur.execute("DELETE FROM model_v3_review_queue WHERE agent_id = ANY(%s)", (all_ids,))
+            cur.execute("DELETE FROM endpoint_daily_model_scores WHERE agent_id = ANY(%s)", (all_ids,))
+            cur.execute("DELETE FROM model_v3_review_feedback_audit WHERE agent_id = ANY(%s)", (all_ids,))
+
+            # Clean live risk events & payloads
+            cur.execute("DELETE FROM risk_events WHERE payload_id LIKE 'payload-%-live'")
+            cur.execute("DELETE FROM raw_payloads WHERE payload_id LIKE 'payload-%-live'")
+
+            # Delete only synthetic demo agents
+            synthetic_agents = ["AGENT-FINANCE-01", "AGENT-ADMIN-03", "AGENT-HR-07", "AGENT-DEV-12", "AGENT-BENIGN-01", "AGENT-SOCL4-61", "AGENT-SOCL8-39"]
+            cur.execute("DELETE FROM agents WHERE agent_id = ANY(%s)", (synthetic_agents,))
         conn.commit()
     pg.close()
     print("[+] Cleaned simulated demo records from PostgreSQL.")
@@ -402,10 +607,22 @@ def clean_simulation() -> None:
             client = getattr(ch, "_client", ch)
             ids_str = "', '".join(a["agent_id"] for a in DEMO_AGENTS)
             client.command(f"ALTER TABLE endpoint_daily_feature_rollups DELETE WHERE agent_id IN ('{ids_str}')")
+            client.command("ALTER TABLE risk_events DELETE WHERE payload_id LIKE 'payload-%-live'")
             print("[+] Cleaned simulated demo records from ClickHouse.")
             ch.close()
     except Exception as exc:
         print(f"[-] Note: ClickHouse cleanup skipped ({exc})")
+
+    try:
+        from server.risk.ml_cache import _redis_client
+        if config.redis_url:
+            r = _redis_client(config.redis_url)
+            keys = r.keys("snapshot:v2:*")
+            if keys:
+                r.delete(*keys)
+                print(f"[+] Cleared {len(keys)} cached dashboard summary keys from Redis.")
+    except Exception:
+        pass
 
 
 def main() -> None:
@@ -423,7 +640,7 @@ def main() -> None:
         return
 
     print("=" * 70)
-    print(" INSIEDR MODEL V3 REVIEW QUEUE - DEMO SIMULATION")
+    print(" INSIEDR MODEL V3 & SOC DASHBOARD - DEMO SIMULATION")
     print("=" * 70)
 
     if args.mode == "direct":
@@ -434,16 +651,27 @@ def main() -> None:
     print("\n" + "=" * 70)
     print(" DEMO IS READY ON THE DASHBOARD!")
     print("=" * 70)
-    print(f"1. Open the Model V3 Review Queue dashboard.")
-    print(f"2. Click the 'Refresh' button.")
-    print(f"3. You will see ranked anomaly candidates with threat scores:")
+    print("\n[A] MODEL V3 REVIEW QUEUE:")
+    print("  1. Select 'Model V3 Review Queue' in the top navigation.")
+    print("  2. Click 'Refresh' to view the 3 ranked anomaly candidates:")
     for a in DEMO_AGENTS:
         if a["pair_threat"] >= 0.4103:
-            print(f"   * {a['hostname']} ({a['agent_id']}): {a['scenario']} (Pair Threat: {a['pair_threat']})")
-    print(f"\n4. In 'Endpoint warmup and review', look up: {DEMO_AGENTS[0]['agent_id']}")
-    print(f"   -> Verifies: 'Day 22 of 22 · Review eligible'")
-    print(f"   -> Review the 22-day warmup trajectory.")
-    print(f"   -> Select 'Confirmed Incident' and enter forensic feedback!")
+            print(f"     * {a['hostname']} ({a['agent_id']}): {a['scenario']} (Pair Threat: {a['pair_threat']})")
+    print(f"  3. In 'Endpoint warmup and review', look up: {DEMO_AGENTS[0]['agent_id']}")
+    print("     -> Displays 'Day 22 of 22 · Review eligible'")
+    print("     -> Review the 22-day warmup trajectory chart.")
+    print("     -> Select 'Confirmed Incident' and submit forensic feedback!")
+
+    print("\n[B] MAIN SOC DASHBOARD (Threat Matrix):")
+    print("  1. Switch to 'Insider EDR - Dashboard'.")
+    print("  2. Check the widgets:")
+    print("     * Fleet Threat Posture: Shows 'Action Required' (Critical breaches).")
+    print("     * Risk Severity Breakdown: 3 Critical, 2 High.")
+    print("     * Detection Engine: Active with correlated risk detections.")
+    print("     * Threat Detection Stream: 5 live incident cards with real-time timestamps.")
+    print("     * Attack Surface & Domain Vectors: Logon, File, USB/Device, and Web bars.")
+    print("     * Fleet Severity Distribution: Donut chart displaying Critical & High breakdown.")
+    print("     * Endpoint Fleet Risk Matrix: 5 monitored endpoints with online badges, risk scores, and scenario tags.")
     print("=" * 70 + "\n")
 
 

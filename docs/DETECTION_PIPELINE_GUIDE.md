@@ -307,7 +307,208 @@ To eliminate single-sensor false positives from triggering disruptive containmen
 
 ---
 
-## 9. Risk Severity Bands & Triggered Actions
+## 9. All Threat Scenarios Used in InsiEDR
+
+InsiEDR classifies threats through a **4-tier scenario taxonomy** spanning operational context, industry-standard MITRE ATT&CK techniques, internal heuristic and aggregator rules, and machine learning target labels.
+
+```mermaid
+flowchart TD
+    RawTelemetry["Raw Endpoint Telemetry (20 Feeds, 216 Hosts)"] --> Layer1
+    
+    subgraph Layer1["Tier 1: Threat Archetype & Operational Context"]
+        T1["CERT / SEI Insider Threat Model<br/>Actor Motivation, Access Level, and Operational Window"]
+    end
+    
+    Layer1 --> Layer2
+    subgraph Layer2["Tier 2: MITRE ATT&CK Matrix Taxonomy"]
+        T2["Enterprise Matrix Tactics & Technique IDs<br/>(T1003.001, T1052.001, T1485, T1567, T1074, T1083)"]
+    end
+    
+    Layer2 --> Layer3
+    subgraph Layer3["Tier 3: InsiEDR Detection Engine Classification"]
+        T3A["Heuristic Detector ID & Scenario Name"]
+        T3B["Correlation Group (Anti-Stacking Cluster)"]
+        T3C["Aggregator Tactical Stage (Kill Chain)"]
+        T3D["Severity Floor & Dynamic Risk Score (0 - 100)"]
+    end
+    
+    Layer3 --> Layer4
+    subgraph Layer4["Tier 4: Machine Learning Ground Truth Schema"]
+        T4A["Binary Label: 0 (Benign) vs 1 (Threat)"]
+        T4B["Multiclass Target (8 Scenario Heads)"]
+        T4C["Partition: Train (D1-4) vs Val (D5) vs Test (D6-7)"]
+        T4D["Per-Collector Evidence-Bearing Mask"]
+    end
+```
+
+---
+
+### A. Operational CERT Scenario IDs & Supporting Signals
+
+The InsiEDR server uses canonical identifiers shared between the heuristics engine and the risk aggregator:
+
+| Scenario ID | Name & Description | Evidence Required to Confirm | Default Severity & Score Floor | Tactical Stage |
+| :--- | :--- | :--- | :---: | :--- |
+| **`S1`** | **IT Sabotage** | Mass file deletion ($\ge 10$ confirmed deletes) corroborated by service/driver/privilege modifications, after-hours access, or an auth burst. Deletions alone remain a precursor. | `HIGH` (70.0 - 85.0) | `EXFILTRATION_SABOTAGE` |
+| **`S1_CRED_DUMP`** | **OS Credential Dumping** | Explicit LSASS handle request with suspicious access mask (e.g. `0x1FFFFF` `PROCESS_ALL_ACCESS`), memory dump attempt, or Mimikatz signature. Bypasses profile discounts. | `CRITICAL` (100.0, floor 95.0) | `CREDENTIAL_ACCESS` |
+| **`S1_INJECTION`** | **Unbacked Executable Memory** | Unbacked memory regions or thread injection reported by the memory scanner. | `HIGH` (85.0) | `EXECUTION_PERSISTENCE` |
+| **`S2`** | **Data Hoarding / Broad Staging** | Bulk file access ($\ge 500$ accesses, $\ge 100$ files), breadth ($\ge 50$ unique, $\ge 25$ new), clipboard burst, or sensitive-file collection backed by UEBA baseline anomaly. | `HIGH` (70.0 - 75.0) | `COLLECTION_STAGING` |
+| **`S3`** | **Removable Media Exfiltration** | Confirmed file-to-removable transfer counters ($\ge 1$ file). Transfers $\ge 20$ files elevate to score 80. | `HIGH` (80.0) | `EXFILTRATION_SABOTAGE` |
+| **`S3_PRECURSOR`** | **Unapproved USB Device** | USB device insertion or non-whitelisted Vendor/Product ID without confirmed file transfer evidence. | `MEDIUM` (40.0) | `EXFILTRATION_SABOTAGE` |
+| **`S4`** | **Cloud Exfiltration** | Outbound cloud upload bytes/counts correlated with sensitive-file access or unusual file collection bursts. | `HIGH` (80.0) | `EXFILTRATION_SABOTAGE` |
+| **`S4_PRECURSOR`** | **File-Sharing Site Visit** | Hits on watchlisted cloud storage/file-sharing domains (e.g., Google Drive, Dropbox, Mega) without upload evidence. | `LOW` (10.0 - 45.0) | `COLLECTION_STAGING` |
+| **`NETWORK_TUNNELING`** | **Network Tunneling Indicator** | DNS tunneling queries or unauthorized tunneling processes (e.g. `chisel`, `ngrok`). Distinct from web exfiltration. | `HIGH` (80.0) | `EXFILTRATION_SABOTAGE` |
+| **`HONEYTOKEN`** | **Canary Decoy Interaction** | Decoy monitor reports `threat_triggered=true` on attractive planted honeypot assets. Forces risk to 100 immediately. | `CRITICAL` (100.0) | `CREDENTIAL_ACCESS` |
+
+#### Supporting Signal Tags (Not Confirmed CERT Scenarios)
+- **`AUTH_BURST`**: Spike in authentication failure ratios or velocity over 5 minutes.
+- **`AUTH_LATERAL`**: Rapid interactive logons across $\ge 3$ distinct workstations.
+- **`FILE_DELETE`**: Sampled deletion operations $\ge 10$ without confirmed sabotage corroboration.
+- **`S1_PRECURSOR`**: After-hours access or mass deletion awaiting system-change evidence.
+
+---
+
+### B. Machine Learning (Model V3) 8 Target Classes
+
+The ML research model (`model/`) evaluates 8 discrete scenario hypotheses across daily endpoint feature vectors:
+
+| ML Class Name | Target Hypothesis | Server Meaning & Evidence Preserved |
+| :--- | :--- | :--- |
+| **`BENIGN`** | Normal expected endpoint behavior | Model normal hypothesis; not verified benign ground truth. |
+| **`IT_SABOTAGE`** | Deliberate data destruction or sabotage | Corresponds to `S1`; preserves required destructive/system change corroboration. |
+| **`DATA_HOARDING`** | Excessive collection or staging | Corresponds to `S2`; does not equate an ordinary audit event with copying. |
+| **`USB_EXFILTRATION_PRECURSOR`** | Physical media connected for egress | Corresponds to `S3_PRECURSOR`; never promoted to `S3` without transfer evidence. |
+| **`CLOUD_EXFILTRATION_PRECURSOR`** | Cloud drive accessed for egress | Corresponds to `S4_PRECURSOR`; never promoted to `S4` without upload evidence. |
+| **`CREDENTIAL_DUMP`** | Memory-based credential harvesting | Corresponds to `S1_CRED_DUMP`; distinct from general sabotage. |
+| **`HONEYTOKEN_TRIP`** | Deception canary triggered | Corresponds to `HONEYTOKEN`; preserves independent deterministic trigger. |
+| **`KILL_CHAIN_APT`** | Multi-phase advanced campaign | Corresponds to multi-stage sequence; requires same-agent temporal progression. |
+
+---
+
+### C. The 7 Core Empirical Attack Scenarios (Dataset Specification)
+
+InsiEDR's ground truth evaluation and simulation dataset models 7 end-to-end attack scenarios across 216 monitored hosts:
+
+#### Scenario 1: `SIM_CREDENTIAL_DUMP` (LSASS Credential Dumping)
+* **Target Host & Account**: Workstation `SOCL2-64` (`AGENT-SOCL2-64`), account `Administrator`.
+* **Active Window**: Day 1, 60 minutes (`[10:45:00, 11:45:00)`), 726 evidence rows per feed.
+* **Threat Archetype**: Credential Compromise & Memory Harvesting.
+* **MITRE ATT&CK**: **[T1003.001](https://attack.mitre.org/techniques/T1003/001/)** (OS Credential Dumping: LSASS Memory).
+* **Telemetry Signatures**:
+  - `lsass-monitor`: `credential_dumping_suspected=True`, `mimikatz_signatures=1`, `suspicious_access_mask="0x1FFFFF"` (`PROCESS_ALL_ACCESS`), `handle_requests=16`, `memory_dump_attempts=2`.
+  - `process-watcher`: Rogue administrative process targeting `lsass.exe`.
+  - `memory-scanner`: Unbacked executable memory regions identified.
+* **Engine Output**: Scenario `S1_CRED_DUMP`, Stage `CREDENTIAL_ACCESS`, Severity `CRITICAL` (Score 100.0).
+
+#### Scenario 2: `SIM_USB_PRECURSOR` (Removable Storage Egress Precursor)
+* **Target Host & Account**: Workstation `DSL-174` (`AGENT-DSL-174`), account `DSL-174`.
+* **Active Window**: Day 2, 90 minutes (`[08:30:00, 10:00:00)`), 1,072 evidence rows per feed.
+* **Threat Archetype**: Physical Media Exfiltration Precursor.
+* **MITRE ATT&CK**: **[T1052.001](https://attack.mitre.org/techniques/T1052/001/)** (Exfiltration Over Physical Medium: Removable Storage).
+* **Telemetry Signatures**:
+  - `devices`: Unauthorized USB flash device insertion (`vendor_id="1058"`, `product_id="0748"`, Western Digital Storage).
+  - `file-integrity-monitor`: File copy staging directed to removable drive mount `E:\`.
+  - `usn-monitor`: Elevated USN journal change records on external volume `E:\`.
+* **Engine Output**: Scenario `S3_PRECURSOR`, Stage `EXFILTRATION_SABOTAGE`, Severity `HIGH` (Score 75.0).
+
+#### Scenario 3: `SIM_IT_SABOTAGE` (Hostile IT Sabotage & Data Destruction)
+* **Target Host & Account**: Workstation `DATASL-173` (`AGENT-DATASL-173`), account `DSL-173`.
+* **Active Window**: Day 2, 120 minutes (`[09:00:00, 11:00:00)`), 1,306 evidence rows per feed.
+* **Threat Archetype**: Disgruntled Insider Sabotage & Security Impairment.
+* **MITRE ATT&CK**: **[T1485](https://attack.mitre.org/techniques/T1485/)** (Data Destruction), **[T1562.001](https://attack.mitre.org/techniques/T1562/001/)** (Impair Defenses: Disable Tools).
+* **Telemetry Signatures**:
+  - `file-integrity-monitor`: 13 sampled operations populate with `"DELETE"` (`integrity_events_0_op` through `12_op`) targeting `.mdf`, `.bak`, and volume shadow copies (`file_delete_count = 13.0`).
+  - `persistence-monitor`: `modifications_detected=True`, command `sc stop WinDefend & sc config WinDefend start= disabled`.
+  - `process-watcher`: `admin_process_count=3`, `executables_from_temp_folder=2`.
+* **Engine Output**: Scenario `FILE_DELETE` / `S1`, Stage `EXECUTION_PERSISTENCE`, Severity `MEDIUM` (Score 50.0).
+
+#### Scenario 4: `SIM_CLOUD_PRECURSOR` (Off-Hours Web Exfiltration Precursor)
+* **Target Host & Account**: Workstation `MCALAB1-07` (`AGENT-MCALAB1-07`), account `MCAL1-07`.
+* **Active Window**: Day 4, 60 minutes (`[03:15:00, 04:15:00)`), 1,357 evidence rows per feed.
+* **Threat Archetype**: Off-Hours Unauthorized Cloud Storage Access.
+* **MITRE ATT&CK**: **[T1567](https://attack.mitre.org/techniques/T1567/)** (Exfiltration Over Web Service), **[T1078.003](https://attack.mitre.org/techniques/T1078/003/)** (Valid Accounts: Local Accounts).
+* **Telemetry Signatures**:
+  - `http`: `cloud_storage_uploads=4`, `large_uploads=3`, `file_sharing_site_visits=5`, `watchlisted_domain_hits=3`, `post_requests=28`, `http_after_hours=1.0`.
+  - `network`: Outbound HTTPS connections to unauthorized public storage domains (`outbound_connections=18`).
+  - `short-term_edr_feature`: Off-hours interactive access (`off_hours_auth_count=3`).
+* **Engine Output**: Scenario `S4_PRECURSOR`, Stage `COLLECTION_STAGING`, Severity `MEDIUM` (Score 45.0).
+
+#### Scenario 5: `SIM_DATA_HOARDING` (Data Staging & Clipboard Hoarding)
+* **Target Host & Account**: Workstation `SOCL8-53` (`AGENT-SOCL8-53`), account `DSL-189`.
+* **Active Window**: Day 4, 120 minutes (`[08:00:00, 10:00:00)`), 1,262 evidence rows per feed.
+* **Threat Archetype**: Pre-Departure Intellectual Property Collection.
+* **MITRE ATT&CK**: **[T1074](https://attack.mitre.org/techniques/T1074/)** (Data Staged), **[T1115](https://attack.mitre.org/techniques/T1115/)** (Clipboard Data).
+* **Telemetry Signatures**:
+  - `clipboard-monitor`: Abnormal copy burst (`clipboard_copy_count=48`, sequence index 112).
+  - `file-integrity-monitor`: Breadth metrics (`daily_unique_filename_count=68.0`, `daily_new_filename_count=35.0`, access entropy 4.85), creation of container `archive_staged.7z`.
+  - `activity-monitor`: Interactive user active (`user_idle_seconds=0`).
+* **Engine Output**: Scenario `S2`, Stage `COLLECTION_STAGING`, Severity `HIGH` (Score 75.0).
+
+#### Scenario 6: `SIM_HONEYTOKEN_TRIP` (Canary Decoy Interaction)
+* **Target Host & Account**: Workstation `SOCL8-03` (`AGENT-SOCL8-03`), account `Administrator`.
+* **Active Window**: Day 7, 90 minutes (`[06:00:00, 07:30:00)`), 1,061 evidence rows per feed.
+* **Threat Archetype**: Deception Defense Trigger / Canary File Access.
+* **MITRE ATT&CK**: **[T1083](https://attack.mitre.org/techniques/T1083/)** (File and Directory Discovery), **[T1552](https://attack.mitre.org/techniques/T1552/)** (Unsecured Credentials).
+* **Telemetry Signatures**:
+  - `decoy-monitor`: `threat_triggered=True`, `events_recorded=True`, monitored paths `"C:\Users\Public\Admin_Passwords.xlsx;C:\Decoys\Financial_Decoy.docx"`.
+  - `file-integrity-monitor`: Explicit `READ` operation on `Admin_Passwords.xlsx`.
+  - `logon`: Early-morning interactive session with 3 failed logon attempts.
+* **Engine Output**: Scenario `HONEYTOKEN`, Stage `CREDENTIAL_ACCESS`, Severity `CRITICAL` (Score 100.0).
+
+---
+
+### D. Scenario 7: `SIM_KILL_CHAIN` (Multi-Phase APT Campaign)
+
+Scenario 7 models a sustained, coordinated attack across a **3.5-hour duration** on workstation `SOCL4-61` (`AGENT-SOCL4-61`), account `admin`. It demonstrates the stateful kill-chain progression across a 4-hour temporal window:
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant P1 as Phase 1 (09:00 - 09:45)<br/>Credential Access
+    participant P2 as Phase 2 (09:45 - 10:30)<br/>Lateral Reconnaissance
+    participant P3 as Phase 3 (10:30 - 11:30)<br/>Data Staging & Decoy Trip
+    participant P4 as Phase 4 (11:30 - 12:30)<br/>Cloud Exfiltration Precursor
+    participant Aggregator as Central Risk Aggregator<br/>(Rolling 4-Hour Memory)
+
+    P1->>Aggregator: LSASS Dump (Mimikatz Mask 0x1010)
+    Note over Aggregator: Stage 1 Mapped: CREDENTIAL_ACCESS<br/>Event Score: 85.0 (HIGH)
+
+    P2->>Aggregator: WMI Queries + PsExec Pipes + Multi-PC Auth (4 workstations, 6 events)
+    Note over Aggregator: Stage 2 Mapped: LATERAL_MOVEMENT<br/>Chronological Progression (2 Stages) -> HIGH Floor (85.0)
+
+    P3->>Aggregator: Archive Created (exfil_payload.zip) + Admin_Passwords.xlsx Read
+    Note over Aggregator: Decoy trip reinforces CREDENTIAL_ACCESS & COLLECTION_STAGING
+
+    P4->>Aggregator: Outbound HTTPS to File-Sharing (6 visits, 5 cloud uploads)
+    Note over Aggregator: Stage 3 Mapped: COLLECTION_STAGING / EXFILTRATION<br/>Progression Confirmed (3+ Stages) -> CRITICAL Floor (95.0)
+```
+
+#### Detailed Phase Breakdown
+
+| Phase | Time Window | Active Feeds & Evidence | MITRE ATT&CK | Engine Classification & Tactical Evolution |
+| :--- | :--- | :--- | :--- | :--- |
+| **Phase 1: Credential Access** | `09:00:00` to `09:45:00` | `lsass-monitor` (540 rows)<br/>`short-term_edr_feature` (540 rows) | **[T1003.001](https://attack.mitre.org/techniques/T1003/001/)** | **Detector ID**: `S1_CRED_DUMP`<br/>**Aggregator Stage**: `CREDENTIAL_ACCESS`<br/>**Score**: `85.0` (`HIGH`) |
+| **Phase 2: Lateral Reconnaissance** | `09:45:00` to `10:30:00` | `wmi-activity` (540 rows)<br/>`named-pipe-monitor` (540 rows)<br/>`short-term_edr_feature` (540 rows) | **[T1047](https://attack.mitre.org/techniques/T1047/)** (WMI)<br/>**[T1021.002](https://attack.mitre.org/techniques/T1021/002/)** (SMB/Named Pipe) | **Detector ID**: `MULTI_WORKSTATION_BURST`<br/>**Aggregator Stage**: `LATERAL_MOVEMENT`<br/>**Progression**: Confirmed 2-stage sequence $\implies$ **85.0 Floor** |
+| **Phase 3: Staging & Canary Trip** | `10:30:00` to `11:30:00` | `file-integrity-monitor` (698 rows)<br/>`decoy-monitor` (698 rows)<br/>`short-term_edr_feature` (698 rows) | **[T1074](https://attack.mitre.org/techniques/T1074/)** (Staging)<br/>**[T1083](https://attack.mitre.org/techniques/T1083/)** (Decoy Discovery) | **Detector ID**: `HONEYTOKEN`<br/>**Aggregator Stage**: `CREDENTIAL_ACCESS` + `COLLECTION_STAGING`<br/>**Score**: `100.0` (`CRITICAL`) |
+| **Phase 4: Cloud Exfiltration** | `11:30:00` to `12:30:00` | `http` (720 rows)<br/>`network` (720 rows)<br/>`short-term_edr_feature` (720 rows) | **[T1567](https://attack.mitre.org/techniques/T1567/)** (Web Exfiltration) | **Detector ID**: `S4_PRECURSOR`<br/>**Aggregator Stage**: `EXFILTRATION_SABOTAGE`<br/>**Final Result**: **3-Stage Progression Confirmed** $\implies$ **CRITICAL (Score: 95.0)** |
+
+---
+
+### E. Master Scenarios Cross-Comparison Matrix
+
+| # | Scenario ID | Multiclass ML Target | Threat Archetype | MITRE ATT&CK | InsiEDR Heuristic ID | Tactical Stage | Severity Floor | Partition Split |
+| :-: | :--- | :--- | :--- | :--- | :--- | :--- | :---: | :-: |
+| **1** | `SIM_CREDENTIAL_DUMP` | `CREDENTIAL_DUMP` | Credential Theft | T1003.001 | `S1_CRED_DUMP` | `CREDENTIAL_ACCESS` | `CRITICAL` (100.0) | Train (Day 1) |
+| **2** | `SIM_USB_PRECURSOR` | `USB_EXFILTRATION_PRECURSOR` | Removable Storage Egress | T1052.001 | `S3_PRECURSOR` | `EXFILTRATION_SABOTAGE` | `HIGH` (75.0) | Train (Day 2) |
+| **3** | `SIM_IT_SABOTAGE` | `IT_SABOTAGE` | Data Destruction | T1485 / T1562 | `FILE_DELETE` / `S1` | `EXECUTION_PERSISTENCE` | `MEDIUM` (50.0) | Train (Day 2) |
+| **4** | `SIM_CLOUD_PRECURSOR` | `CLOUD_EXFILTRATION_PRECURSOR` | Off-Hours Web Exfil | T1567 / T1078 | `S4_PRECURSOR` | `COLLECTION_STAGING` | `MEDIUM` (45.0) | Train (Day 4) |
+| **5** | `SIM_DATA_HOARDING` | `DATA_HOARDING` | Intellectual Property Theft | T1074 / T1115 | `S2` | `COLLECTION_STAGING` | `HIGH` (75.0) | Train (Day 4) |
+| **6** | `SIM_HONEYTOKEN_TRIP` | `HONEYTOKEN_TRIP` | Canary Honeypot Breach | T1083 / T1552 | `HONEYTOKEN` | `CREDENTIAL_ACCESS` | `CRITICAL` (100.0) | Test (Day 7) |
+| **7** | `SIM_KILL_CHAIN` | `KILL_CHAIN_APT` | Multi-Stage APT Campaign | T1003/T1021/T1074/T1567 | Multi-Detector Progression | 3+ Stage Evolution | `CRITICAL` (95.0) | Test (Day 7) |
+
+---
+
+## 10. Risk Severity Bands & Triggered Actions
 
 | Score Range | Severity Band | System & Operational Action |
 | :---: | :---: | :--- |
@@ -318,7 +519,7 @@ To eliminate single-sensor false positives from triggering disruptive containmen
 
 ---
 
-## 10. Edge Autonomous Containment (Agent Side)
+## 11. Edge Autonomous Containment (Agent Side)
 
 In addition to server-side analysis, the Rust agent (`InsiEDR-agent/src/engine/evaluator.rs`) executes instant local containment:
 * **ETW Process Start**: Inspects process commands against local pattern rules (e.g., volume shadow copy deletion via `vssadmin`, suspicious PowerShell execution).
@@ -332,7 +533,7 @@ In addition to server-side analysis, the Rust agent (`InsiEDR-agent/src/engine/e
 
 ---
 
-## 11. Complete Component Comparison
+## 12. Complete Component Comparison
 
 | Component | Execution Timing | Scope | Primary Objective | Key Logic / Formula |
 | :--- | :--- | :--- | :--- | :--- |
