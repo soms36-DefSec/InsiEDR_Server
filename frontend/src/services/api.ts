@@ -41,6 +41,26 @@ export const TIMEOUT_CONFIG = {
 
 const DEFAULT_TIMEOUT_MS = TIMEOUT_CONFIG.DEFAULT_READ_MS;
 
+const OPERATOR_KEY_STORAGE = 'insiedr.operatorApiKey';
+
+/** Keep the operator credential only for this browser tab's session. */
+export function getOperatorApiKey(): string {
+  try {
+    return window.sessionStorage.getItem(OPERATOR_KEY_STORAGE) || '';
+  } catch {
+    return '';
+  }
+}
+
+export function setOperatorApiKey(value: string): void {
+  try {
+    if (value) window.sessionStorage.setItem(OPERATOR_KEY_STORAGE, value);
+    else window.sessionStorage.removeItem(OPERATOR_KEY_STORAGE);
+  } catch {
+    // The app can still run without session storage when operator auth is disabled.
+  }
+}
+
 export async function fetchApi<T>(url: string, options?: RequestInit & { timeoutMs?: number }): Promise<T> {
   const timeoutMs = options?.timeoutMs ?? DEFAULT_TIMEOUT_MS;
 
@@ -63,8 +83,14 @@ export async function fetchApi<T>(url: string, options?: RequestInit & { timeout
   }
 
   try {
+    const headers = new Headers(options?.headers);
+    const operatorKey = getOperatorApiKey();
+    if (operatorKey && !headers.has('X-Operator-Key')) {
+      headers.set('X-Operator-Key', operatorKey);
+    }
     const res = await fetch(url, {
       ...options,
+      headers,
       cache: 'no-store',
       signal: controller.signal,
     });
@@ -288,7 +314,10 @@ export async function triggerServerExport(
 
   const url = `/api/v1/export/${type}?${params.toString()}`;
   try {
-    const res = await fetch(url);
+    const headers = new Headers();
+    const operatorKey = getOperatorApiKey();
+    if (operatorKey) headers.set('X-Operator-Key', operatorKey);
+    const res = await fetch(url, { headers });
     if (!res.ok) {
       let msg = res.statusText;
       try {

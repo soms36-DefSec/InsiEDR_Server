@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import type { DashboardSummary, SystemHealth, RiskEvent, TelemetryLog } from '../types/telemetry';
-import { fetchApi, fetchDashboardSummary, fetchHealth, fetchTelemetry } from '../services/api';
+import { fetchApi, fetchDashboardSummary, fetchHealth, fetchTelemetry, getOperatorApiKey } from '../services/api';
 import { notifyTelemetry } from '../services/telemetryStream';
 
 // One multiplexed SSE connection; views subscribe without re-rendering the shell
@@ -90,7 +90,8 @@ export function useRealTimeStream() {
 
   useEffect(() => {
     if (!autoRefresh) return;
-    let source: EventSource | undefined;
+    const streamAbort = new AbortController();
+    let reconnectTimer: number | undefined;
     let summaryTimer: number | undefined;
     let alertTimer: number | undefined;
     let pendingAlerts: RiskEvent[] = [];
@@ -101,36 +102,85 @@ export function useRealTimeStream() {
         void refreshAll();
       }, 500);
     };
-    try {
-      source = new EventSource('/api/v1/stream/dashboard');
-      source.onopen = () => {
+    const handleEvent = (eventName: string, data: string) => {
+      if (eventName === 'telemetry_changed') notifyTelemetry();
+      if (eventName === 'agent_status') scheduleSummary();
+      if (eventName === 'resync') { notifyTelemetry(); scheduleSummary(); }
+      if (eventName !== 'threat_alert') return;
+      try {
+        const payload = JSON.parse(data);
+        pendingAlerts.unshift({ ...payload, created_at: payload.created_at || new Date().toISOString() });
+        pendingAlerts = pendingAlerts.slice(0, 50);
+        if (alertTimer === undefined) alertTimer = window.setTimeout(() => {
+          const batch = pendingAlerts;
+          pendingAlerts = [];
+          alertTimer = undefined;
+          setLiveThreats((previous) => [...batch, ...previous].slice(0, 50));
+        }, 50);
+        scheduleSummary();
+      } catch { /* A malformed event must not stop reconnect/recovery. */ }
+    };
+
+    const connect = async () => {
+      try {
+        const headers = new Headers();
+        const operatorKey = getOperatorApiKey();
+        if (operatorKey) headers.set('X-Operator-Key', operatorKey);
+        const response = await fetch('/api/v1/stream/dashboard', {
+          headers,
+          cache: 'no-store',
+          signal: streamAbort.signal,
+        });
+        if (!response.ok || !response.body) {
+          // A bad/missing key must not create an endless stream of 401 requests.
+          setConnectionMode('polling');
+          if (response.status !== 401 && !streamAbort.signal.aborted) {
+            reconnectTimer = window.setTimeout(() => { void connect(); }, 5000);
+          }
+          return;
+        }
+
         setConnectionMode('sse');
         scheduleSummary();
         notifyTelemetry(); // Reconnect also recovers events missed while offline.
-      };
-      source.onerror = () => setConnectionMode('polling');
-      source.addEventListener('telemetry_changed', () => { notifyTelemetry(); });
-      source.addEventListener('agent_status', scheduleSummary);
-      source.addEventListener('resync', () => { notifyTelemetry(); scheduleSummary(); });
-      source.addEventListener('threat_alert', (event) => {
+        const reader = response.body.getReader();
+        const decoder = new TextDecoder();
+        let buffer = '';
         try {
-          const payload = JSON.parse((event as MessageEvent).data);
-          pendingAlerts.unshift({ ...payload, created_at: payload.created_at || new Date().toISOString() });
-          pendingAlerts = pendingAlerts.slice(0, 50);
-          if (alertTimer === undefined) alertTimer = window.setTimeout(() => {
-            const batch = pendingAlerts;
-            pendingAlerts = [];
-            alertTimer = undefined;
-            setLiveThreats((previous) => [...batch, ...previous].slice(0, 50));
-          }, 50);
-          scheduleSummary();
-        } catch { /* A malformed event must not stop reconnect/recovery. */ }
-      });
-    } catch {
-      setConnectionMode('polling');
-    }
+          while (!streamAbort.signal.aborted) {
+            const { value, done } = await reader.read();
+            if (done) break;
+            buffer += decoder.decode(value, { stream: true });
+            const blocks = buffer.split(/\r?\n\r?\n/);
+            buffer = blocks.pop() || '';
+            for (const block of blocks) {
+              let eventName = 'message';
+              const dataLines: string[] = [];
+              for (const line of block.split(/\r?\n/)) {
+                if (line.startsWith('event:')) eventName = line.slice(6).trim();
+                else if (line.startsWith('data:')) dataLines.push(line.slice(5).trimStart());
+              }
+              if (dataLines.length) handleEvent(eventName, dataLines.join('\n'));
+            }
+          }
+        } finally {
+          await reader.cancel().catch(() => undefined);
+        }
+        if (!streamAbort.signal.aborted) {
+          setConnectionMode('polling');
+          reconnectTimer = window.setTimeout(() => { void connect(); }, 3000);
+        }
+      } catch {
+        if (!streamAbort.signal.aborted) {
+          setConnectionMode('polling');
+          reconnectTimer = window.setTimeout(() => { void connect(); }, 5000);
+        }
+      }
+    };
+    void connect();
     return () => {
-      source?.close();
+      streamAbort.abort();
+      window.clearTimeout(reconnectTimer);
       window.clearTimeout(summaryTimer);
       window.clearTimeout(alertTimer);
     };
