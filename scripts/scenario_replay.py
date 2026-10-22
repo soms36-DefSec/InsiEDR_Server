@@ -585,6 +585,161 @@ def preview(args):
     prepare(args)
 
 
+def expand_fleet(args):
+    """Add benign dataset-backed employee hosts to a prepared isolated run.
+
+    The extra hosts have historical collector logs and fleet identities. They
+    receive no fabricated Model V3 score or risk event.
+    """
+    _guard()
+    run_id = args.run_id
+    manifest_path = Path(args.output_root).resolve() / run_id / "run.json"
+    if not manifest_path.is_file():
+        raise FileNotFoundError("Run prepare before expand-fleet")
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    if manifest.get("preview_only") or manifest.get("source_kind") != "synthetic":
+        raise RuntimeError("Fleet expansion requires a prepared isolated synthetic run")
+    fleet_size = args.fleet_size
+    if not 7 <= fleet_size <= 500:
+        raise ValueError("--fleet-size must be between 7 and 500")
+    if fleet_size == 7:
+        print("Seven scenario hosts already prepared; no extra fleet hosts requested")
+        return
+    from server.storage.clickhouse_storage import ClickHouseStorage
+
+    ch = ClickHouseStorage(host=config.clickhouse_host, port=config.clickhouse_port,
+        username=config.clickhouse_user, password=config.clickhouse_password,
+        database=config.clickhouse_db, secure=config.clickhouse_secure, dlq_enabled=False)
+    source_agent = CONTROL_AGENTS[1]
+    first = 8
+    extra = fleet_size - 7
+    marker = f"scenario-{run_id}-{source_agent}-%"
+    try:
+        if not ch.is_connected():
+            raise RuntimeError("isolated ClickHouse unavailable")
+        source_count = ch._client.query(
+            "SELECT count() FROM collector_results WHERE agent_id = %(agent)s "
+            "AND payload_id LIKE %(marker)s", parameters={"agent": source_agent,
+                                                  "marker": marker}).result_rows[0][0]
+        if source_count == 0:
+            raise RuntimeError("Prepared benign source logs are missing")
+        fleet_prefix = f"scenario-{run_id}-fleet-"
+        existing = ch._client.query(
+            "SELECT count() FROM collector_results WHERE startsWith(payload_id, %(prefix)s)",
+            parameters={"prefix": fleet_prefix}).result_rows[0][0]
+        source_events = ch._client.query(
+            "SELECT count() FROM telemetry_events WHERE agent_id = %(agent)s "
+            "AND payload_id LIKE %(marker)s", parameters={"agent": source_agent,
+                                                  "marker": marker}).result_rows[0][0]
+        if source_events == 0:
+            raise RuntimeError("Prepared benign explorer rows are missing")
+        existing_events = ch._client.query(
+            "SELECT count() FROM telemetry_events WHERE startsWith(payload_id, %(prefix)s)",
+            parameters={"prefix": fleet_prefix}).result_rows[0][0]
+        if existing not in (0, source_count * extra) or existing_events not in (0, source_events * extra):
+            raise RuntimeError("Partial fleet rows exist; inspect the isolated run before retrying")
+        alias = f"concat('EMPLOYEE-', leftPad(toString(number + {first}), 2, '0'))"
+        agent = f"concat('AGENT-', {alias})"
+        payload = f"concat('{fleet_prefix}', toString(number + {first}), '-', payload_id)"
+        provenance = ("concat(substring(agent_quality_json, 1, length(agent_quality_json)-1), "
+                      "',\"source_agent_id\":\"AGENT-SOCL4-63\"}')")
+        source_filter = (f"agent_id = '{source_agent}' AND "
+                         f"startsWith(payload_id, 'scenario-{run_id}-{source_agent}-')")
+        if not existing:
+            ch._client.command(
+                "INSERT INTO collector_results (payload_id, agent_id, collector, "
+                "collector_collected_at, hostname, status, payload_json, source_quality, agent_quality_json) "
+                f"SELECT {payload}, {agent}, collector, collector_collected_at, {alias}, status, "
+                f"payload_json, 'scenario_replay', {provenance} "
+                f"FROM collector_results CROSS JOIN numbers({extra}) WHERE {source_filter}")
+        if not existing_events:
+            ch._client.command(
+                "INSERT INTO telemetry_events (payload_id, agent_id, collector_name, timestamp, "
+                "hostname, username, status, summary_preview, raw_payload_json) "
+                f"SELECT {payload}, {agent}, collector_name, timestamp, {alias}, "
+                f"concat('employee', toString(number + {first})), status, summary_preview, raw_payload_json "
+                f"FROM telemetry_events CROSS JOIN numbers({extra}) WHERE {source_filter}")
+    finally:
+        ch.close()
+    start = date.fromisoformat(manifest["start_date"])
+    end = date.fromisoformat(manifest["end_date"])
+    with _pg() as conn, conn.cursor() as cur:
+        for index in range(first, fleet_size + 1):
+            label = f"EMPLOYEE-{index:02d}"
+            cur.execute("INSERT INTO agents (agent_id, hostname, username_last_seen, "
+                        "first_seen_at, last_seen_at, status) VALUES (%s,%s,%s,%s,%s,'offline') "
+                        "ON CONFLICT (agent_id) DO NOTHING",
+                        (f"AGENT-{label}", label, f"employee{index}", start, end))
+    manifest["fleet_size"] = fleet_size
+    manifest["fleet_background_source"] = source_agent
+    manifest_path.write_text(json.dumps(manifest, indent=2), encoding="utf-8")
+    env_path = Path(args.env_file).resolve()
+    lines = env_path.read_text(encoding="utf-8").splitlines()
+    values = dict(line.split("=", 1) for line in lines if "=" in line and not line.startswith("#"))
+    if not {"INSIEDR_AGENT_TOKENS", "INSIEDR_SCENARIO_AGENT_TOKENS"} <= values.keys():
+        raise RuntimeError("Scenario agent-token entries are missing from the private env file")
+    tokens = json.loads(values["INSIEDR_AGENT_TOKENS"])
+    for index in range(first, fleet_size + 1):
+        tokens.setdefault(f"AGENT-EMPLOYEE-{index:02d}", secrets.token_hex(24))
+    encoded = json.dumps(tokens, separators=(",", ":"))
+    updates = {"INSIEDR_AGENT_TOKENS": encoded, "INSIEDR_SCENARIO_AGENT_TOKENS": encoded}
+    updated_lines = [f"{key}={updates[key]}" if key in updates else line
+                     for line in lines for key in [line.partition("=")[0]]]
+    tmp = env_path.with_suffix(env_path.suffix + ".tmp")
+    tmp.write_text("\n".join(updated_lines) + "\n", encoding="utf-8")
+    os.chmod(tmp, 0o600)
+    os.replace(tmp, env_path)
+    print(json.dumps({"run_id": run_id, "fleet_size": fleet_size,
+                      "model_scored_hosts": len(AGENTS) + len(CONTROL_AGENTS),
+                      "background_model_state": "none",
+                      "next_step": "Recreate the scenario backend to load the new agent tokens"}, indent=2))
+
+
+def play_fleet(args):
+    """Send one current, authenticated benign observation for each extra host."""
+    _guard()
+    import httpx
+    from shared.crypto_utils import normalize_aes_key
+
+    output = Path(args.output_root).resolve() / args.run_id
+    manifest = json.loads((output / "run.json").read_text(encoding="utf-8"))
+    fleet_size = manifest.get("fleet_size", 7)
+    if fleet_size <= 7:
+        raise RuntimeError("Run expand-fleet first")
+    roots = _dataset_roots(args)
+    files = _files(roots["Dataset_RealTime"])
+    source_rows = {}
+    for collector in ("logon", "process-watcher", "network", "file-integrity-monitor", "http"):
+        file = files.get(collector)
+        if file is None:
+            raise FileNotFoundError(f"Missing background collector source: {collector}")
+        with file.open(newline="", encoding="utf-8-sig", errors="replace") as handle:
+            source_rows[collector] = next((row for row in csv.DictReader(handle)
+                if row.get("agent_id") == CONTROL_AGENTS[1] and row.get("status") == "success"), None)
+        if source_rows[collector] is None:
+            raise RuntimeError(f"No benign source row for {collector}")
+    tokens = json.loads(os.environ["INSIEDR_SCENARIO_AGENT_TOKENS"])
+    key = normalize_aes_key(os.environ["INSIEDR_SCENARIO_AES_KEY"])
+    base_url = args.server_url.rstrip("/")
+    if not base_url.startswith("http://127.0.0.1:") and not base_url.startswith("http://localhost:"):
+        raise ValueError("Replay endpoint must be a local isolated mirror URL")
+    with httpx.Client(timeout=30) as client:
+        for index in range(8, fleet_size + 1):
+            hostname = f"EMPLOYEE-{index:02d}"
+            agent = f"AGENT-{hostname}"
+            if agent not in tokens:
+                raise RuntimeError("Scenario backend tokens need reloading after expand-fleet")
+            envelope, headers = _envelope(agent, hostname, f"employee{index}", source_rows,
+                                          args.run_id, key, tokens[agent])
+            response = client.post(base_url + "/api/logs", json=envelope, headers=headers)
+            response.raise_for_status()
+            if response.status_code != 202:
+                raise RuntimeError(f"Background ingest did not accept {agent}")
+            if index % 25 == 0 or index == fleet_size:
+                print(f"Background collector envelopes accepted: {index - 7}/{fleet_size - 7}", flush=True)
+            time.sleep(args.interval)
+
+
 def _scenario_frames(dataset, item):
     agent, start, end = item["target_agent_id"], _utc(item["start_time"]), _utc(item["end_time"])
     grouped = {}
@@ -840,7 +995,7 @@ def reset(args):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("command", choices=("init-env", "preview", "verify", "prepare", "play", "status", "stop", "reset"))
+    parser.add_argument("command", choices=("init-env", "preview", "verify", "prepare", "expand-fleet", "play-fleet", "play", "status", "stop", "reset"))
     parser.add_argument("--env-file", default=str(ROOT / ".env.scenario"))
     parser.add_argument("--dataset-root", default=r"D:\Projects\AISH")
     parser.add_argument("--output-root", default=str(ROOT / "data" / "scenario_replay"))
@@ -849,13 +1004,14 @@ def main():
     parser.add_argument("--as-of", type=date.fromisoformat)
     parser.add_argument("--start-date", type=date.fromisoformat)
     parser.add_argument("--days", type=int, default=22)
+    parser.add_argument("--fleet-size", type=int, default=200)
     parser.add_argument("--scenario", choices=[name for name, _ in SCENARIOS])
     parser.add_argument("--server-url", default="http://127.0.0.1:5088")
     parser.add_argument("--interval", type=float, default=5.0)
     args = parser.parse_args()
     if args.interval < 0:
         parser.error("--interval must be nonnegative")
-    if args.command in ("play", "status", "stop", "reset") and not args.run_id:
+    if args.command in ("expand-fleet", "play-fleet", "play", "status", "stop", "reset") and not args.run_id:
         parser.error(f"{args.command} requires --run-id")
     if args.run_id and not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]{0,63}", args.run_id):
         parser.error("--run-id must be 1-64 letters, digits, underscores, or hyphens")
@@ -863,7 +1019,7 @@ def main():
         init_env(args)
     else:
         _load_env(args.env_file)
-        globals()[args.command](args)
+        globals()[args.command.replace("-", "_")](args)
 
 
 if __name__ == "__main__":

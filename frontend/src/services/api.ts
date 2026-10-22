@@ -215,26 +215,10 @@ export async function fetchTelemetryExplorer(
   if (filters.search_scope) params.set('search_scope', filters.search_scope);
   if (filters.offset !== undefined) params.set('offset', String(filters.offset));
 
-  try {
-    return await fetchApi<TelemetryExplorerResponse>(`/api/v1/telemetry/explorer?${params.toString()}`, {
-      signal: filters.signal,
-      timeoutMs: TIMEOUT_CONFIG.DEFAULT_READ_MS,
-    });
-  } catch (err: unknown) {
-    if (filters.signal?.aborted) throw err;
-    const msg = err instanceof Error ? err.message : String(err);
-    if (msg.toLowerCase().includes('timed out')) {
-      console.warn('Telemetry explorer timed out, providing graceful fallback:', err);
-      return {
-        ok: true,
-        events: [],
-        logs: [],
-        limit,
-        source: 'clickhouse',
-      };
-    }
-    throw err;
-  }
+  return fetchApi<TelemetryExplorerResponse>(`/api/v1/telemetry/explorer?${params.toString()}`, {
+    signal: filters.signal,
+    timeoutMs: TIMEOUT_CONFIG.DEFAULT_READ_MS,
+  });
 }
 
 /**

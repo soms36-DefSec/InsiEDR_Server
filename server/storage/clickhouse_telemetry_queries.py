@@ -13,6 +13,18 @@ from server.storage.telemetry_cursor import filter_key, encode_cursor, decode_cu
 logger = logging.getLogger(__name__)
 
 
+def _utc_iso(value: Any) -> str:
+    """ClickHouse DateTime64 values are UTC even when the driver returns naive datetimes."""
+    if isinstance(value, datetime):
+        return value.replace(tzinfo=timezone.utc).isoformat() if value.tzinfo is None else value.astimezone(timezone.utc).isoformat()
+    raw = str(value or '').replace(' ', 'T')
+    if not raw:
+        return raw
+    if raw.endswith('Z') or '+' in raw[10:] or '-' in raw[10:]:
+        return raw
+    return raw + 'Z'
+
+
 def telemetry_page(storage, limit=100, offset=0, collector=None, username=None,
                    status=None, search=None, start_time=None, end_time=None,
                    include_enrichment=True, cursor=None, include_total=True,
@@ -277,7 +289,7 @@ def telemetry_explorer(storage, limit=50, cursor=None, collector=None, username=
                 d = dict(zip(res.column_names, row))
                 eid = str(d.get('event_id', ''))
                 ts = d.get('timestamp')
-                ts_str = ts.isoformat() if hasattr(ts, 'isoformat') else str(ts or '')
+                ts_str = _utc_iso(ts)
                 cname = str(d.get('collector_name') or '')
                 events.append({
                     'event_id': eid,
@@ -347,7 +359,7 @@ def telemetry_explorer(storage, limit=50, cursor=None, collector=None, username=
                     if pid:
                         pids.append(pid)
                     ts = d.get('timestamp')
-                    ts_str = ts.isoformat() if hasattr(ts, 'isoformat') else str(ts or '')
+                    ts_str = _utc_iso(ts)
                     cname = str(d.get('collector_name') or '')
                     raw_payload = d.get('payload_json')
                     preview = extract_summary_preview(cname, raw_payload)
@@ -507,7 +519,7 @@ def telemetry_event_detail(storage, event_id: str) -> dict[str, Any] | None:
         payload_obj = raw_json
 
     ts = row_data.get('timestamp')
-    ts_str = ts.isoformat() if hasattr(ts, 'isoformat') else str(ts or '')
+    ts_str = _utc_iso(ts)
     pid = row_data.get('payload_id')
 
     features = {}
@@ -622,12 +634,7 @@ def telemetry_histogram(storage, time_range='1h', interval=None, collector=None,
     total_events = 0
 
     def _format_iso(t_val):
-        t_str = t_val.isoformat() if hasattr(t_val, 'isoformat') else str(t_val)
-        if ' ' in t_str and 'T' not in t_str:
-            t_str = t_str.replace(' ', 'T')
-        if not t_str.endswith('Z') and '+00:00' not in t_str:
-            t_str = t_str + 'Z'
-        return t_str
+        return _utc_iso(t_val)
 
     try:
         from server.storage.dashboard_rollups import enabled as rollups_enabled, names as rollup_names

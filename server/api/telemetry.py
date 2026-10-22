@@ -101,13 +101,13 @@ async def get_telemetry_explorer(
                 logger.warning("PostgreSQL get_telemetry_page fallback also failed: %s", pg_exc)
                 raise AnalyticsUnavailableError("Telemetry query is temporarily unavailable") from pg_exc
             logs = page.get("logs", [])
-            from server.storage.clickhouse_telemetry_queries import extract_summary_preview
+            from server.storage.clickhouse_telemetry_queries import extract_summary_preview, _utc_iso
             projected = []
             for row in logs:
                 eid = str(row.get("id") or row.get("event_id") or "")
                 cname = str(row.get("collector") or row.get("collector_name") or "")
                 ts = row.get("collected_at") or row.get("timestamp") or ""
-                ts_str = ts.isoformat() if hasattr(ts, "isoformat") else str(ts)
+                ts_str = _utc_iso(ts)
                 projected.append({
                     "event_id": eid,
                     "id": eid,

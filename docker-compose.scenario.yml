@@ -61,7 +61,9 @@ services:
       clickhouse: {condition: service_healthy}
       redis: {condition: service_started}
     ports: ["0.0.0.0:5088:5000"]
-    networks: [scenario]
+    networks:
+      scenario:
+        aliases: [scenario-origin]
 
 volumes:
   scenario_pg:

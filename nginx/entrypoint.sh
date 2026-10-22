@@ -12,4 +12,11 @@ if [ ! -f /etc/nginx/certs/server.crt ] || [ ! -f /etc/nginx/certs/server.key ];
     echo "[InsiEDR Nginx] Generated development self-signed certificate in /etc/nginx/certs."
 fi
 
+if [ "${INSIEDR_PRESENTATION_MODE:-false}" = "true" ]; then
+    sed 's#set \$upstream_backend "http://backend:5000";#set \$upstream_backend "http://presentation-gateway:5000";#' \
+        /etc/nginx/nginx.conf > /tmp/nginx-presentation.conf
+    echo "[InsiEDR Nginx] Serving isolated scenario website through the main dashboard URL."
+    exec nginx -c /tmp/nginx-presentation.conf -g "daemon off;"
+fi
+
 exec nginx -g "daemon off;"

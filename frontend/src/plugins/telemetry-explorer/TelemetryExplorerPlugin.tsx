@@ -502,7 +502,7 @@ export const TelemetryExplorerPlugin: React.FC<TelemetryExplorerPluginProps> = (
             <Button
               variant="secondary"
               size="sm"
-              onClick={() => loadLogs(currentPage, pageSize)}
+              onClick={() => loadLogs(1, pageSize)}
               disabled={isLoading}
               icon={<RefreshCw className={`w-3.5 h-3.5 ${isLoading || isRefreshing ? 'animate-spin' : ''}`} />}
             >
