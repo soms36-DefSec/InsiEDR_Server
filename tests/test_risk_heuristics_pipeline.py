@@ -368,6 +368,26 @@ def test_cert_sabotage_correlates_sampled_deletes_with_system_change():
     s1 = next(scenario for scenario in scenarios if scenario["id"] == "S1")
     assert s1["severity"] == "HIGH"
 
+    # Collector normalization can preserve a boolean as either True or "True".
+    string_bool_scenarios = aggregator._map_cert_scenarios(
+        detector_results=[],
+        raw_features={"file_delete_count": 13, "persistence_modification_count": "True"},
+        heur_result={"detections": []},
+    )
+    assert any(scenario["id"] == "S1" for scenario in string_bool_scenarios)
+
+
+def test_cloud_upload_without_file_correlation_is_reported_as_precursor():
+    result = detect_insider_threat({
+        "file_sharing_site_visits": 5,
+        "cloud_storage_uploads": 4,
+        "large_uploads": 3,
+    })
+    upload = next(d for d in result["detections"] if d["scenario_id"] == "S4_PRECURSOR")
+    assert upload["scenario"] == "Cloud Upload Without File Correlation"
+    assert "upload_activity=4" in upload["reasons"][0]
+    assert "correlation unavailable" in upload["reasons"][0]
+
 
 def test_auth_burst_lateral_movement():
     """Verify multi-workstation traversal with active logons triggers MULTI_WORKSTATION_BURST."""

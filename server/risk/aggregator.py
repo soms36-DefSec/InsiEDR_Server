@@ -486,7 +486,10 @@ class RiskAggregator:
             add_scenario("NETWORK_TUNNELING", "HIGH", "Process or DNS monitor reported network tunneling activity")
 
         delete_count = max(number("daily_file_delete_count"), number("file_delete_count"))
-        sabotage_action = any(number(name) > 0 for name in ("service_modification_count", "privilege_change_count", "persistence_modification_count", "driver_modification_count"))
+        sabotage_action = any(
+            truthy(name) or number(name) > 0
+            for name in ("service_modification_count", "privilege_change_count", "persistence_modification_count", "driver_modification_count")
+        )
         after_hours_access = number("after_hours_logon") >= 2 or "S1_PRECURSOR" in ids
         # A batch of confirmed sampled deletions plus a system/persistence change
         # is sufficient sabotage evidence, even during daytime and without an
@@ -510,8 +513,10 @@ class RiskAggregator:
         upload_evidence = max(number("cloud_upload_bytes"), number("upload_bytes"), number("large_upload_bytes"), number("cloud_storage_uploads"), number("large_uploads"))
         if upload_evidence > 0 and (number("sensitive_file_access") > 0 or file_burst):
             add_scenario("S4", "HIGH", "Outbound cloud upload correlated with sensitive or unusual file access")
+        elif upload_evidence > 0:
+            add_scenario("S4_PRECURSOR", "LOW", "Cloud upload observed; sensitive file correlation is unavailable")
         elif number("file_sharing_site_visits") > 0:
-            add_scenario("S4_PRECURSOR", "LOW", "File-sharing site visit observed; upload evidence is unavailable")
+            add_scenario("S4_PRECURSOR", "LOW", "File-sharing site visit observed; upload activity was not reported")
 
         return scenarios
 

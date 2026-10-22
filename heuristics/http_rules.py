@@ -36,6 +36,15 @@ def detect_http_scenarios(features):
             "confidence": "HIGH",
             "reasons": [f"upload_activity={max(uploads, upload_count):g}", f"sensitive_file_access={sensitive_files:g}", f"file_burst={file_burst}"],
         })
+    elif uploads > 0 or upload_count > 0:
+        detections.append({
+            "scenario": "Cloud Upload Without File Correlation",
+            "scenario_id": "S4_PRECURSOR",
+            "severity": "LOW",
+            "score": 25,
+            "confidence": "MEDIUM",
+            "reasons": [f"upload_activity={max(uploads, upload_count):g}; sensitive-file correlation unavailable"],
+        })
     elif sharing_visits > 0:
         detections.append({
             "scenario": "File-Sharing Site Visit",
@@ -43,7 +52,7 @@ def detect_http_scenarios(features):
             "severity": "LOW",
             "score": 10,
             "confidence": "LOW",
-            "reasons": [f"file_sharing_site_visits={sharing_visits:g}; no upload evidence"],
+            "reasons": [f"file_sharing_site_visits={sharing_visits:g}; upload activity was not reported"],
         })
 
     return detections

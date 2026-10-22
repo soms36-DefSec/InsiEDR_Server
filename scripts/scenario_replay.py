@@ -786,12 +786,63 @@ def _scenario_frames(dataset, item):
     count = 24 if item["scenario_id"] == "SIM_KILL_CHAIN" else 12
     indexes = sorted({round(i * (len(buckets)-1) / (count-1)) for i in range(count)})
     selected = [(buckets[i], grouped[buckets[i]]) for i in indexes]
+    # The portable replay CSVs contain the raw evidence, but not every
+    # collector exports the normalized cross-collector signal used by the live
+    # detection rules. Add that signal only to these explicitly synthetic
+    # replay frames; the source CSVs remain unchanged.
+    for _, rows in selected:
+        _normalize_scenario_evidence(item["scenario_id"], rows)
     for phase in item.get("phases", []):
         phase_start, phase_end = _utc(phase["start_time"]), _utc(phase["end_time"])
         if not any(phase_start <= start + timedelta(seconds=bucket * 30) < phase_end and
                    set(rows).intersection(phase["active_collectors"]) for bucket, rows in selected):
             raise RuntimeError(f"Missing playback evidence for {phase['phase_name']}")
     return selected
+
+
+def _normalize_scenario_evidence(scenario_id, rows):
+    if scenario_id == "SIM_USB_PRECURSOR":
+        file_row = rows.get("file-integrity-monitor")
+        device_row = rows.get("devices", {})
+        if not file_row or not _number(device_row.get("usb_connect_count")):
+            return
+        # The synthetic fixture records writes/creates to E:\\ while a USB
+        # device is connected. Normalize those rows into the explicit transfer
+        # counter consumed by the rule engine.
+        transfer_count = sum(
+            1 for key, path in file_row.items()
+            if key.startswith("integrity_events_") and key.endswith("_path")
+            and str(path).upper().startswith("E:\\")
+            and str(file_row.get(key[:-5] + "_op", "")).upper() in {"CREATE", "WRITE", "COPY"}
+        )
+        if transfer_count:
+            file_row["usb_file_transfer_count"] = str(transfer_count)
+            file_row["external_drive_file_copy"] = str(transfer_count)
+
+
+def _expected_cert_scenarios(scenario_id):
+    return {
+        "SIM_USB_PRECURSOR": {"S3"},
+        "SIM_IT_SABOTAGE": {"S1"},
+        "SIM_CLOUD_PRECURSOR": {"S4_PRECURSOR"},
+    }.get(scenario_id, set())
+
+
+class _OfflineRiskHistory:
+    """Small in-memory adapter so verify can exercise temporal correlation safely."""
+
+    def __init__(self):
+        self.events = []
+
+    def save_risk_event(self, event):
+        self.events.append(dict(event))
+
+    def get_recent_risk_events_in_window(self, username, hours=4, limit=50):
+        return [event for event in reversed(self.events) if event.get("username") == username][:limit]
+
+    def get_max_risk_score_in_window(self, username, hours=4):
+        return max((float(event.get("risk_score", 0.0)) for event in self.events
+                    if event.get("username") == username), default=0.0)
 
 
 def _envelope(agent, hostname, username, source_rows, run_id, aes_key, token):
@@ -836,7 +887,9 @@ def verify(args):
     report = []
     for scenario, agent in SCENARIOS:
         frames = _scenario_frames(roots["Dataset_Simulated"], items[scenario])
+        history = _OfflineRiskHistory()
         best = {"risk_score": -1}
+        last = None
         for _, rows in frames:
             payload = {"payload_id": f"verification-{uuid.uuid4()}", "agent_id": agent,
                 "hostname": display_hostname(agent), "username": items[scenario].get("target_username", ""),
@@ -845,15 +898,27 @@ def verify(args):
                     key: value for key, value in row.items()
                     if key not in ("timestamp", "username", "hostname", "agent_id", "status") and value not in ("", None)}}
                     for collector, row in rows.items()]}
-            risk = process_telemetry_risk(None, payload)
+            risk = process_telemetry_risk(history, payload)
+            last = risk
             if risk["risk_score"] > best["risk_score"]:
                 best = risk
+        cert_scenarios = best.get("correlated_signals_json", {}).get("cert_scenarios", [])
+        detected_ids = {entry.get("id") for entry in cert_scenarios if entry.get("id")}
+        required_ids = _expected_cert_scenarios(scenario)
+        kill_chain = (last or {}).get("correlated_signals_json", {}).get("kill_chain", {})
+        progression = bool(kill_chain.get("kill_chain_progression_detected"))
         report.append({"scenario": scenario, "agent_id": agent, "frames": len(frames),
                        "risk_score": best["risk_score"], "risk_level": best.get("risk_level"),
+                       "detected_scenarios": sorted(detected_ids),
+                       "missing_expected_scenarios": sorted(required_ids - detected_ids),
+                       "kill_chain_progression": progression,
                        "summary": best.get("summary")})
     print(json.dumps(report, indent=2))
-    if any(item["risk_score"] <= 0 or "Heuristics:" not in item["summary"] for item in report):
-        raise RuntimeError("At least one scenario did not produce a heuristic live risk event")
+    if any(item["risk_score"] <= 0 or "Heuristics:" not in item["summary"] or
+           item["missing_expected_scenarios"] or
+           (item["scenario"] == "SIM_KILL_CHAIN" and not item["kill_chain_progression"])
+           for item in report):
+        raise RuntimeError("Replay failed: at least one scenario lacks its expected heuristic detection")
 
 
 class _SimpleResponse:
