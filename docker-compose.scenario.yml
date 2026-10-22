@@ -60,7 +60,7 @@ services:
       db: {condition: service_healthy}
       clickhouse: {condition: service_healthy}
       redis: {condition: service_started}
-    ports: ["127.0.0.1:5088:5000"]
+    ports: ["0.0.0.0:5088:5000"]
     networks: [scenario]
 
 volumes:
