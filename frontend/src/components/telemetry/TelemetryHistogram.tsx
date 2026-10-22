@@ -3,6 +3,8 @@ import { BarChart3, Activity, Zap, Clock } from 'lucide-react';
 import type { TelemetryHistogramBucket } from '../../types/telemetry';
 import { fetchTelemetryHistogram } from '../../services/api';
 
+const HISTOGRAM_REFRESH_INTERVAL_MS = 5 * 60 * 1000;
+
 export interface TelemetryHistogramProps {
   timeRange: string;
   autoRefresh?: boolean;
@@ -65,23 +67,29 @@ export const TelemetryHistogram: React.FC<TelemetryHistogramProps> = ({
   const gradId = useId();
   const [notice, setNotice] = useState<string | null>(null);
   const [generatedAt, setGeneratedAt] = useState<string | null>(null);
+  const lastFilterKey = React.useRef<string | null>(null);
 
   useEffect(() => {
     let active = true;
     let timer: number | undefined;
     const abort = new AbortController();
-    setBuckets([]);
-    setTotalEvents(null);
-    setGeneratedAt(null);
+    const requestKey = JSON.stringify([timeRange, activeCollector, statusFilter, agentId, startTime, endTime]);
+    const changedFilters = lastFilterKey.current !== requestKey;
+    lastFilterKey.current = requestKey;
+    if (changedFilters) {
+      setBuckets([]);
+      setTotalEvents(null);
+      setGeneratedAt(null);
+    }
     setNotice(null);
     const refresh = async () => {
       if (!active) return;
       if (document.visibilityState !== 'visible') {
-        if (autoRefresh) timer = window.setTimeout(refresh, 15000);
+        if (autoRefresh) timer = window.setTimeout(refresh, HISTOGRAM_REFRESH_INTERVAL_MS);
         return;
       }
-      setIsLoading(true);
-      let nextDelay = 30000;
+      setIsLoading(changedFilters || buckets.length === 0);
+      let nextDelay = HISTOGRAM_REFRESH_INTERVAL_MS;
       try {
         const res = await fetchTelemetryHistogram(timeRange, {
           collector: activeCollector, status: statusFilter, agent_id: agentId,
@@ -94,10 +102,8 @@ export const TelemetryHistogram: React.FC<TelemetryHistogramProps> = ({
         setInterval(res.interval || '1m');
         setGeneratedAt(res.freshness?.generated_at ?? new Date().toISOString());
         setNotice(res.freshness?.stale ? 'Showing the last successful chart; refreshing.' : null);
-        if (res.freshness?.stale) nextDelay = 15000;
       } catch {
         if (active) setNotice('Chart refresh delayed. Retrying automatically.');
-        nextDelay = 15000;
       } finally {
         if (active) {
           setIsLoading(false);

@@ -326,7 +326,9 @@ class ServerConfig:
 
     @property
     def telemetry_read_backend(self) -> str:
-        default_backend = "clickhouse" if self.clickhouse_enabled else "postgres"
+        # PostgreSQL is authoritative for acknowledged telemetry. ClickHouse
+        # is an asynchronous analytics replica and can lag behind ingestion.
+        default_backend = "postgres"
         return os.environ.get('INSIEDR_TELEMETRY_READ_BACKEND', default_backend).strip().lower()
 
     @property

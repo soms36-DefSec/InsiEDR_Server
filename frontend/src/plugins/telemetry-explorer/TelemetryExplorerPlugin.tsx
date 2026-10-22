@@ -97,9 +97,14 @@ export const TelemetryExplorerPlugin: React.FC<TelemetryExplorerPluginProps> = (
   const [debouncedSearch, setDebouncedSearch] = useState('');
   const [searchScope, setSearchScope] = useState<'metadata' | 'payload'>('metadata');
   const [loadError, setLoadError] = useState<string | null>(null);
+  const [liveUpdatesEnabled, setLiveUpdatesEnabled] = useState(false);
+  const [histogramRefreshVersion, setHistogramRefreshVersion] = useState(0);
+  const [pendingTelemetryUpdates, setPendingTelemetryUpdates] = useState(0);
   const request = useRef<AbortController | null>(null);
   const queuedRefresh = useRef(false);
   const scheduleRefresh = useRef<() => void>(() => {});
+  const telemetryUpdateSequence = useRef(0);
+  const loadedTelemetrySequence = useRef(0);
   const pageCursors = useRef<(string | undefined)[]>([undefined]);
   const queryStart = useRef<string | undefined>(undefined);
   const displayedQuery = useRef('');
@@ -131,6 +136,7 @@ export const TelemetryExplorerPlugin: React.FC<TelemetryExplorerPluginProps> = (
   const loadLogs = useCallback(
     async (pageToLoad = 1, currentSize = pageSize, background = false) => {
       if (background && request.current) { queuedRefresh.current = true; return; }
+      const updateSequenceAtRequestStart = telemetryUpdateSequence.current;
       const key = JSON.stringify([activeCollector, debouncedSearch, statusFilter, timeRange, currentSize, searchScope]);
       if (displayedQuery.current !== key) {
         setLogs([]);
@@ -201,6 +207,10 @@ export const TelemetryExplorerPlugin: React.FC<TelemetryExplorerPluginProps> = (
         setSource(sourceVal);
         setLoadError(null);
         setLastUpdated(new Date());
+        if (pageToLoad === 1) {
+          loadedTelemetrySequence.current = updateSequenceAtRequestStart;
+          setPendingTelemetryUpdates(Math.max(0, telemetryUpdateSequence.current - updateSequenceAtRequestStart));
+        }
       } catch (error) {
         if (!abort.signal.aborted) {
           const errMsg = error instanceof Error ? error.message : 'Could not load telemetry';
@@ -217,14 +227,23 @@ export const TelemetryExplorerPlugin: React.FC<TelemetryExplorerPluginProps> = (
     }, [activeCollector, debouncedSearch, statusFilter, timeRange, pageSize, searchScope, useExplorerApi]
   );
 
+  // SSE notifications only update this counter. Fetching the new page stays user initiated.
+  useEffect(() => subscribeTelemetry(() => {
+    telemetryUpdateSequence.current += 1;
+    setPendingTelemetryUpdates(Math.max(
+      0,
+      telemetryUpdateSequence.current - loadedTelemetrySequence.current,
+    ));
+  }), []);
+
   useEffect(() => {
     void loadLogs(1, pageSize);
     return () => { request.current?.abort(); request.current = null; queuedRefresh.current = false; };
   }, [loadLogs, pageSize]);
 
   useEffect(() => {
-    if (context.autoRefresh === false || currentPage !== 1 || selectedLog) return;
-    // Immediate refresh on resume/mount if on page 1
+    if (!liveUpdatesEnabled || context.autoRefresh === false || currentPage !== 1 || selectedLog) return;
+    // Live updates are opt-in for this page; the initial page load is handled separately.
     void loadLogs(1, pageSize, true);
 
     let timer: number | undefined;
@@ -233,12 +252,12 @@ export const TelemetryExplorerPlugin: React.FC<TelemetryExplorerPluginProps> = (
       timer = window.setTimeout(() => {
         timer = undefined;
         if (document.visibilityState === 'visible') void loadLogs(1, pageSize, true);
-      }, 500);
+      }, 3000);
     };
     scheduleRefresh.current = schedule;
     const unsubscribe = subscribeTelemetry(schedule);
-    // Active polling interval: 4s when polling fallback, 10s when SSE connected
-    const pollInterval = context.isConnected ? 10000 : 4000;
+    // Keep a slow recovery poll alongside SSE so a missed invalidation is repaired.
+    const pollInterval = context.isConnected ? 60000 : 30000;
     const poll = window.setInterval(schedule, pollInterval);
     const onVisible = () => { if (document.visibilityState === 'visible') schedule(); };
     document.addEventListener('visibilitychange', onVisible);
@@ -250,11 +269,16 @@ export const TelemetryExplorerPlugin: React.FC<TelemetryExplorerPluginProps> = (
       queuedRefresh.current = false;
       scheduleRefresh.current = () => {};
     };
-  }, [context.autoRefresh, context.isConnected, currentPage, pageSize, loadLogs, selectedLog]);
+  }, [liveUpdatesEnabled, context.autoRefresh, context.isConnected, currentPage, pageSize, loadLogs, selectedLog]);
 
   const handlePageSizeChange = (newSize: number) => {
     setPageSize(newSize);
 
+  };
+
+  const handleRefresh = () => {
+    setHistogramRefreshVersion((version) => version + 1);
+    void loadLogs(1, pageSize);
   };
 
   const handleGoToPage = (newPage: number) => {
@@ -338,7 +362,7 @@ export const TelemetryExplorerPlugin: React.FC<TelemetryExplorerPluginProps> = (
       {/* Server-Side Event Frequency Histogram (ClickHouse Aggregation) */}
       <TelemetryHistogram
           autoRefresh={context.autoRefresh}
-        refreshVersion={lastUpdated ? Math.floor(lastUpdated.getTime() / 15000) : undefined}
+        refreshVersion={histogramRefreshVersion}
         timeRange={timeRange}
         activeCollector={activeCollector}
         statusFilter={statusFilter}
@@ -469,24 +493,20 @@ export const TelemetryExplorerPlugin: React.FC<TelemetryExplorerPluginProps> = (
             >
               Collector Dataset
             </Button>
-            {/* Pipeline Polling Toggle Button */}
-            {context.onToggleAutoRefresh && (
+            {/* Page-local live refresh toggle; does not pause ingestion or other dashboard views. */}
+            {
               <Button
-                variant={context.autoRefresh !== false ? 'secondary' : 'primary'}
+                variant={liveUpdatesEnabled ? 'secondary' : 'primary'}
                 size="sm"
-                onClick={context.onToggleAutoRefresh}
-                title={
-                  context.autoRefresh !== false
-                    ? 'Click to pause pipeline and stop receiving new logs'
-                    : 'Click to start pipeline and receive new logs'
-                }
+                onClick={() => setLiveUpdatesEnabled((enabled) => !enabled)}
+                title="Toggle automatic refresh for Telemetry Explorer only"
                 className={
-                  context.autoRefresh !== false
+                  liveUpdatesEnabled
                     ? 'border-emerald-300 bg-emerald-50 text-emerald-900 hover:bg-emerald-100 font-medium'
                     : 'bg-slate-900 text-white hover:bg-slate-800 font-medium'
                 }
                 icon={
-                  context.autoRefresh !== false ? (
+                  liveUpdatesEnabled ? (
                     <span className="relative flex h-2 w-2 mr-0.5">
                       <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75" />
                       <span className="relative inline-flex rounded-full h-2 w-2 bg-emerald-500" />
@@ -496,13 +516,13 @@ export const TelemetryExplorerPlugin: React.FC<TelemetryExplorerPluginProps> = (
                   )
                 }
               >
-                {context.autoRefresh !== false ? 'Pipeline: Receiving' : 'Pipeline: Paused'}
+                {liveUpdatesEnabled ? 'Live updates: On' : 'Live updates: Off'}
               </Button>
-            )}
+            }
             <Button
               variant="secondary"
               size="sm"
-              onClick={() => loadLogs(1, pageSize)}
+              onClick={handleRefresh}
               disabled={isLoading}
               icon={<RefreshCw className={`w-3.5 h-3.5 ${isLoading || isRefreshing ? 'animate-spin' : ''}`} />}
             >
@@ -594,14 +614,29 @@ export const TelemetryExplorerPlugin: React.FC<TelemetryExplorerPluginProps> = (
       </div>
 
       {/* Virtualized Table */}
-      <VirtualizedLogTable
-        logs={filteredLogs}
-        resetKey={`${activeCollector}:${debouncedSearch}:${statusFilter}:${timeRange}:${currentPage}:${pageSize}`}
-        onSelectLog={(log) => setSelectedLog(log)}
-        isLoading={isLoading}
-        error={loadError}
-        onRetry={() => loadLogs(currentPage, pageSize)}
-      />
+      <div className="relative">
+        {pendingTelemetryUpdates > 0 && (
+          <div className="absolute z-20 left-1/2 top-0 -translate-x-1/2 -translate-y-1/2">
+            <button
+              type="button"
+              onClick={handleRefresh}
+              aria-label={`${pendingTelemetryUpdates} new telemetry updates. Refresh logs.`}
+              title="Count reflects incoming telemetry notifications; one update may contain multiple log rows."
+              className="rounded-full border border-blue-300 bg-blue-600 px-4 py-2 text-xs font-semibold text-white shadow-lg hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2"
+            >
+              ↑ {pendingTelemetryUpdates} new {pendingTelemetryUpdates === 1 ? 'update' : 'updates'} — click to load
+            </button>
+          </div>
+        )}
+        <VirtualizedLogTable
+          logs={filteredLogs}
+          resetKey={`${activeCollector}:${debouncedSearch}:${statusFilter}:${timeRange}:${currentPage}:${pageSize}`}
+          onSelectLog={(log) => setSelectedLog(log)}
+          isLoading={isLoading}
+          error={loadError}
+          onRetry={() => loadLogs(currentPage, pageSize)}
+        />
+      </div>
 
       {/* Interactive Pagination Bar */}
       <div className="bg-white border border-slate-200 rounded-lg p-3.5 flex flex-wrap items-center justify-between gap-4 shadow-2xs text-xs">
