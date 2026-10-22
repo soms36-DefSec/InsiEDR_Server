@@ -999,6 +999,29 @@ def play(args):
         raise ValueError("Replay endpoint must be the main backend Compose service")
     stop_file = output / "stop"
     stop_file.unlink(missing_ok=True)
+    progress_path = output / "progress.json"
+    progress = {}
+    if progress_path.is_file():
+        try:
+            saved_progress = json.loads(progress_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as exc:
+            raise RuntimeError(f"Replay progress file is unreadable: {progress_path}") from exc
+        if not isinstance(saved_progress, dict):
+            raise RuntimeError(f"Replay progress file has an invalid format: {progress_path}")
+        if isinstance(saved_progress.get("scenarios"), dict):
+            progress = saved_progress["scenarios"]
+        elif saved_progress.get("scenario"):
+            # Migrate the single-frame checkpoint written by earlier versions.
+            progress[saved_progress["scenario"]] = {
+                "agent_id": saved_progress.get("agent_id"),
+                "last_frame": saved_progress.get("frame"),
+                "confirmed": bool(saved_progress.get("confirmed", False)),
+            }
+
+    def save_progress() -> None:
+        progress_path.write_text(json.dumps({"run_id": args.run_id, "scenarios": progress}, indent=2),
+                                 encoding="utf-8")
+
     with _ReplayHttpClient(timeout=30) as client:
         operator_key = os.environ["INSIEDR_OPERATOR_API_KEY"]
         preflight = client.get(base_url + "/api/v1/detection/ml/scenario/hosts",
@@ -1006,14 +1029,29 @@ def play(args):
         preflight.raise_for_status()
         if preflight.json().get("run_id") != args.run_id:
             raise RuntimeError("Website is not serving the prepared scenario run")
+
         for scenario, source_agent in SCENARIOS:
             if args.scenario and args.scenario != scenario:
                 continue
             agent = target_agent(source_agent, args)
+            scenario_progress = progress.get(scenario, {})
+            if scenario_progress.get("agent_id") == agent and scenario_progress.get("confirmed"):
+                print(f"{agent} {scenario} already confirmed; skipping", flush=True)
+                continue
+            if scenario_progress.get("agent_id") != agent:
+                scenario_progress = {"agent_id": agent, "last_frame": None, "confirmed": False}
+                progress[scenario] = scenario_progress
             item = items[scenario]
             frames = _scenario_frames(roots["Dataset_Simulated"], item)
             started_at = datetime.now(timezone.utc)
-            for bucket, rows in frames:
+            last_frame = scenario_progress.get("last_frame")
+            frames_to_send = [(bucket, rows) for bucket, rows in frames
+                              if last_frame is None or bucket > last_frame]
+            # If all frames were accepted but live confirmation timed out, send the
+            # last frame again with a fresh payload ID to trigger a new confirmation.
+            if not frames_to_send and frames:
+                frames_to_send = [frames[-1]]
+            for bucket, rows in frames_to_send:
                 if stop_file.exists():
                     print("Playback stopped")
                     return
@@ -1022,13 +1060,32 @@ def play(args):
                 # The runner is on the private Compose network; the public
                 # HTTPS hop terminates at the main Nginx proxy.
                 headers["X-Forwarded-Proto"] = "https"
-                response = client.post(base_url + "/api/logs", json=envelope, headers=headers)
+                for attempt in range(5):
+                    response = client.post(base_url + "/api/logs", json=envelope, headers=headers)
+                    if response.status_code != 503:
+                        break
+                    detail = getattr(response, "text", None)
+                    if detail is None:
+                        detail = response.content.decode("utf-8", errors="replace")
+                    if attempt == 4:
+                        raise RuntimeError(
+                            f"Ingest returned HTTP 503 for {agent} {scenario} frame {bucket} "
+                            f"after 5 attempts: {detail[:300]}"
+                        )
+                    delay = min(0.5 * (2 ** attempt), 4.0)
+                    print(f"{agent} {scenario} frame={bucket} got HTTP 503; "
+                          f"retrying in {delay:g}s ({attempt + 1}/5): {detail[:200]}", flush=True)
+                    time.sleep(delay)
                 response.raise_for_status()
                 if response.status_code != 202:
-                    raise RuntimeError(f"Ingest did not accept {agent} frame {bucket}")
-                (output / "progress.json").write_text(json.dumps({"scenario": scenario,
-                    "agent_id": agent, "frame": bucket, "sent_at": datetime.now(timezone.utc).isoformat()}),
-                    encoding="utf-8")
+                    detail = getattr(response, "text", None)
+                    if detail is None:
+                        detail = response.content.decode("utf-8", errors="replace")
+                    raise RuntimeError(f"Ingest returned HTTP {response.status_code} for {agent} "
+                                       f"frame {bucket}: {detail[:300]}")
+                scenario_progress.update({"last_frame": bucket, "confirmed": False,
+                                          "sent_at": datetime.now(timezone.utc).isoformat()})
+                save_progress()
                 print(f"{agent} {scenario} frame={bucket} accepted", flush=True)
                 time.sleep(args.interval)
             deadline = time.monotonic() + 45
@@ -1045,6 +1102,9 @@ def play(args):
                 if (host and (host.get("live_peak_risk_score") or 0) > 0 and event_at and
                         event_at >= started_at and explorer_response.json().get("events")):
                     print(f"{agent} confirmed: searchable collector event and live risk={host['live_risk_score']}", flush=True)
+                    scenario_progress.update({"confirmed": True,
+                                              "confirmed_at": datetime.now(timezone.utc).isoformat()})
+                    save_progress()
                     break
                 if time.monotonic() >= deadline:
                     raise RuntimeError(f"Live ingestion verification failed for {agent}")
