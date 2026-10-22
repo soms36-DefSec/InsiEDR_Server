@@ -1092,12 +1092,26 @@ def play(args):
             while True:
                 host_response = client.get(base_url + "/api/v1/detection/ml/scenario/hosts",
                     headers={"X-Operator-Key": operator_key})
+                if host_response.status_code == 503:
+                    if time.monotonic() >= deadline:
+                        raise RuntimeError(f"Live ingestion verification stayed busy for {agent} (hosts endpoint)")
+                    print(f"{agent} confirmation check got HTTP 503 from hosts endpoint; retrying in 2s",
+                          flush=True)
+                    time.sleep(2)
+                    continue
                 host_response.raise_for_status()
                 host = next((entry for entry in host_response.json()["hosts"] if entry["agent_id"] == agent), None)
                 event_at = _utc(host["live_at"]) if host and host.get("live_at") else None
                 explorer_response = client.get(base_url + "/api/v1/telemetry/explorer",
                     params={"agent_id": agent, "start_time": started_at.isoformat(), "limit": 1},
                     headers={"X-Operator-Key": operator_key})
+                if explorer_response.status_code == 503:
+                    if time.monotonic() >= deadline:
+                        raise RuntimeError(f"Live ingestion verification stayed busy for {agent} (explorer endpoint)")
+                    print(f"{agent} confirmation check got HTTP 503 from explorer endpoint; retrying in 2s",
+                          flush=True)
+                    time.sleep(2)
+                    continue
                 explorer_response.raise_for_status()
                 if (host and (host.get("live_peak_risk_score") or 0) > 0 and event_at and
                         event_at >= started_at and explorer_response.json().get("events")):
