@@ -134,7 +134,7 @@ export function ReviewQueuePlugin(_props: PluginProps) {
   return <div className="space-y-5 text-slate-900">
     <div className="rounded-lg border border-slate-200 bg-white p-5">
       <div className="flex flex-wrap items-center justify-between gap-3">
-        <div><h2 className="text-lg font-semibold">Model V3 host review queue</h2>
+        <div><h2 className="text-lg font-semibold">Risk Review</h2>
           <p className="text-sm text-slate-600">Read-only shadow scoring. Candidates describe host behavior and require forensic review.</p></div>
         <button className="rounded border px-3 py-2 text-sm" onClick={() => void loadQueue().catch((reason) => setError(String(reason)))}>Refresh</button>
       </div>

@@ -46,7 +46,7 @@ export function initializePlugins(): void {
 
   pluginRegistry.register({
     id: 'review-queue',
-    name: 'Model V3 Review Queue',
+    name: 'Risk Review',
     description: 'Host-scoped shadow reviews, warmup, and analyst feedback',
     icon: ListOrdered,
     component: ReviewQueuePlugin,

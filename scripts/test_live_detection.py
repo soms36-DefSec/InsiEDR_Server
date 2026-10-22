@@ -13,8 +13,9 @@ from pathlib import Path
 
 # Add project root to sys.path
 ROOT = Path(__file__).resolve().parents[1]
-if str(ROOT) not in sys.path:
-    sys.path.insert(0, str(ROOT))
+for candidate in ["/app", str(ROOT)]:
+    if candidate not in sys.path and Path(candidate).exists():
+        sys.path.insert(0, candidate)
 
 from server.db import get_storage
 from server.risk.pipeline import process_telemetry_risk
