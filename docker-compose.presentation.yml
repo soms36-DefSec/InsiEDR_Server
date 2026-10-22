@@ -1,6 +1,0 @@
-# Use only with docker-compose.yml when the main URL should show the isolated
-# scenario website. No scenario data is copied into the normal product DB.
-services:
-  nginx:
-    environment:
-      INSIEDR_PRESENTATION_MODE: "true"

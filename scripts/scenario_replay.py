@@ -1,7 +1,8 @@
-"""Prepare Model V3 scenario histories and replay dataset collector events.
+"""Prepare and replay provenance-tagged dataset events in the main deployment.
 
-This command is restricted to an explicitly enabled, isolated staging instance.
-It never writes synthetic rows to the observed daily40 or Model V3 tables.
+This command requires an explicit main-presentation opt-in, uses authenticated
+ingestion, and keeps Model V3 in shadow mode. Synthetic history remains marked
+as synthetic and never changes live alert severity.
 """
 from __future__ import annotations
 
@@ -55,14 +56,12 @@ DISPLAY_HOSTNAMES.update({agent: f"CONTROL-{index:02d}"
 
 
 def display_hostname(agent: str) -> str:
-    """Stable endpoint label for the isolated replay; dataset agent ID stays intact."""
+    """Stable employee label for the main deployment; source IDs stay in provenance."""
     return DISPLAY_HOSTNAMES.get(agent, agent.removeprefix("AGENT-"))
 
 
 def target_agent(source_agent: str, args) -> str:
-    if args.target == "main":
-        return MAIN_AGENT_IDS.get(source_agent, MAIN_CONTROL_IDS.get(source_agent, source_agent))
-    return source_agent
+    return MAIN_AGENT_IDS.get(source_agent, MAIN_CONTROL_IDS.get(source_agent, source_agent))
 COLLECTOR_FIELDS = {
     "logon": {
         "successful_logons": "successful_logons", "failed_logons": "failed_logons",
@@ -167,69 +166,18 @@ CREATE TABLE IF NOT EXISTS scenario_replay.host_rankings (
 
 
 def _guard(args) -> None:
-    if args.target == "main":
-        if os.environ.get("INSIEDR_MAIN_PRESENTATION_ENABLED") != "true":
-            raise RuntimeError("Main replay requires INSIEDR_MAIN_PRESENTATION_ENABLED=true")
-        if config.enable_model_pipeline or not config.agent_auth_enforced:
-            raise RuntimeError("Main replay requires shadow Model V3 and authenticated agent ingestion")
-        dsn = urlparse(config.database_dsn or "")
-        if (dsn.hostname != "db" or not dsn.path.lstrip("/")
-                or dsn.path.lstrip("/").endswith("_scenario")
-                or config.clickhouse_host != "clickhouse"
-                or config.clickhouse_db.endswith("_scenario")):
-            raise RuntimeError("Main replay must run inside the main backend Compose network")
-        return
-    if config.environment != "staging" or os.environ.get("INSIEDR_SCENARIO_REPLAY_ENABLED") != "true":
-        raise RuntimeError("Scenario replay requires staging and INSIEDR_SCENARIO_REPLAY_ENABLED=true")
+    if os.environ.get("INSIEDR_MAIN_PRESENTATION_ENABLED") != "true":
+        raise RuntimeError("Main replay requires INSIEDR_MAIN_PRESENTATION_ENABLED=true")
     if config.enable_model_pipeline:
         raise RuntimeError("Model V3 must remain in shadow mode")
     if not config.agent_auth_enforced:
         raise RuntimeError("Authenticated agent ingestion must be enforced")
-    dsn = config.database_dsn or ""
-    if not urlparse(dsn).path.lstrip("/").endswith("_scenario"):
-        raise RuntimeError("Staging PostgreSQL database name must end in _scenario")
-    if urlparse(dsn).hostname not in ("127.0.0.1", "localhost"):
-        raise RuntimeError("Replay CLI must connect only to the local isolated mirror")
-    if config.clickhouse_host not in ("127.0.0.1", "localhost"):
-        raise RuntimeError("Replay CLI ClickHouse must be local")
-    if not config.clickhouse_db.endswith("_scenario"):
-        raise RuntimeError("ClickHouse database name must end in _scenario")
-
-
-def init_env(args):
-    path = Path(args.env_file).resolve()
-    if path.exists():
-        raise FileExistsError(path)
-    agents = {agent: secrets.token_hex(24) for _, agent in SCENARIOS}
-    pg_password, ch_password, redis_password = (secrets.token_hex(24) for _ in range(3))
-    aes_key = secrets.token_hex(32)
-    lines = {
-        "INSIEDR_ENVIRONMENT": "staging",
-        "INSIEDR_SCENARIO_REPLAY_ENABLED": "true",
-        "INSIEDR_ENABLE_MODEL_PIPELINE": "false",
-        "INSIEDR_AUTH_ENFORCED": "false",
-        "INSIEDR_AGENT_AUTH_ENFORCED": "true",
-        "INSIEDR_OPERATOR_API_KEY": secrets.token_hex(24),
-        "INSIEDR_AGENT_TOKENS": json.dumps(agents, separators=(",", ":")),
-        "INSIEDR_SCENARIO_AGENT_TOKENS": json.dumps(agents, separators=(",", ":")),
-        "INSIEDR_AES_KEY": aes_key,
-        "INSIEDR_SCENARIO_AES_KEY": aes_key,
-        "POSTGRES_USER": "insiedr_scenario",
-        "POSTGRES_DB": "insiedr_scenario",
-        "POSTGRES_PASSWORD": pg_password,
-        "INSIEDR_DATABASE_DSN": f"postgresql://insiedr_scenario:{pg_password}@127.0.0.1:15432/insiedr_scenario",
-        "CLICKHOUSE_USER": "scenario",
-        "CLICKHOUSE_DB": "insiedr_scenario",
-        "CLICKHOUSE_PASSWORD": ch_password,
-        "INSIEDR_CLICKHOUSE_HOST": "127.0.0.1",
-        "INSIEDR_CLICKHOUSE_PORT": "18123",
-        "INSIEDR_CLICKHOUSE_USER": "scenario",
-        "INSIEDR_CLICKHOUSE_DB": "insiedr_scenario",
-        "INSIEDR_CLICKHOUSE_PASSWORD": ch_password,
-        "REDIS_PASSWORD": redis_password,
-    }
-    path.write_text("\n".join(f"{key}={value}" for key, value in lines.items()) + "\n", encoding="utf-8")
-    print(f"Created {path}; keep it private. Operator key is in this file.")
+    dsn = urlparse(config.database_dsn or "")
+    if (dsn.hostname != "db" or not dsn.path.lstrip("/")
+            or dsn.path.lstrip("/").endswith("_scenario")
+            or config.clickhouse_host != "clickhouse"
+            or config.clickhouse_db.endswith("_scenario")):
+        raise RuntimeError("Replay must run inside the main backend Compose network")
 
 
 def install_main_tokens(args):
@@ -282,7 +230,7 @@ def install_main_tokens(args):
 def _load_env(path, *, preserve_existing=False):
     env_file = Path(path)
     if not env_file.is_file():
-        raise FileNotFoundError(f"Run init-env first: {env_file}")
+        raise FileNotFoundError(f"Main deployment environment file not found: {env_file}")
     for line in env_file.read_text(encoding="utf-8").splitlines():
         if line and not line.lstrip().startswith("#"):
             key, sep, value = line.partition("=")
@@ -547,13 +495,6 @@ def _backfill(run_id, start, days, snapshots, dataset_name,
                         "ON CONFLICT (agent_id) DO NOTHING", (agent, display_hostname(source_agent),
                         scenario_items[scenario].get("target_username", ""), start,
                         start + timedelta(days=days - 1)))
-        if args.target != "main":
-            for source_agent in CONTROL_AGENTS:
-                agent = target_agent(source_agent, args)
-                cur.execute("INSERT INTO agents (agent_id, hostname, first_seen_at, last_seen_at, status) "
-                            "VALUES (%s,%s,%s,%s,'offline') ON CONFLICT (agent_id) DO NOTHING",
-                            (agent, display_hostname(source_agent), start,
-                             start + timedelta(days=days - 1)))
     return {"collector_rows": len(rows), "explorer_rows": len(explorer_rows),
             "computed_historical_risk_events": len(risk_rows)}
 
@@ -978,7 +919,6 @@ class _ReplayHttpClient:
 
 def play(args):
     _guard(args)
-    from shared.crypto_utils import normalize_aes_key
     roots = _dataset_roots(args)
     output = Path(args.output_root).resolve() / args.run_id
     manifest_path = output / "run.json"
@@ -987,13 +927,11 @@ def play(args):
     manifest = json.loads((roots["Dataset_Simulated_Harmonized"] / "simulation_manifest.json").read_text(encoding="utf-8"))
     items = {item["scenario_id"]: item for item in manifest["scenarios"]}
     tokens = json.loads(os.environ["INSIEDR_SCENARIO_AGENT_TOKENS"])
-    key = (config.load_aes_key() if args.target == "main" else
-           normalize_aes_key(os.environ["INSIEDR_SCENARIO_AES_KEY"]))
+    key = config.load_aes_key()
     base_url = args.server_url.rstrip("/")
-    allowed_urls = ("http://backend:5000", "http://127.0.0.1:5000") if args.target == "main" else (
-        "http://127.0.0.1:5088", "http://localhost:5088")
+    allowed_urls = ("http://backend:5000", "http://127.0.0.1:5000")
     if base_url not in allowed_urls:
-        raise ValueError("Replay endpoint does not match the selected Compose target")
+        raise ValueError("Replay endpoint must be the main backend Compose service")
     stop_file = output / "stop"
     stop_file.unlink(missing_ok=True)
     with _ReplayHttpClient(timeout=30) as client:
@@ -1016,10 +954,9 @@ def play(args):
                     return
                 envelope, headers = _envelope(agent, display_hostname(source_agent), item.get("target_username", ""), rows,
                     args.run_id, key, tokens[agent])
-                if args.target == "main":
-                    # The runner is on the private Compose network; the public
-                    # HTTPS hop terminates at the main Nginx proxy.
-                    headers["X-Forwarded-Proto"] = "https"
+                # The runner is on the private Compose network; the public
+                # HTTPS hop terminates at the main Nginx proxy.
+                headers["X-Forwarded-Proto"] = "https"
                 response = client.post(base_url + "/api/logs", json=envelope, headers=headers)
                 response.raise_for_status()
                 if response.status_code != 202:
@@ -1070,28 +1007,11 @@ def stop(args):
     print("Stop requested")
 
 
-def reset(args):
-    _guard(args)
-    if args.target == "main":
-        raise RuntimeError("Reset is forbidden on the main database")
-    run_id = args.run_id
-    if not run_id:
-        raise ValueError("reset requires --run-id")
-    output = Path(args.output_root).resolve() / run_id
-    if not (output / "run.json").is_file():
-        raise FileNotFoundError(output / "run.json")
-    subprocess.run(("docker", "compose", "--env-file", str(Path(args.env_file).resolve()),
-                    "-f", str(ROOT / "docker-compose.scenario.yml"), "down", "--volumes"),
-                   cwd=ROOT, check=True)
-    (output / "reset.json").write_text(json.dumps({"reset_at": datetime.now(timezone.utc).isoformat(),
-        "run_id": run_id, "isolated_volumes_removed": True}), encoding="utf-8")
-    print("Isolated PostgreSQL, ClickHouse, and Redis volumes removed. Local run artifacts retained for audit.")
-
-
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("command", choices=("init-env", "install-main-tokens", "preview", "verify", "prepare", "expand-fleet", "play-fleet", "play", "status", "stop", "reset"))
-    parser.add_argument("--target", choices=("scenario", "main"), default="scenario")
+    parser.add_argument("command", choices=("install-main-tokens", "preview", "verify", "prepare", "play", "status", "stop"))
+    parser.add_argument("--target", choices=("main",), default="main",
+                        help="Main deployment is the only supported replay target")
     parser.add_argument("--env-file")
     parser.add_argument("--dataset-root", default=r"D:\Projects\AISH")
     parser.add_argument("--output-root", default=str(ROOT / "data" / "scenario_replay"))
@@ -1102,27 +1022,20 @@ def main():
     parser.add_argument("--days", type=int, default=22)
     parser.add_argument("--fleet-size", type=int, default=200)
     parser.add_argument("--scenario", choices=[name for name, _ in SCENARIOS])
-    parser.add_argument("--server-url", default="http://127.0.0.1:5088")
+    parser.add_argument("--server-url", default="http://backend:5000")
     parser.add_argument("--interval", type=float, default=5.0)
     args = parser.parse_args()
     if args.env_file is None:
-        args.env_file = str(ROOT / (".env" if args.target == "main" else ".env.scenario"))
-    if args.target == "main" and args.server_url == "http://127.0.0.1:5088":
-        args.server_url = "http://backend:5000"
+        args.env_file = str(ROOT / ".env")
     if args.interval < 0:
         parser.error("--interval must be nonnegative")
-    if args.command in ("expand-fleet", "play-fleet", "play", "status", "stop", "reset") and not args.run_id:
+    if args.command in ("play", "status", "stop") and not args.run_id:
         parser.error(f"{args.command} requires --run-id")
     if args.run_id and not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]{0,63}", args.run_id):
         parser.error("--run-id must be 1-64 letters, digits, underscores, or hyphens")
-    if args.command == "init-env":
-        if args.target != "scenario":
-            parser.error("init-env is only for the isolated scenario stack")
-        init_env(args)
-    else:
-        if not (args.command == "preview" and args.target == "main"):
-            _load_env(args.env_file, preserve_existing=args.target == "main")
-        globals()[args.command.replace("-", "_")](args)
+    if not (args.command == "preview"):
+        _load_env(args.env_file, preserve_existing=True)
+    globals()[args.command.replace("-", "_")](args)
 
 
 if __name__ == "__main__":

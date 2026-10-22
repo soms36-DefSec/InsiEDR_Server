@@ -5,12 +5,11 @@ authenticated ingestion API. Model V3 scores are produced by the frozen model;
 this wrapper does not insert preset risk scores or change alert severity.
 
 Usage:
-    python scripts/simulate_all_scenarios.py --mode run --target main
-    python scripts/simulate_all_scenarios.py --mode run --target scenario
-    python scripts/simulate_all_scenarios.py --mode clean --target scenario
+    python scripts/simulate_all_scenarios.py --mode run
 
 The dataset currently contains seven attack scenarios. Main-target playback
-adds synthetic records to the main database and has no destructive clean mode.
+adds synthetic records to the main database. Main data cleanup is intentionally
+not offered by this demo script.
 """
 from __future__ import annotations
 
@@ -26,9 +25,7 @@ import sys
 
 ROOT = Path(__file__).resolve().parents[1]
 REPLAY = ROOT / "scripts" / "scenario_replay.py"
-ENV_FILE = ROOT / ".env.scenario"
 MAIN_ENV_FILE = ROOT / ".env"
-COMPOSE_FILE = ROOT / "docker-compose.scenario.yml"
 MAIN_COMPOSE_FILE = ROOT / "docker-compose.yml"
 OUTPUT_ROOT = ROOT / "data" / "scenario_replay"
 LATEST_RUN_FILE = OUTPUT_ROOT / "simulate_all_scenarios_latest.json"
@@ -39,10 +36,6 @@ MAIN_AS_OF = "2026-10-21"
 def _run(command: list[str], *, cwd: Path = ROOT) -> None:
     print("\n> " + subprocess.list2cmdline(command), flush=True)
     subprocess.run(command, cwd=cwd, check=True)
-
-
-def _replay(*args: str) -> None:
-    _run([sys.executable, str(REPLAY), *args])
 
 
 def _main_replay(*args: str) -> None:
@@ -64,30 +57,7 @@ def run_simulation(args: argparse.Namespace) -> None:
     run_id = args.run_id or datetime.now(timezone.utc).strftime("demo-%Y%m%d-%H%M%S")
     _validate_run_id(run_id)
 
-    if args.target == "main":
-        run_main_simulation(args, run_id)
-        return
-
-    if not ENV_FILE.is_file():
-        _replay("init-env", "--target", "scenario", "--env-file", str(ENV_FILE))
-
-    _run(["docker", "compose", "--env-file", str(ENV_FILE), "-f", str(COMPOSE_FILE),
-          "up", "-d", "--build"])
-
-    common = ["--target", "scenario", "--env-file", str(ENV_FILE),
-              "--dataset-root", args.dataset_root,
-              "--output-root", str(OUTPUT_ROOT)]
-    _replay("verify", *common)
-    _replay("prepare", *common, "--run-id", run_id, "--days", str(args.days))
-
-    OUTPUT_ROOT.mkdir(parents=True, exist_ok=True)
-    temporary = LATEST_RUN_FILE.with_suffix(".tmp")
-    temporary.write_text(json.dumps({"run_id": run_id}, indent=2) + "\n", encoding="utf-8")
-    os.replace(temporary, LATEST_RUN_FILE)
-
-    _replay("play", *common, "--run-id", run_id, "--interval", str(args.interval),
-            "--server-url", "http://127.0.0.1:5088")
-    print("\nReplay complete. Open the isolated dashboard at http://127.0.0.1:5088", flush=True)
+    run_main_simulation(args, run_id)
 
 
 def run_main_simulation(args: argparse.Namespace, run_id: str) -> None:
@@ -135,54 +105,22 @@ def run_main_simulation(args: argparse.Namespace, run_id: str) -> None:
           flush=True)
 
 
-def clean_simulation() -> None:
-    if not ENV_FILE.is_file():
-        raise FileNotFoundError(f"Scenario environment not found: {ENV_FILE}")
-    if not LATEST_RUN_FILE.is_file():
-        raise FileNotFoundError(
-            "No run created by this wrapper was found. Refusing to reset the scenario stack."
-        )
-
-    record = json.loads(LATEST_RUN_FILE.read_text(encoding="utf-8"))
-    run_id = record.get("run_id")
-    if not isinstance(run_id, str):
-        raise ValueError(f"Invalid latest-run record: {LATEST_RUN_FILE}")
-    _validate_run_id(run_id)
-    manifest = OUTPUT_ROOT / run_id / "run.json"
-    if not manifest.is_file():
-        raise FileNotFoundError(f"Replay manifest missing; refusing cleanup: {manifest}")
-
-    _replay("reset", "--target", "scenario", "--env-file", str(ENV_FILE),
-            "--output-root", str(OUTPUT_ROOT), "--run-id", run_id)
-    print("Scenario database volumes were reset. Local replay artifacts were retained.", flush=True)
-
-
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--mode", choices=("run", "clean"), required=True)
-    parser.add_argument("--target", choices=("main", "scenario"), default="main",
-                        help="Dashboard target (default: main; clean is supported only for scenario)")
+    parser.add_argument("--mode", choices=("run",), required=True,
+                        help="Only the main Docker deployment is supported")
     parser.add_argument("--run-id", help="Optional replay ID (run mode; generated if omitted)")
-    parser.add_argument("--days", type=int,
-                        help="Completed history days (main target requires 60; scenario defaults to 22)")
+    parser.add_argument("--days", type=int, default=60,
+                        help="Completed history days (main frozen preview requires 60)")
     parser.add_argument("--interval", type=float, default=5.0,
                         help="Seconds between live telemetry frames (default: 5)")
-    parser.add_argument("--dataset-root", default=r"D:\Projects\AISH",
-                        help="Folder containing the three scenario dataset folders")
     args = parser.parse_args()
 
-    if args.days is None:
-        args.days = 60 if args.target == "main" else 22
     if args.days < 22 or args.days > 90:
         parser.error("--days must be between 22 and 90")
     if args.interval < 0:
         parser.error("--interval must be nonnegative")
-    if args.mode == "clean":
-        if args.target != "scenario":
-            parser.error("Main dashboard cleanup is disabled to protect production data; use --target scenario")
-        clean_simulation()
-    else:
-        run_simulation(args)
+    run_simulation(args)
 
 
 if __name__ == "__main__":

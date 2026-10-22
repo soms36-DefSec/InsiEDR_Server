@@ -106,17 +106,13 @@ def test_migration_batches_are_bounded_by_bytes():
     assert len(chunks)==5 and all(len(c)==2 for c in chunks)
 
 
-def test_optional_profile_fits_memory_and_has_one_journal_owner():
+def test_main_compose_does_not_enable_ram_telemetry_by_default():
     yaml=pytest.importorskip('yaml')
     root=Path(__file__).resolve().parents[1]
-    profile=yaml.safe_load((root/'docker-compose.ram.yml').read_text())
-    services=profile['services']
-    memory=sum(int(services[s]['mem_limit'][:-1]) for s in ('db','redis','clickhouse','backend','nginx'))
-    assert memory==11776
-    assert (memory+2304+1024)*1024**2<=16_000_000_000
-    command=services['backend']['command']
-    assert command[command.index('--workers')+1]=='1'
-    assert services['backend']['environment']['INSIEDR_V3_CUTOVER_READY'].endswith(':-false}')
+    compose=yaml.safe_load((root/'docker-compose.yml').read_text())
+    backend=compose['services']['backend']
+    environment=backend.get('environment', {})
+    assert environment.get('INSIEDR_RAM_TELEMETRY_ENABLED') not in (True, 'true', '1')
 
 
 class RestorePG(PG):

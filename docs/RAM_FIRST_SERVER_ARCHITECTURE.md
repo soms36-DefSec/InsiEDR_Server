@@ -12,12 +12,14 @@ headers, encrypted envelope format, POST endpoints, HTTP 202 body, and agent ret
 behavior remain unchanged. No collection-interval commands are sent to agents.
 Existing operator RBAC is global; this change does not claim tenant isolation.
 
-The default deployment retains its PostgreSQL transactional-outbox ingestion.
-The optional `docker-compose.ram.yml` profile selects one API worker and a
-separate canonical ClickHouse table. A filesystem ownership lock rejects a second
-process using the same journal. Threaded acceptance, group commit and background
-processing use bounded concurrency; ClickHouse gets four CPU cores for its own
-query/compression/merge threads. Multiple API processes must not each invent a
+The alternate RAM Compose profile has been retired. `docker-compose.yml` is the
+only supported deployment file. The architecture described here remains design
+and implementation guidance; do not enable the journal/RAM telemetry plane on
+the main deployment without completing the documented migration and validation
+gates. A filesystem ownership lock rejects a second process using the same
+journal. Threaded acceptance, group commit and background processing use bounded
+concurrency; ClickHouse needs a bounded CPU and memory budget for query,
+compression and merge threads. Multiple API processes must not each invent a
 journal owner or an independent global memory budget.
 
 ```mermaid
@@ -356,11 +358,10 @@ measured at the browser; server publish time is not that measurement.
    into the journal before serving, while offline backfill also creates tombstones
    for older retained identities. A durable backfill marker is required in addition
    to the environment flag. Normal acceptance needs no PostgreSQL read.
-5. Start the optional profile with explicit files:
-
-   ```sh
-   docker compose -f docker-compose.yml -f docker-compose.ram.yml up -d --build
-   ```
+5. The RAM profile is not a supported deployment option. Continue to use the
+   single main `docker-compose.yml` deployment; do not enable RAM telemetry by
+   setting environment flags without completing the migration and validation
+   gates above.
 
 6. For rollback, stop admission, let the current image drain its journal, then stop
    writers. Keep the journal key, files, canonical table and archive. Run:
