@@ -225,7 +225,10 @@ def _dataset_roots(args):
     root = Path(args.dataset_root).resolve()
     paths = {name: root / name for name in ("Dataset_RealTime", "Dataset_Simulated", "Dataset_Simulated_Harmonized")}
     if not all(path.is_dir() for path in paths.values()):
-        raise FileNotFoundError("Expected all three dataset folders under --dataset-root")
+        portable = ROOT / "data" / "scenario_replay" / "portable_sources"
+        paths = {name: portable / name for name in ("Dataset_RealTime", "Dataset_Simulated", "Dataset_Simulated_Harmonized")}
+        if not all(path.is_dir() for path in paths.values()):
+            raise FileNotFoundError("Expected all three dataset folders under --dataset-root or data/scenario_replay/portable_sources")
     return paths
 
 
@@ -672,9 +675,69 @@ def verify(args):
         raise RuntimeError("At least one scenario did not produce a heuristic live risk event")
 
 
+class _SimpleResponse:
+    def __init__(self, status_code: int, content: bytes):
+        self.status_code = status_code
+        self.content = content
+
+    def json(self):
+        return json.loads(self.content.decode("utf-8"))
+
+    def raise_for_status(self):
+        if not (200 <= self.status_code < 300):
+            detail = self.content[:200].decode("utf-8", errors="replace")
+            raise RuntimeError(f"HTTP request failed with status {self.status_code}: {detail}")
+
+
+class _ReplayHttpClient:
+    def __init__(self, timeout: float = 30.0):
+        self.timeout = timeout
+        try:
+            import httpx
+            self._client = httpx.Client(timeout=timeout)
+        except ImportError:
+            self._client = None
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        if self._client is not None:
+            self._client.close()
+
+    def get(self, url: str, headers: dict | None = None, params: dict | None = None):
+        if self._client is not None:
+            return self._client.get(url, headers=headers, params=params)
+        from urllib.parse import urlencode
+        import urllib.request
+        import urllib.error
+        if params:
+            url = f"{url}?{urlencode(params)}"
+        req = urllib.request.Request(url, headers=headers or {})
+        try:
+            with urllib.request.urlopen(req, timeout=self.timeout) as resp:
+                return _SimpleResponse(resp.status, resp.read())
+        except urllib.error.HTTPError as err:
+            return _SimpleResponse(err.code, err.read())
+
+    def post(self, url: str, json: dict | None = None, headers: dict | None = None):
+        if self._client is not None:
+            return self._client.post(url, json=json, headers=headers)
+        import urllib.request
+        import urllib.error
+        body = json.dumps(json).encode("utf-8") if json is not None else None
+        h = dict(headers or {})
+        h["Content-Type"] = "application/json"
+        req = urllib.request.Request(url, data=body, headers=h, method="POST")
+        try:
+            with urllib.request.urlopen(req, timeout=self.timeout) as resp:
+                return _SimpleResponse(resp.status, resp.read())
+        except urllib.error.HTTPError as err:
+            return _SimpleResponse(err.code, err.read())
+
+
 def play(args):
     _guard()
-    import httpx
     from shared.crypto_utils import normalize_aes_key
     roots = _dataset_roots(args)
     output = Path(args.output_root).resolve() / args.run_id
@@ -690,7 +753,7 @@ def play(args):
         raise ValueError("Replay endpoint must be a local isolated mirror URL")
     stop_file = output / "stop"
     stop_file.unlink(missing_ok=True)
-    with httpx.Client(timeout=30) as client:
+    with _ReplayHttpClient(timeout=30) as client:
         operator_key = os.environ["INSIEDR_OPERATOR_API_KEY"]
         preflight = client.get(base_url + "/api/v1/detection/ml/scenario/hosts",
                                headers={"X-Operator-Key": operator_key})
