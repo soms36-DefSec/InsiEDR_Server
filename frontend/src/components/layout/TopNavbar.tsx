@@ -17,14 +17,13 @@ import {
   RefreshCw,
   Download,
   ChevronDown,
-  KeyRound,
   FileCode,
   Layers,
   Shield,
   ShieldAlert,
   FileSpreadsheet,
 } from 'lucide-react';
-import { triggerServerExport, exportFleetRiskCSV, getOperatorApiKey, setOperatorApiKey } from '../../services/api';
+import { triggerServerExport, exportFleetRiskCSV } from '../../services/api';
 import { CollectorDatasetExportModal } from '../telemetry/CollectorDatasetExportModal';
 import type { EndpointRow, RiskEvent } from '../../types/telemetry';
 import { getRiskLevel } from '../../utils/formatters';
@@ -54,9 +53,6 @@ export const TopNavbar: React.FC<TopNavbarProps> = ({
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [showExportMenu, setShowExportMenu] = useState(false);
   const [showCollectorModal, setShowCollectorModal] = useState(false);
-  const [showOperatorKeyModal, setShowOperatorKeyModal] = useState(false);
-  const [operatorKeyInput, setOperatorKeyInput] = useState('');
-  const [hasOperatorKey, setHasOperatorKey] = useState(() => Boolean(getOperatorApiKey()));
 
   const summary = context.summary;
 
@@ -172,20 +168,6 @@ export const TopNavbar: React.FC<TopNavbarProps> = ({
 
         {/* Right Controls: Real-time Toggle & Export Menu */}
         <div className="flex items-center gap-2.5 shrink-0">
-          <button
-            type="button"
-            onClick={() => { setOperatorKeyInput(''); setShowOperatorKeyModal(true); }}
-            className={`inline-flex items-center gap-1.5 rounded-md border px-2.5 py-1.5 text-[11px] font-medium ${
-              hasOperatorKey
-                ? 'border-emerald-200 bg-emerald-50 text-emerald-800'
-                : 'border-amber-200 bg-amber-50 text-amber-800'
-            }`}
-            title={hasOperatorKey ? 'Operator key is set for this tab session' : 'Enter an operator key to authenticate dashboard API requests'}
-          >
-            <KeyRound className="h-3.5 w-3.5" />
-            <span className="hidden lg:inline">{hasOperatorKey ? 'Key set' : 'Operator key'}</span>
-          </button>
-
           {/* Real-time Ingestion Pipeline Toggle */}
           <div
             className={`flex items-center gap-2 px-2.5 py-1 rounded-md border text-xs transition-colors shadow-2xs ${
@@ -334,73 +316,6 @@ export const TopNavbar: React.FC<TopNavbarProps> = ({
       </div>
 
       {/* Collector-Specific Dataset Export Modal */}
-      {showOperatorKeyModal && (
-        <div className="fixed inset-0 z-[70] flex items-center justify-center bg-slate-950/40 p-4" role="presentation">
-          <form
-            className="w-full max-w-md rounded-lg border border-slate-200 bg-white p-5 shadow-xl"
-            onSubmit={(event) => {
-              event.preventDefault();
-              const key = operatorKeyInput.trim();
-              if (!key) return;
-              setOperatorApiKey(key);
-              setHasOperatorKey(true);
-              setShowOperatorKeyModal(false);
-              window.location.reload();
-            }}
-          >
-            <h2 className="text-base font-semibold text-slate-900">Dashboard operator key</h2>
-            <p className="mt-1 text-sm text-slate-600">
-              Enter a server-configured key with <code>operator:read</code> permission. It is kept only in this tab session and sent to this dashboard’s API.
-            </p>
-            <label className="mt-4 block text-sm font-medium text-slate-700" htmlFor="operator-api-key">
-              Operator API key
-            </label>
-            <input
-              id="operator-api-key"
-              type="password"
-              autoComplete="off"
-              autoFocus
-              value={operatorKeyInput}
-              onChange={(event) => setOperatorKeyInput(event.target.value)}
-              className="mt-1 w-full rounded-md border border-slate-300 px-3 py-2 text-sm outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-500/20"
-              placeholder="Paste operator key"
-            />
-            <p className="mt-2 text-xs text-slate-500">
-              Use a read-only analyst key where possible. Anyone with browser script access can access a key used in this tab.
-            </p>
-            <div className="mt-5 flex flex-wrap justify-between gap-2">
-              <button
-                type="button"
-                className="rounded-md px-3 py-2 text-sm text-slate-600 hover:bg-slate-100"
-                onClick={() => {
-                  setOperatorApiKey('');
-                  setHasOperatorKey(false);
-                  setShowOperatorKeyModal(false);
-                  window.location.reload();
-                }}
-              >
-                Clear key
-              </button>
-              <div className="flex gap-2">
-                <button
-                  type="button"
-                  className="rounded-md border border-slate-200 px-3 py-2 text-sm text-slate-700 hover:bg-slate-50"
-                  onClick={() => setShowOperatorKeyModal(false)}
-                >
-                  Cancel
-                </button>
-                <button
-                  type="submit"
-                  disabled={!operatorKeyInput.trim()}
-                  className="rounded-md bg-slate-900 px-3 py-2 text-sm font-medium text-white hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-50"
-                >
-                  Save and retry
-                </button>
-              </div>
-            </div>
-          </form>
-        </div>
-      )}
       <CollectorDatasetExportModal
         isOpen={showCollectorModal}
         onClose={() => setShowCollectorModal(false)}
