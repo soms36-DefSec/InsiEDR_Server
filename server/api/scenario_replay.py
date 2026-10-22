@@ -29,9 +29,16 @@ def _display_hostname(agent_id: str) -> str:
 
 
 def _enabled() -> None:
-    if (config.environment != "staging" or os.environ.get("INSIEDR_SCENARIO_REPLAY_ENABLED") != "true"
-            or not urlparse(config.database_dsn or "").path.lstrip("/").endswith("_scenario")
-            or not config.clickhouse_db.endswith("_scenario")):
+    scenario = (config.environment == "staging"
+                and os.environ.get("INSIEDR_SCENARIO_REPLAY_ENABLED") == "true"
+                and urlparse(config.database_dsn or "").path.lstrip("/").endswith("_scenario")
+                and config.clickhouse_db.endswith("_scenario"))
+    main = (os.environ.get("INSIEDR_MAIN_PRESENTATION_ENABLED") == "true"
+            and urlparse(config.database_dsn or "").hostname == "db"
+            and not urlparse(config.database_dsn or "").path.lstrip("/").endswith("_scenario")
+            and config.clickhouse_host == "clickhouse"
+            and not config.clickhouse_db.endswith("_scenario"))
+    if not (scenario or main):
         raise HTTPException(status_code=404, detail="Not found")
 
 

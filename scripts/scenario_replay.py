@@ -44,6 +44,10 @@ SCENARIOS = (
 )
 AGENTS = {agent for _, agent in SCENARIOS}
 CONTROL_AGENTS = ("AGENT-SOCL4-62", "AGENT-SOCL4-63")
+MAIN_AGENT_IDS = {agent: f"AGENT-EMPLOYEE-{index:02d}"
+                  for index, (_, agent) in enumerate(SCENARIOS, 1)}
+MAIN_CONTROL_IDS = {agent: f"AGENT-CONTROL-{index:02d}"
+                    for index, agent in enumerate(CONTROL_AGENTS, 1)}
 DISPLAY_HOSTNAMES = {agent: f"EMPLOYEE-{index:02d}"
                      for index, (_, agent) in enumerate(SCENARIOS, 1)}
 DISPLAY_HOSTNAMES.update({agent: f"CONTROL-{index:02d}"
@@ -53,6 +57,12 @@ DISPLAY_HOSTNAMES.update({agent: f"CONTROL-{index:02d}"
 def display_hostname(agent: str) -> str:
     """Stable endpoint label for the isolated replay; dataset agent ID stays intact."""
     return DISPLAY_HOSTNAMES.get(agent, agent.removeprefix("AGENT-"))
+
+
+def target_agent(source_agent: str, args) -> str:
+    if args.target == "main":
+        return MAIN_AGENT_IDS.get(source_agent, MAIN_CONTROL_IDS.get(source_agent, source_agent))
+    return source_agent
 COLLECTOR_FIELDS = {
     "logon": {
         "successful_logons": "successful_logons", "failed_logons": "failed_logons",
@@ -156,7 +166,19 @@ CREATE TABLE IF NOT EXISTS scenario_replay.host_rankings (
 """
 
 
-def _guard() -> None:
+def _guard(args) -> None:
+    if args.target == "main":
+        if os.environ.get("INSIEDR_MAIN_PRESENTATION_ENABLED") != "true":
+            raise RuntimeError("Main replay requires INSIEDR_MAIN_PRESENTATION_ENABLED=true")
+        if config.enable_model_pipeline or not config.agent_auth_enforced:
+            raise RuntimeError("Main replay requires shadow Model V3 and authenticated agent ingestion")
+        dsn = urlparse(config.database_dsn or "")
+        if (dsn.hostname != "db" or not dsn.path.lstrip("/")
+                or dsn.path.lstrip("/").endswith("_scenario")
+                or config.clickhouse_host != "clickhouse"
+                or config.clickhouse_db.endswith("_scenario")):
+            raise RuntimeError("Main replay must run inside the main backend Compose network")
+        return
     if config.environment != "staging" or os.environ.get("INSIEDR_SCENARIO_REPLAY_ENABLED") != "true":
         raise RuntimeError("Scenario replay requires staging and INSIEDR_SCENARIO_REPLAY_ENABLED=true")
     if config.enable_model_pipeline:
@@ -210,7 +232,54 @@ def init_env(args):
     print(f"Created {path}; keep it private. Operator key is in this file.")
 
 
-def _load_env(path):
+def install_main_tokens(args):
+    """Add only the seven replay identities without replacing existing agent auth."""
+    if args.target != "main":
+        raise RuntimeError("Use --target main for this command")
+    main_env = Path(args.env_file).resolve()
+    if not main_env.is_file():
+        raise FileNotFoundError("Main env file is required")
+    lines = main_env.read_text(encoding="utf-8").splitlines()
+    values = dict(line.split("=", 1) for line in lines if "=" in line and not line.lstrip().startswith("#"))
+    prior_replay = json.loads(values.get("INSIEDR_SCENARIO_AGENT_TOKENS", "{}"))
+    targets = [MAIN_AGENT_IDS[agent] for _, agent in SCENARIOS]
+    existing = dict(config.agent_tokens)
+    if existing or not config.agent_bearer_token:
+        replay_tokens = {agent: prior_replay.get(agent) or secrets.token_hex(24) for agent in targets}
+    else:
+        replay_tokens = {agent: config.agent_bearer_token for agent in targets}
+    updates = {
+        "INSIEDR_MAIN_PRESENTATION_ENABLED": "true",
+        "INSIEDR_SCENARIO_AGENT_TOKENS": json.dumps(replay_tokens, separators=(",", ":")),
+    }
+    if existing or not config.agent_bearer_token:
+        for agent, token in replay_tokens.items():
+            if token in existing and existing[token] != agent:
+                raise RuntimeError("A replay token is already bound to another agent")
+            existing[token] = agent
+        updates["INSIEDR_AGENT_TOKENS"] = json.dumps(existing, separators=(",", ":"))
+    present = set()
+    amended = []
+    for line in lines:
+        key = line.partition("=")[0]
+        if key in updates:
+            amended.append(f"{key}={updates[key]}")
+            present.add(key)
+        else:
+            amended.append(line)
+    amended.extend(f"{key}={value}" for key, value in updates.items() if key not in present)
+    backup = main_env.with_name(main_env.name + ".before-main-replay-"
+                                + datetime.now(timezone.utc).strftime("%Y%m%d%H%M%S%f"))
+    shutil.copy2(main_env, backup)
+    os.chmod(backup, 0o600)
+    temporary = main_env.with_name(main_env.name + ".main-replay-tmp")
+    temporary.write_text("\n".join(amended) + "\n", encoding="utf-8")
+    os.chmod(temporary, 0o600)
+    os.replace(temporary, main_env)
+    print(f"Main agent credentials updated for seven replay hosts; backup: {backup.name}")
+
+
+def _load_env(path, *, preserve_existing=False):
     env_file = Path(path)
     if not env_file.is_file():
         raise FileNotFoundError(f"Run init-env first: {env_file}")
@@ -218,7 +287,8 @@ def _load_env(path):
         if line and not line.lstrip().startswith("#"):
             key, sep, value = line.partition("=")
             if sep:
-                os.environ[key] = value
+                if not preserve_existing or key not in os.environ:
+                    os.environ[key] = value
 
 
 def _dataset_roots(args):
@@ -353,12 +423,12 @@ def _pg():
     return psycopg2.connect(config.database_dsn)
 
 
-def _save_scores(run_id, as_of, output):
+def _save_scores(run_id, as_of, output, args):
     summary = json.loads((output / "summary.json").read_text(encoding="utf-8"))
     if summary.get("source_admission") != "declared_synthetic":
         raise ValueError("Frozen model did not acknowledge synthetic source")
-    summary["scenario_agents"] = sorted(AGENTS)
-    summary["control_agents"] = list(CONTROL_AGENTS)
+    summary["scenario_agents"] = sorted(target_agent(agent, args) for agent in AGENTS)
+    summary["control_agents"] = [target_agent(agent, args) for agent in CONTROL_AGENTS]
     with _pg() as conn, conn.cursor() as cur:
         cur.execute(DDL)
         cur.execute("INSERT INTO scenario_replay.runs(run_id,as_of,source_kind,summary_json) "
@@ -382,7 +452,7 @@ def _save_scores(run_id, as_of, output):
 
 
 def _backfill(run_id, start, days, snapshots, dataset_name,
-              scenario_items, scenario_dataset):
+              scenario_items, scenario_dataset, args):
     from server.storage.clickhouse_storage import ClickHouseStorage
     from server.storage.clickhouse_telemetry_queries import extract_summary_preview
     from server.risk.pipeline import process_telemetry_risk
@@ -395,8 +465,9 @@ def _backfill(run_id, start, days, snapshots, dataset_name,
         ch.ensure_schema()
         rows = []
         explorer_rows = []
-        for agent, collectors in snapshots.items():
-            hostname = display_hostname(agent)
+        for source_agent, collectors in snapshots.items():
+            agent = target_agent(source_agent, args)
+            hostname = display_hostname(source_agent)
             for offset in range(days):
                 day = start + timedelta(days=offset)
                 for collector, sources in collectors.items():
@@ -411,15 +482,17 @@ def _backfill(run_id, start, days, snapshots, dataset_name,
                                      hostname, "success", json.dumps(payload), "scenario_replay",
                                      json.dumps({"source_dataset": dataset_name, "original_timestamp": original,
                                                  "original_hostname": source.get("hostname"),
+                                                 "source_agent_id": source_agent,
                                                  "run_id": run_id, "source_kind": "synthetic"})))
                         explorer_rows.append((payload_id, agent, collector, shifted, hostname,
                             source.get("username", ""), "success",
                             extract_summary_preview(collector, payload), json.dumps(payload)))
         risk_rows = []
-        for scenario, agent in SCENARIOS:
+        for scenario, source_agent in SCENARIOS:
+            agent = target_agent(source_agent, args)
             item = scenario_items[scenario]
             frames = _scenario_frames(scenario_dataset, item)
-            hostname = display_hostname(agent)
+            hostname = display_hostname(source_agent)
             username = item.get("target_username", "")
             for offset in sorted(_scenario_offsets(days)):
                 day = start + timedelta(days=offset)
@@ -438,7 +511,8 @@ def _backfill(run_id, start, days, snapshots, dataset_name,
                         rows.append((payload_id, agent, collector, shifted, hostname, "success",
                             json.dumps(body), "scenario_replay", json.dumps({"source_dataset": "Dataset_Simulated",
                                 "original_timestamp": source["timestamp"],
-                                "original_hostname": source.get("hostname"), "run_id": run_id,
+                                "original_hostname": source.get("hostname"),
+                                "source_agent_id": source_agent, "run_id": run_id,
                                 "source_kind": "synthetic", "scenario": scenario})))
                         explorer_rows.append((payload_id, agent, collector, shifted, hostname, username,
                             "success", extract_summary_preview(collector, body), json.dumps(body)))
@@ -466,23 +540,27 @@ def _backfill(run_id, start, days, snapshots, dataset_name,
     finally:
         ch.close()
     with _pg() as conn, conn.cursor() as cur:
-        for scenario, agent in SCENARIOS:
+        for scenario, source_agent in SCENARIOS:
+            agent = target_agent(source_agent, args)
             cur.execute("INSERT INTO agents (agent_id, hostname, username_last_seen, first_seen_at, "
                         "last_seen_at, status) VALUES (%s,%s,%s,%s,%s,'offline') "
-                        "ON CONFLICT (agent_id) DO NOTHING", (agent, display_hostname(agent),
+                        "ON CONFLICT (agent_id) DO NOTHING", (agent, display_hostname(source_agent),
                         scenario_items[scenario].get("target_username", ""), start,
                         start + timedelta(days=days - 1)))
-        for agent in CONTROL_AGENTS:
-            cur.execute("INSERT INTO agents (agent_id, hostname, first_seen_at, last_seen_at, status) "
-                        "VALUES (%s,%s,%s,%s,'offline') ON CONFLICT (agent_id) DO NOTHING",
-                        (agent, display_hostname(agent), start,
-                         start + timedelta(days=days - 1)))
+        if args.target != "main":
+            for source_agent in CONTROL_AGENTS:
+                agent = target_agent(source_agent, args)
+                cur.execute("INSERT INTO agents (agent_id, hostname, first_seen_at, last_seen_at, status) "
+                            "VALUES (%s,%s,%s,%s,'offline') ON CONFLICT (agent_id) DO NOTHING",
+                            (agent, display_hostname(source_agent), start,
+                             start + timedelta(days=days - 1)))
     return {"collector_rows": len(rows), "explorer_rows": len(explorer_rows),
             "computed_historical_risk_events": len(risk_rows)}
 
 
 def prepare(args):
-    _guard()
+    if not (args.target == "main" and getattr(args, "preview_only", False)):
+        _guard(args)
     raw_features, _, _ = _feature_contract()
     roots = _dataset_roots(args)
     schema_audit = _schema_audit(roots)
@@ -513,14 +591,14 @@ def prepare(args):
                 day = start + timedelta(days=offset)
                 feature_writer.writerow(_vector(agent, scenario, day,
                     19 if offset in scenario_offsets else 0, baseline, peaks))
-                metadata_writer.writerow((agent, day.isoformat(), 1, "synthetic"))
+                metadata_writer.writerow((target_agent(agent, args), day.isoformat(), 1, "synthetic"))
         for agent in CONTROL_AGENTS:
             for offset in range(days):
                 day = start + timedelta(days=offset)
                 feature_writer.writerow(_vector(agent, "", day, 0, baseline,
                     {agent: {name: [] for name in raw_features}}))
                 complete = int(not (agent == CONTROL_AGENTS[0] and offset == days - 1))
-                metadata_writer.writerow((agent, day.isoformat(), complete, "synthetic"))
+                metadata_writer.writerow((target_agent(agent, args), day.isoformat(), complete, "synthetic"))
     model_output = output / "model"
     if args.precomputed_model:
         source_model = Path(args.precomputed_model).resolve()
@@ -546,7 +624,7 @@ def prepare(args):
                        cwd=ROOT, timeout=300, check=True)
     with (model_output / "review_queue.csv").open(newline="", encoding="utf-8") as handle:
         selected = {row["hostname"] for row in csv.DictReader(handle)}
-    if CONTROL_AGENTS[0] in selected:
+    if target_agent(CONTROL_AGENTS[0], args) in selected:
         raise RuntimeError("Missing-day control was selected for review; refusing to publish run")
     model_summary = json.loads((model_output / "summary.json").read_text(encoding="utf-8"))
     if (model_summary.get("eligible_hosts") != len(AGENTS) + 1 or
@@ -556,21 +634,23 @@ def prepare(args):
     with (model_output / "daily_predictions.csv").open(newline="", encoding="utf-8") as handle:
         for row in csv.DictReader(handle):
             dates_by_agent.setdefault(row["hostname"], set()).add(row["date"])
-    if any(len(dates_by_agent.get(agent, ())) != days for agent in AGENTS | set(CONTROL_AGENTS)):
+    if any(len(dates_by_agent.get(target_agent(agent, args), ())) != days
+           for agent in AGENTS | set(CONTROL_AGENTS)):
         raise RuntimeError(f"Frozen model output does not contain {days} unique dates per host")
     preview_only = getattr(args, "preview_only", False)
     if preview_only:
         summary = json.loads((model_output / "summary.json").read_text(encoding="utf-8"))
-        summary["scenario_agents"] = sorted(AGENTS)
-        summary["control_agents"] = list(CONTROL_AGENTS)
+        summary["scenario_agents"] = sorted(target_agent(agent, args) for agent in AGENTS)
+        summary["control_agents"] = [target_agent(agent, args) for agent in CONTROL_AGENTS]
     else:
         backfill_counts = _backfill(run_id, start, days, snapshots, "Dataset_RealTime",
-                                   by_scenario, roots["Dataset_Simulated"])
-        summary = _save_scores(run_id, as_of, model_output)
+                                   by_scenario, roots["Dataset_Simulated"], args)
+        summary = _save_scores(run_id, as_of, model_output, args)
     (output / "run.json").write_text(json.dumps({"run_id": run_id, "as_of": as_of.isoformat(),
         "start_date": start.isoformat(), "end_date": as_of.isoformat(), "days": days,
         "source_kind": "synthetic", "preview_only": preview_only,
-        "scenario_agents": sorted(AGENTS), "control_agents": list(CONTROL_AGENTS),
+        "scenario_agents": sorted(target_agent(agent, args) for agent in AGENTS),
+        "control_agents": [target_agent(agent, args) for agent in CONTROL_AGENTS],
         "scenario_dates": [(start + timedelta(days=i)).isoformat() for i in sorted(scenario_offsets)],
         "synthetic_feature_floors": SCENARIO_FEATURES,
         "backfill_counts": backfill_counts if not preview_only else None,
@@ -591,7 +671,9 @@ def expand_fleet(args):
     The extra hosts have historical collector logs and fleet identities. They
     receive no fabricated Model V3 score or risk event.
     """
-    _guard()
+    _guard(args)
+    if args.target == "main":
+        raise RuntimeError("Fleet expansion is disabled on the main database; existing hosts are preserved")
     run_id = args.run_id
     manifest_path = Path(args.output_root).resolve() / run_id / "run.json"
     if not manifest_path.is_file():
@@ -697,7 +779,9 @@ def expand_fleet(args):
 
 def play_fleet(args):
     """Send one current, authenticated benign observation for each extra host."""
-    _guard()
+    _guard(args)
+    if args.target == "main":
+        raise RuntimeError("Fleet expansion playback is disabled on the main database")
     import httpx
     from shared.crypto_utils import normalize_aes_key
 
@@ -784,6 +868,7 @@ def _envelope(agent, hostname, username, source_rows, run_id, aes_key, token):
             "status": "success", "payload": body,
             "quality": {"source_kind": "synthetic", "source_dataset": "Dataset_Simulated",
                         "original_timestamp": original,
+                        "source_agent_id": row.get("agent_id"),
                         "original_hostname": row.get("hostname"), "run_id": run_id}})
     payload = {"schema": "insiedr.agent.telemetry.v1", "protocol_version": "2.0",
         "payload_id": payload_id, "agent_id": agent, "hostname": hostname,
@@ -801,7 +886,7 @@ def _envelope(agent, hostname, username, source_rows, run_id, aes_key, token):
 
 def verify(args):
     """Run sampled source frames through the unchanged live risk pipeline offline."""
-    _guard()
+    _guard(args)
     from server.risk.pipeline import process_telemetry_risk
 
     roots = _dataset_roots(args)
@@ -892,7 +977,7 @@ class _ReplayHttpClient:
 
 
 def play(args):
-    _guard()
+    _guard(args)
     from shared.crypto_utils import normalize_aes_key
     roots = _dataset_roots(args)
     output = Path(args.output_root).resolve() / args.run_id
@@ -902,10 +987,13 @@ def play(args):
     manifest = json.loads((roots["Dataset_Simulated_Harmonized"] / "simulation_manifest.json").read_text(encoding="utf-8"))
     items = {item["scenario_id"]: item for item in manifest["scenarios"]}
     tokens = json.loads(os.environ["INSIEDR_SCENARIO_AGENT_TOKENS"])
-    key = normalize_aes_key(os.environ["INSIEDR_SCENARIO_AES_KEY"])
+    key = (config.load_aes_key() if args.target == "main" else
+           normalize_aes_key(os.environ["INSIEDR_SCENARIO_AES_KEY"]))
     base_url = args.server_url.rstrip("/")
-    if not base_url.startswith("http://127.0.0.1:") and not base_url.startswith("http://localhost:"):
-        raise ValueError("Replay endpoint must be a local isolated mirror URL")
+    allowed_urls = ("http://backend:5000", "http://127.0.0.1:5000") if args.target == "main" else (
+        "http://127.0.0.1:5088", "http://localhost:5088")
+    if base_url not in allowed_urls:
+        raise ValueError("Replay endpoint does not match the selected Compose target")
     stop_file = output / "stop"
     stop_file.unlink(missing_ok=True)
     with _ReplayHttpClient(timeout=30) as client:
@@ -915,9 +1003,10 @@ def play(args):
         preflight.raise_for_status()
         if preflight.json().get("run_id") != args.run_id:
             raise RuntimeError("Website is not serving the prepared scenario run")
-        for scenario, agent in SCENARIOS:
+        for scenario, source_agent in SCENARIOS:
             if args.scenario and args.scenario != scenario:
                 continue
+            agent = target_agent(source_agent, args)
             item = items[scenario]
             frames = _scenario_frames(roots["Dataset_Simulated"], item)
             started_at = datetime.now(timezone.utc)
@@ -925,8 +1014,12 @@ def play(args):
                 if stop_file.exists():
                     print("Playback stopped")
                     return
-                envelope, headers = _envelope(agent, display_hostname(agent), item.get("target_username", ""), rows,
+                envelope, headers = _envelope(agent, display_hostname(source_agent), item.get("target_username", ""), rows,
                     args.run_id, key, tokens[agent])
+                if args.target == "main":
+                    # The runner is on the private Compose network; the public
+                    # HTTPS hop terminates at the main Nginx proxy.
+                    headers["X-Forwarded-Proto"] = "https"
                 response = client.post(base_url + "/api/logs", json=envelope, headers=headers)
                 response.raise_for_status()
                 if response.status_code != 202:
@@ -957,7 +1050,7 @@ def play(args):
 
 
 def status(args):
-    _guard()
+    _guard(args)
     path = Path(args.output_root).resolve() / args.run_id / "run.json"
     if not path.exists():
         raise FileNotFoundError(path)
@@ -969,7 +1062,7 @@ def status(args):
 
 
 def stop(args):
-    _guard()
+    _guard(args)
     path = Path(args.output_root).resolve() / args.run_id
     if not (path / "run.json").exists():
         raise FileNotFoundError(path)
@@ -978,7 +1071,9 @@ def stop(args):
 
 
 def reset(args):
-    _guard()
+    _guard(args)
+    if args.target == "main":
+        raise RuntimeError("Reset is forbidden on the main database")
     run_id = args.run_id
     if not run_id:
         raise ValueError("reset requires --run-id")
@@ -995,8 +1090,9 @@ def reset(args):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("command", choices=("init-env", "preview", "verify", "prepare", "expand-fleet", "play-fleet", "play", "status", "stop", "reset"))
-    parser.add_argument("--env-file", default=str(ROOT / ".env.scenario"))
+    parser.add_argument("command", choices=("init-env", "install-main-tokens", "preview", "verify", "prepare", "expand-fleet", "play-fleet", "play", "status", "stop", "reset"))
+    parser.add_argument("--target", choices=("scenario", "main"), default="scenario")
+    parser.add_argument("--env-file")
     parser.add_argument("--dataset-root", default=r"D:\Projects\AISH")
     parser.add_argument("--output-root", default=str(ROOT / "data" / "scenario_replay"))
     parser.add_argument("--run-id")
@@ -1009,6 +1105,10 @@ def main():
     parser.add_argument("--server-url", default="http://127.0.0.1:5088")
     parser.add_argument("--interval", type=float, default=5.0)
     args = parser.parse_args()
+    if args.env_file is None:
+        args.env_file = str(ROOT / (".env" if args.target == "main" else ".env.scenario"))
+    if args.target == "main" and args.server_url == "http://127.0.0.1:5088":
+        args.server_url = "http://backend:5000"
     if args.interval < 0:
         parser.error("--interval must be nonnegative")
     if args.command in ("expand-fleet", "play-fleet", "play", "status", "stop", "reset") and not args.run_id:
@@ -1016,9 +1116,12 @@ def main():
     if args.run_id and not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]{0,63}", args.run_id):
         parser.error("--run-id must be 1-64 letters, digits, underscores, or hyphens")
     if args.command == "init-env":
+        if args.target != "scenario":
+            parser.error("init-env is only for the isolated scenario stack")
         init_env(args)
     else:
-        _load_env(args.env_file)
+        if not (args.command == "preview" and args.target == "main"):
+            _load_env(args.env_file, preserve_existing=args.target == "main")
         globals()[args.command.replace("-", "_")](args)
 
 

@@ -281,7 +281,8 @@ def create_app(*, storage=None, apply_migrations: bool = True) -> FastAPI:
     app.include_router(dashboard_bp)
     from server.api.model_review import router as model_review_router
     app.include_router(model_review_router)
-    if config.environment == "staging" and os.environ.get("INSIEDR_SCENARIO_REPLAY_ENABLED") == "true":
+    if ((config.environment == "staging" and os.environ.get("INSIEDR_SCENARIO_REPLAY_ENABLED") == "true")
+            or os.environ.get("INSIEDR_MAIN_PRESENTATION_ENABLED") == "true"):
         from server.api.scenario_replay import router as scenario_replay_router
         app.include_router(scenario_replay_router)
 
