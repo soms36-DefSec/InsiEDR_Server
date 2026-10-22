@@ -63,6 +63,8 @@ The scenario site is bound to Linux localhost port `5088`. From a separate termi
 
 The runner sends encrypted, authenticated envelopes through `/api/logs`; the normal replay-window security check stays enabled. It shifts the envelope timestamps to now and preserves each original timestamp in collector quality metadata. The website displays collector logs, current and peak live heuristic risk, completed-day Model V3 scores and hypothesis, and the actual frozen-threshold Review Queue. The four-stage kill chain uses 24 frames in source time order. Default pacing is five seconds between frames: about one minute per ordinary scenario and two minutes for the kill chain. Use `--scenario SIM_CREDENTIAL_DUMP` to present one host.
 
+Run `play` with the host Python environment as shown above, not `docker-compose run backend python scripts/scenario_replay.py play`. The backend image contains the web service but does not mount the dataset folders, model environment, or prepared run artifacts. The replay CLI loads the Model V3 schema only for `preview` and `prepare`, so playback itself does not need the model bundle. A `FileNotFoundError` for `/app/model/run/schema.json` from a containerized `play` command indicates an older replay script/image; it does not indicate that existing database rows were removed.
+
 ```powershell
 .venv\Scripts\python.exe scripts\scenario_replay.py status --run-id presentation-01
 .venv\Scripts\python.exe scripts\scenario_replay.py stop --run-id presentation-01

@@ -9,11 +9,13 @@ import argparse
 import base64
 import csv
 from datetime import date, datetime, timedelta, timezone
+import hashlib
 import json
 import os
 from pathlib import Path
 import re
 import secrets
+import shutil
 import statistics
 import subprocess
 import sys
@@ -25,7 +27,11 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 from server.config import config
-from server.risk.daily_adapter import RAW_FEATURES, RATIOS, SUBSETS
+
+def _feature_contract():
+    """Load Model V3 schema only for history preparation, not live playback."""
+    from server.risk.daily_adapter import RAW_FEATURES, RATIOS, SUBSETS
+    return RAW_FEATURES, RATIOS, SUBSETS
 
 SCENARIOS = (
     ("SIM_CREDENTIAL_DUMP", "AGENT-SOCL2-64"),
@@ -263,7 +269,8 @@ def _utc(value):
 
 def _collector_samples(path, agents, *, windows=None, max_per_key=128):
     """Bound memory while reading collector CSVs; retain source rows and numeric samples."""
-    metrics = {agent: {name: [] for name in RAW_FEATURES} for agent in agents}
+    raw_features, _, _ = _feature_contract()
+    metrics = {agent: {name: [] for name in raw_features} for agent in agents}
     snapshots = {agent: {} for agent in agents}
     for collector, file in _files(path).items():
         aliases = COLLECTOR_FIELDS.get(collector, {})
@@ -296,7 +303,8 @@ def _collector_samples(path, agents, *, windows=None, max_per_key=128):
 
 
 def _vector(agent, scenario, day, index, baseline, peaks):
-    values = {name: float(BASELINE.get(name, 0)) for name in RAW_FEATURES}
+    raw_features, ratios, subsets = _feature_contract()
+    values = {name: float(BASELINE.get(name, 0)) for name in raw_features}
     for name, samples in baseline[agent].items():
         if samples:
             values[name] = max(0.0, statistics.median(samples))
@@ -309,11 +317,11 @@ def _vector(agent, scenario, day, index, baseline, peaks):
     values["weekend_activity"] = float(day.weekday() >= 5)
     values["peak_process_count"] = max(values["peak_process_count"], values["mean_process_count"])
     values["interactive_duration_seconds"] = min(values["interactive_duration_seconds"], 86400)
-    for name in RATIOS:
+    for name in ratios:
         values[name] = min(values[name], 1.0)
-    for child, total in SUBSETS:
+    for child, total in subsets:
         values[total] = max(values[total], values[child])
-    return [values[name] for name in RAW_FEATURES]
+    return [values[name] for name in raw_features]
 
 
 def _history_window(args):
@@ -381,6 +389,7 @@ def _backfill(run_id, start, days, snapshots, dataset_name,
     try:
         if not ch.is_connected():
             raise RuntimeError("isolated ClickHouse unavailable")
+        ch.ensure_schema()
         rows = []
         explorer_rows = []
         for agent, collectors in snapshots.items():
@@ -471,6 +480,7 @@ def _backfill(run_id, start, days, snapshots, dataset_name,
 
 def prepare(args):
     _guard()
+    raw_features, _, _ = _feature_contract()
     roots = _dataset_roots(args)
     schema_audit = _schema_audit(roots)
     start, as_of, days = _history_window(args)
@@ -493,7 +503,7 @@ def prepare(args):
     with (output / "X.csv").open("w", newline="", encoding="utf-8") as feature_file, \
          (output / "metadata.csv").open("w", newline="", encoding="utf-8") as metadata_file:
         feature_writer, metadata_writer = csv.writer(feature_file), csv.writer(metadata_file)
-        feature_writer.writerow(RAW_FEATURES)
+        feature_writer.writerow(raw_features)
         metadata_writer.writerow(("hostname", "date", "observation_complete", "source_kind"))
         for scenario, agent in SCENARIOS:
             for offset in range(days):
@@ -505,17 +515,32 @@ def prepare(args):
             for offset in range(days):
                 day = start + timedelta(days=offset)
                 feature_writer.writerow(_vector(agent, "", day, 0, baseline,
-                    {agent: {name: [] for name in RAW_FEATURES}}))
+                    {agent: {name: [] for name in raw_features}}))
                 complete = int(not (agent == CONTROL_AGENTS[0] and offset == days - 1))
                 metadata_writer.writerow((agent, day.isoformat(), complete, "synthetic"))
-    python_bin = ROOT / "model" / ".venv" / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
-    if not python_bin.is_file():
-        raise FileNotFoundError(python_bin)
     model_output = output / "model"
-    subprocess.run((str(python_bin), str(ROOT / "model" / "predict.py"),
-                    "--features", str(output / "X.csv"), "--metadata", str(output / "metadata.csv"),
-                    "--output", str(model_output), "--as-of", as_of.isoformat()),
-                   cwd=ROOT, timeout=300, check=True)
+    if args.precomputed_model:
+        source_model = Path(args.precomputed_model).resolve()
+        from scripts.check_model_v3_prerequisites import verify_frozen_files
+        verify_frozen_files()
+        for name in ("X.csv", "metadata.csv"):
+            generated = hashlib.sha256((output / name).read_bytes()).hexdigest()
+            source = hashlib.sha256((source_model.parent / name).read_bytes()).hexdigest()
+            if generated != source:
+                raise RuntimeError(f"Precomputed Model V3 input mismatch: {name}")
+        source_summary = json.loads((source_model / "summary.json").read_text(encoding="utf-8"))
+        if (source_summary.get("as_of") != as_of.isoformat() or
+                source_summary.get("source_admission") != "declared_synthetic"):
+            raise RuntimeError("Precomputed Model V3 output has wrong date or source admission")
+        shutil.copytree(source_model, model_output)
+    else:
+        python_bin = ROOT / "model" / ".venv" / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
+        if not python_bin.is_file():
+            raise FileNotFoundError(python_bin)
+        subprocess.run((str(python_bin), str(ROOT / "model" / "predict.py"),
+                        "--features", str(output / "X.csv"), "--metadata", str(output / "metadata.csv"),
+                        "--output", str(model_output), "--as-of", as_of.isoformat()),
+                       cwd=ROOT, timeout=300, check=True)
     with (model_output / "review_queue.csv").open(newline="", encoding="utf-8") as handle:
         selected = {row["hostname"] for row in csv.DictReader(handle)}
     if CONTROL_AGENTS[0] in selected:
@@ -757,6 +782,7 @@ def main():
     parser.add_argument("--dataset-root", default=r"D:\Projects\AISH")
     parser.add_argument("--output-root", default=str(ROOT / "data" / "scenario_replay"))
     parser.add_argument("--run-id")
+    parser.add_argument("--precomputed-model", help="Frozen-model output for identical X.csv and metadata.csv")
     parser.add_argument("--as-of", type=date.fromisoformat)
     parser.add_argument("--start-date", type=date.fromisoformat)
     parser.add_argument("--days", type=int, default=22)
