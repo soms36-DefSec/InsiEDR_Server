@@ -161,6 +161,12 @@ def main():
     payload_id = f"demo-sim-{uuid.uuid4().hex[:12]}"
     now_iso = datetime.now(timezone.utc).isoformat()
 
+    collectors = []
+    for c in scenario_info["collectors"]:
+        c_copy = dict(c)
+        c_copy.setdefault("collected_at", now_iso)
+        collectors.append(c_copy)
+
     payload = {
         "payload_id": payload_id,
         "agent_id": agent_id,
@@ -173,7 +179,7 @@ def main():
             "version": "10.0.19045",
             "machine": "AMD64",
         },
-        "collectors": scenario_info["collectors"],
+        "collectors": collectors,
     }
 
     envelope = {
