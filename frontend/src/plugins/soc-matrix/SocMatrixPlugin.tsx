@@ -160,6 +160,7 @@ export const SocMatrixPlugin: React.FC<PluginProps> = ({ context }) => {
       <DrillDownDrawer
         username={drillUser}
         hostname={drillHostname}
+        riskEvents={summary?.risk_events || []}
         onClose={handleCloseDrillDown}
       />
     </div>

@@ -38,6 +38,15 @@ SCENARIOS = (
 )
 AGENTS = {agent for _, agent in SCENARIOS}
 CONTROL_AGENTS = ("AGENT-SOCL4-62", "AGENT-SOCL4-63")
+DISPLAY_HOSTNAMES = {agent: f"EMPLOYEE-{index:02d}"
+                     for index, (_, agent) in enumerate(SCENARIOS, 1)}
+DISPLAY_HOSTNAMES.update({agent: f"CONTROL-{index:02d}"
+                          for index, agent in enumerate(CONTROL_AGENTS, 1)})
+
+
+def display_hostname(agent: str) -> str:
+    """Stable endpoint label for the isolated replay; dataset agent ID stays intact."""
+    return DISPLAY_HOSTNAMES.get(agent, agent.removeprefix("AGENT-"))
 COLLECTOR_FIELDS = {
     "logon": {
         "successful_logons": "successful_logons", "failed_logons": "failed_logons",
@@ -375,7 +384,7 @@ def _backfill(run_id, start, days, snapshots, dataset_name,
         rows = []
         explorer_rows = []
         for agent, collectors in snapshots.items():
-            hostname = agent.removeprefix("AGENT-")
+            hostname = display_hostname(agent)
             for offset in range(days):
                 day = start + timedelta(days=offset)
                 for collector, sources in collectors.items():
@@ -389,6 +398,7 @@ def _backfill(run_id, start, days, snapshots, dataset_name,
                         rows.append((payload_id, agent, collector, shifted,
                                      hostname, "success", json.dumps(payload), "scenario_replay",
                                      json.dumps({"source_dataset": dataset_name, "original_timestamp": original,
+                                                 "original_hostname": source.get("hostname"),
                                                  "run_id": run_id, "source_kind": "synthetic"})))
                         explorer_rows.append((payload_id, agent, collector, shifted, hostname,
                             source.get("username", ""), "success",
@@ -397,7 +407,7 @@ def _backfill(run_id, start, days, snapshots, dataset_name,
         for scenario, agent in SCENARIOS:
             item = scenario_items[scenario]
             frames = _scenario_frames(scenario_dataset, item)
-            hostname = agent.removeprefix("AGENT-")
+            hostname = display_hostname(agent)
             username = item.get("target_username", "")
             for offset in sorted(_scenario_offsets(days)):
                 day = start + timedelta(days=offset)
@@ -415,7 +425,8 @@ def _backfill(run_id, start, days, snapshots, dataset_name,
                         collectors.append({"collector": collector, "status": "success", "payload": body})
                         rows.append((payload_id, agent, collector, shifted, hostname, "success",
                             json.dumps(body), "scenario_replay", json.dumps({"source_dataset": "Dataset_Simulated",
-                                "original_timestamp": source["timestamp"], "run_id": run_id,
+                                "original_timestamp": source["timestamp"],
+                                "original_hostname": source.get("hostname"), "run_id": run_id,
                                 "source_kind": "synthetic", "scenario": scenario})))
                         explorer_rows.append((payload_id, agent, collector, shifted, hostname, username,
                             "success", extract_summary_preview(collector, body), json.dumps(body)))
@@ -446,13 +457,13 @@ def _backfill(run_id, start, days, snapshots, dataset_name,
         for scenario, agent in SCENARIOS:
             cur.execute("INSERT INTO agents (agent_id, hostname, username_last_seen, first_seen_at, "
                         "last_seen_at, status) VALUES (%s,%s,%s,%s,%s,'offline') "
-                        "ON CONFLICT (agent_id) DO NOTHING", (agent, agent.removeprefix("AGENT-"),
+                        "ON CONFLICT (agent_id) DO NOTHING", (agent, display_hostname(agent),
                         scenario_items[scenario].get("target_username", ""), start,
                         start + timedelta(days=days - 1)))
         for agent in CONTROL_AGENTS:
             cur.execute("INSERT INTO agents (agent_id, hostname, first_seen_at, last_seen_at, status) "
                         "VALUES (%s,%s,%s,%s,'offline') ON CONFLICT (agent_id) DO NOTHING",
-                        (agent, agent.removeprefix("AGENT-"), start,
+                        (agent, display_hostname(agent), start,
                          start + timedelta(days=days - 1)))
     return {"collector_rows": len(rows), "explorer_rows": len(explorer_rows),
             "computed_historical_risk_events": len(risk_rows)}
@@ -589,7 +600,8 @@ def _envelope(agent, hostname, username, source_rows, run_id, aes_key, token):
         collectors.append({"collector": collector, "collected_at": now, "hostname": hostname,
             "status": "success", "payload": body,
             "quality": {"source_kind": "synthetic", "source_dataset": "Dataset_Simulated",
-                        "original_timestamp": original, "run_id": run_id}})
+                        "original_timestamp": original,
+                        "original_hostname": row.get("hostname"), "run_id": run_id}})
     payload = {"schema": "insiedr.agent.telemetry.v1", "protocol_version": "2.0",
         "payload_id": payload_id, "agent_id": agent, "hostname": hostname,
         "collected_at": now, "username": username, "collectors": collectors,
@@ -618,7 +630,7 @@ def verify(args):
         best = {"risk_score": -1}
         for _, rows in frames:
             payload = {"payload_id": f"verification-{uuid.uuid4()}", "agent_id": agent,
-                "hostname": agent.removeprefix("AGENT-"), "username": items[scenario].get("target_username", ""),
+                "hostname": display_hostname(agent), "username": items[scenario].get("target_username", ""),
                 "collected_at": datetime.now(timezone.utc).isoformat(),
                 "collectors": [{"collector": collector, "status": "success", "payload": {
                     key: value for key, value in row.items()
@@ -670,7 +682,7 @@ def play(args):
                 if stop_file.exists():
                     print("Playback stopped")
                     return
-                envelope, headers = _envelope(agent, agent.removeprefix("AGENT-"), item.get("target_username", ""), rows,
+                envelope, headers = _envelope(agent, display_hostname(agent), item.get("target_username", ""), rows,
                     args.run_id, key, tokens[agent])
                 response = client.post(base_url + "/api/logs", json=envelope, headers=headers)
                 response.raise_for_status()

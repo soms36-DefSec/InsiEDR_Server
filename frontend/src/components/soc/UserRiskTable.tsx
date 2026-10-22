@@ -8,7 +8,7 @@
  *   AI/heuristic risk assessments into a searchable, sortable, and paginated table.
  *
  * Domain Calibration & Threat Decay:
- *   - Correlates latest risk events per user/endpoint via `riskEvents`.
+ *   - Correlates latest risk events by agent ID or hostname via `riskEvents`.
  *   - Implements a 30-minute threat decay model (`THREAT_DECAY_WINDOW_MS`): if an endpoint
  *     had a historical alert but no malicious signals in the past 30 minutes, active
  *     indicators transition to decayed nominal status to prevent analyst fatigue.
@@ -59,15 +59,12 @@ export const UserRiskTable: React.FC<UserRiskTableProps> = ({
   const endpointRows = useMemo<EndpointRow[]>(() => {
     const hostRiskMap: Record<string, RiskEvent> = {};
     const agentRiskMap: Record<string, RiskEvent> = {};
-    const userRiskMap: Record<string, RiskEvent> = {};
 
     riskEvents.forEach((ev) => {
       const h = ev.hostname;
       const aid = ev.agent_id;
-      const u = ev.username;
       if (h && !hostRiskMap[h]) hostRiskMap[h] = ev;
       if (aid && !agentRiskMap[aid]) agentRiskMap[aid] = ev;
-      if (u && !userRiskMap[u]) userRiskMap[u] = ev;
     });
 
     const now = Date.now();
@@ -76,9 +73,8 @@ export const UserRiskTable: React.FC<UserRiskTableProps> = ({
       const user = agent.username_last_seen || '—';
       const agentId = agent.agent_id || `${hostname}_${user}`;
 
-      const risk = (hostname !== '—' && hostRiskMap[hostname]) ||
-                   (agent.agent_id && agentRiskMap[agent.agent_id]) ||
-                   (user !== '—' && userRiskMap[user]);
+      const risk = (agent.agent_id && agentRiskMap[agent.agent_id]) ||
+                   (hostname !== '—' && hostRiskMap[hostname]);
       let score = 0;
       let level = getRiskLevel(0);
       let isDecayed = false;

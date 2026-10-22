@@ -65,6 +65,21 @@ class InMemoryRiskStorage:
         ][:limit]
 
 
+def test_temporal_risk_memory_stays_on_the_same_agent():
+    storage = InMemoryRiskStorage()
+    storage.risk_events.append({"username": "admin", "agent_id": "AGENT-A", "risk_score": 94.0})
+    aggregator = RiskAggregator(storage)
+    harmless = {"process_count": 40}
+
+    other_host = aggregator.aggregate_detectors([], username="admin", agent_id="AGENT-B",
+                                                raw_features=harmless)
+    same_host = aggregator.aggregate_detectors([], username="admin", agent_id="AGENT-A",
+                                               raw_features=harmless)
+
+    assert other_host["risk_score"] == 0.0
+    assert same_host["risk_score"] > 0.0
+
+
 # ==============================================================================
 # 1. Direct Heuristic Detections
 # ==============================================================================

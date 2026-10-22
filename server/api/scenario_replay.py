@@ -16,6 +16,17 @@ from server.config import config
 
 router = APIRouter(prefix="/api/v1/detection/ml/scenario", tags=["Scenario Replay"])
 
+SCENARIO_HOSTNAMES = {
+    "AGENT-SOCL2-64": "EMPLOYEE-01", "AGENT-DSL-174": "EMPLOYEE-02",
+    "AGENT-DATASL-173": "EMPLOYEE-03", "AGENT-MCALAB1-07": "EMPLOYEE-04",
+    "AGENT-SOCL8-53": "EMPLOYEE-05", "AGENT-SOCL8-03": "EMPLOYEE-06",
+    "AGENT-SOCL4-61": "EMPLOYEE-07",
+}
+
+
+def _display_hostname(agent_id: str) -> str:
+    return SCENARIO_HOSTNAMES.get(agent_id, agent_id.removeprefix("AGENT-"))
+
 
 def _enabled() -> None:
     if (config.environment != "staging" or os.environ.get("INSIEDR_SCENARIO_REPLAY_ENABLED") != "true"
@@ -92,7 +103,7 @@ def hosts(storage=Depends(get_storage), _operator: OperatorPrincipal = Depends(r
             cur.execute("SELECT MAX(risk_score) FROM risk_events WHERE agent_id=%s AND created_at >= %s",
                         (agent_id, created_at))
             peak = cur.fetchone()[0]
-            result.append({"agent_id": agent_id, "hostname": agent_id.removeprefix("AGENT-"),
+            result.append({"agent_id": agent_id, "hostname": _display_hostname(agent_id),
                            "model": _score(score), "pair_threat_score": _float(ranking.get("pair_threat")) if ranking else None,
                            "rank": rank, "live_risk_score": float(live[0]) if live and live[0] is not None else None,
                            "live_peak_risk_score": float(peak) if peak is not None else None,
@@ -118,7 +129,7 @@ def review_queue(storage=Depends(get_storage), _operator: OperatorPrincipal = De
                         "WHERE run_id=%s AND agent_id=%s AND review_date=%s", (run_id, agent_id, as_of))
             score = cur.fetchone()[0]
             items.append({"as_of_date": as_of.isoformat(), "rank": rank, "agent_id": agent_id,
-                          "hostname": agent_id.removeprefix("AGENT-"),
+                          "hostname": _display_hostname(agent_id),
                           "pair_threat_score": _float(raw["pair_threat"]),
                           "primary_hypothesis": score["predicted_scenario"],
                           "evidence_dates": _evidence_dates(raw.get("evidence_dates")),

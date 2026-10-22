@@ -109,10 +109,9 @@ def dashboard_summary(include_stats: bool = True, storage=Depends(get_storage),
         medium_count = 0
         low_count = 0
 
-        # Index latest risk events by Hostname (primary), Agent ID, and Username (fallback)
+        # Risk belongs to an endpoint. Shared usernames must not spread it to other hosts.
         host_latest_risk: dict[str, dict] = {}
         agent_latest_risk: dict[str, dict] = {}
-        user_latest_risk: dict[str, dict] = {}
 
         for event in risk_events:
             score = float(event.get("risk_score") or 0.0)
@@ -129,14 +128,11 @@ def dashboard_summary(include_stats: bool = True, storage=Depends(get_storage),
 
             h = event.get("hostname")
             aid = event.get("agent_id")
-            u = event.get("username")
 
             if h and h not in host_latest_risk:
                 host_latest_risk[h] = event
             if aid and aid not in agent_latest_risk:
                 agent_latest_risk[aid] = event
-            if u and u not in user_latest_risk:
-                user_latest_risk[u] = event
 
         # Monitored endpoints are distinct physical/virtual endpoints identified by HOSTNAME
         seen_hosts = set()
@@ -146,10 +142,7 @@ def dashboard_summary(include_stats: bool = True, storage=Depends(get_storage),
                 continue
             seen_hosts.add(hostname)
 
-            # Correlate event by Hostname first, then Agent ID, then Username
-            ev = host_latest_risk.get(hostname) or agent_latest_risk.get(a.get("agent_id"))
-            if not ev and a.get("username_last_seen"):
-                ev = user_latest_risk.get(a.get("username_last_seen"))
+            ev = agent_latest_risk.get(a.get("agent_id")) or host_latest_risk.get(hostname)
 
             if ev:
                 lvl = (ev.get("_computed_level") or ev.get("risk_level") or "LOW").upper()
@@ -165,7 +158,7 @@ def dashboard_summary(include_stats: bool = True, storage=Depends(get_storage),
                 low_count += 1
 
         if not seen_hosts:
-            fallback_map = host_latest_risk or user_latest_risk
+            fallback_map = agent_latest_risk or host_latest_risk
             critical_count = sum(1 for e in fallback_map.values() if e.get("_computed_level") == "CRITICAL")
             high_count = sum(1 for e in fallback_map.values() if e.get("_computed_level") == "HIGH")
             medium_count = sum(1 for e in fallback_map.values() if e.get("_computed_level") == "MEDIUM")

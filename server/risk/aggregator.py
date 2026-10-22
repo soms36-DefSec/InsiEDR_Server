@@ -40,7 +40,8 @@ class RiskAggregator:
         self, 
         detector_results: List[Dict[str, Any]], 
         username: str = None, 
-        raw_features: dict = None
+        raw_features: dict = None,
+        agent_id: str = None,
     ) -> Dict[str, Any]:
         """
         Fuses multiple detector outputs and heuristic signals into a single calibrated risk assessment.
@@ -131,20 +132,16 @@ class RiskAggregator:
         # 4. Leaky-Bucket EMA Temporal Smoothing & Rolling History Fetch
         final_score = raw_aggregated_score
         past_events: List[Dict[str, Any]] = []
-        if username and hasattr(self.storage, "get_recent_risk_events_in_window"):
+        if agent_id and username and hasattr(self.storage, "get_recent_risk_events_in_window"):
             try:
-                past_events = self.storage.get_recent_risk_events_in_window(username, hours=4)
+                past_events = [event for event in self.storage.get_recent_risk_events_in_window(username, hours=4)
+                               if event.get("agent_id") == agent_id]
             except Exception as e:
                 logger.debug("Recent risk events fetch skipped: %s", e)
 
         past_max_score = 0.0
         if past_events:
             past_max_score = max((float(e.get("risk_score", 0.0) or 0.0) for e in past_events), default=0.0)
-        elif username and hasattr(self.storage, "get_max_risk_score_in_window"):
-            try:
-                past_max_score = float(self.storage.get_max_risk_score_in_window(username, 4) or 0.0)
-            except Exception as e:
-                logger.debug(f"Temporal memory fetch skipped: {e}")
 
         if past_max_score > 0.0:
             final_score = max(

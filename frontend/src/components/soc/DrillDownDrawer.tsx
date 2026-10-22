@@ -28,12 +28,16 @@ import { Download, ShieldAlert, CheckCircle } from 'lucide-react';
 export interface DrillDownDrawerProps {
   username: string | null;
   hostname?: string | null;
+  riskEvents?: RiskEvent[];
   onClose: () => void;
 }
+
+const EMPTY_RISK_EVENTS: RiskEvent[] = [];
 
 export const DrillDownDrawer: React.FC<DrillDownDrawerProps> = ({
   username,
   hostname,
+  riskEvents = EMPTY_RISK_EVENTS,
   onClose,
 }) => {
   const [prediction, setPrediction] = useState<UserPrediction | null>(null);
@@ -53,8 +57,11 @@ export const DrillDownDrawer: React.FC<DrillDownDrawerProps> = ({
     setError(null);
 
     Promise.all([
-      fetchUserPredictions(username).catch(() => ({ ok: false, username, predictions: null })),
-      fetchUserRiskScores(username, 20).catch(() => ({ ok: false, username, risk_scores: [] })),
+      hostname ? Promise.resolve({ ok: true, username, predictions: null })
+        : fetchUserPredictions(username).catch(() => ({ ok: false, username, predictions: null })),
+      hostname ? Promise.resolve({ ok: true, username, risk_scores: riskEvents.filter(
+        (event) => event.hostname === hostname,
+      ) }) : fetchUserRiskScores(username, 20).catch(() => ({ ok: false, username, risk_scores: [] })),
     ])
       .then(([predRes, scoresRes]) => {
         if (!active) return;
@@ -77,7 +84,7 @@ export const DrillDownDrawer: React.FC<DrillDownDrawerProps> = ({
     return () => {
       active = false;
     };
-  }, [username]);
+  }, [username, hostname, riskEvents]);
 
   if (!username) return null;
 

@@ -8,16 +8,11 @@ SOC Dashboard (Risk Breakdown, Detection Engine, Threat Stream, Attack Surface, 
 Dynamically binds to existing fleet hostnames in your database (e.g. SOCL8-39, SOCL8-44...)
 so that actual monitored machines light up in the dashboard rather than generic placeholders.
 
-Supported modes:
-  1. direct   (Default/Fastest): Directly populates PostgreSQL review queue & endpoint trajectory.
-                                 Works instantly with zero external dependencies.
-  2. pipeline (Full ML Model):  Populates ClickHouse endpoint_daily_feature_rollups and runs the
-                                 actual frozen Model V3 (predict.py) inference batch.
-  3. clean    (Reset):           Removes simulated demo records from PostgreSQL and ClickHouse.
+The historical direct and pipeline modes are retired. They wrote preset model scores or
+misrepresented generated features as observed coverage. Use scenario_replay.py on the
+isolated staging stack for frozen-model output. The clean mode remains for legacy rows.
 
 Usage:
-  python scripts/demo_simulate_model_v3.py --mode direct
-  python scripts/demo_simulate_model_v3.py --mode pipeline
   python scripts/demo_simulate_model_v3.py --mode clean
 """
 from __future__ import annotations
@@ -663,10 +658,15 @@ def clean_simulation() -> None:
 def main() -> None:
     parser = argparse.ArgumentParser(description="Model V3 & SOC Dashboard Demo Simulation Tool")
     parser.add_argument("--mode", choices=["direct", "pipeline", "clean"], default="direct",
-                        help="direct: fastest PG injection; pipeline: end-to-end ML model run; clean: reset demo data")
+                        help="direct/pipeline are retired; clean removes legacy rows")
     parser.add_argument("--as-of", type=date.fromisoformat, default=None,
                         help="Completed UTC date (default: yesterday's UTC date)")
     args = parser.parse_args()
+
+    if args.mode != "clean":
+        parser.error("This legacy command writes preset scores or marks generated rows as observed. "
+                     "Use scripts/scenario_replay.py prepare in the isolated staging stack "
+                     "to run the frozen Model V3 and store its actual scores.")
 
     as_of = args.as_of or (datetime.now(timezone.utc).date() - timedelta(days=1))
 

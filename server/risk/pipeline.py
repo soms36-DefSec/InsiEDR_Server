@@ -182,7 +182,8 @@ def process_telemetry_risk(storage, payload: Dict[str, Any], *, emit: bool = Tru
         # Execute deterministic heuristics plus auth-burst and user-baseline
         # detectors. Model inference remains an external detector integration.
         aggregator = RiskAggregator(storage)
-        risk_result = aggregator.aggregate_detectors(detector_results, username=username_value or None, raw_features=raw_features)
+        risk_result = aggregator.aggregate_detectors(detector_results, username=username_value or None,
+                                                      raw_features=raw_features, agent_id=agent_id)
 
         if baseline_engine is not None and risk_result.get("risk_score", 0.0) < 40.0:
             try:
@@ -215,13 +216,17 @@ def process_telemetry_risk(storage, payload: Dict[str, Any], *, emit: bool = Tru
                 except Exception as host_err:
                     logger.debug("Host baseline update skipped for %s: %s", agent_id, host_err)
 
+        correlated_signals = dict(risk_result.get("correlated_signals_json") or {})
+        if payload.get("hostname"):
+            correlated_signals["hostname"] = str(payload["hostname"])
+
         event_dict = {
             "payload_id": payload_id,
             "agent_id": agent_id,
             "username": username,
             "risk_score": float(risk_result.get("risk_score", 0.0)),
             "risk_level": str(risk_result.get("risk_level", "low")),
-            "correlated_signals_json": risk_result.get("correlated_signals_json", {}),
+            "correlated_signals_json": correlated_signals,
             "summary": str(risk_result.get("summary", "Normal behavior.")),
             "collected_at": payload.get("collected_at"),
         }
