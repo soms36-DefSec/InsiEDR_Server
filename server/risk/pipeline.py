@@ -125,7 +125,7 @@ def _flatten_features(source: Dict[str, Any], target: Dict[str, Any], username: 
             target.setdefault(str(key), value)
 
 
-def process_telemetry_risk(storage, payload: Dict[str, Any]) -> Dict[str, Any]:
+def process_telemetry_risk(storage, payload: Dict[str, Any], *, emit: bool = True) -> Dict[str, Any]:
     """
     Executes the Heuristics Detection Engine and Risk Aggregator on an ingested payload.
     Persists risk event to storage and dispatches real-time SSE threat notifications.
@@ -235,11 +235,12 @@ def process_telemetry_risk(storage, payload: Dict[str, Any]) -> Dict[str, Any]:
                 logger.warning("Failed to persist risk event: %s", save_err)
 
         # Dispatch real-time threat event to connected SSE clients
-        try:
-            from server.api.events import dispatch_threat_event
-            dispatch_threat_event(event_dict)
-        except Exception:
-            pass
+        if emit:
+            try:
+                from server.api.events import dispatch_threat_event
+                dispatch_threat_event(event_dict)
+            except Exception:
+                pass
 
         return event_dict
 

@@ -110,6 +110,7 @@ export interface CorrelatedSignals {
  */
 export interface RiskEvent {
   id?: number | string;
+  agent_id?: string;
   username: string;
   hostname?: string;
   risk_score: number | string;

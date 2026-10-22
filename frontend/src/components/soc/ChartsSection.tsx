@@ -58,12 +58,11 @@ export const ChartsSection: React.FC<ChartsSectionProps> = ({ riskCounts, riskEv
     const dDevice = avg(domains.Device);
     const dHTTP = avg(domains.HTTP);
 
-    const hasData = dLogon > 0 || dFile > 0 || dDevice > 0 || dHTTP > 0;
     return [
-      { name: 'Logon Vectors', score: hasData ? dLogon : 12.5, color: 'bg-blue-600', fill: '#2563eb' },
-      { name: 'File I/O Activity', score: hasData ? dFile : 8.0, color: 'bg-indigo-600', fill: '#4f46e5' },
-      { name: 'USB / Devices', score: hasData ? dDevice : 4.5, color: 'bg-amber-600', fill: '#d97706' },
-      { name: 'HTTP & Web Traffic', score: hasData ? dHTTP : 10.2, color: 'bg-cyan-600', fill: '#0891b2' },
+      { name: 'Logon Vectors', score: dLogon, color: 'bg-blue-600', fill: '#2563eb' },
+      { name: 'File I/O Activity', score: dFile, color: 'bg-indigo-600', fill: '#4f46e5' },
+      { name: 'USB / Devices', score: dDevice, color: 'bg-amber-600', fill: '#d97706' },
+      { name: 'HTTP & Web Traffic', score: dHTTP, color: 'bg-cyan-600', fill: '#0891b2' },
     ];
   }, [riskEvents]);
 
@@ -91,7 +90,7 @@ export const ChartsSection: React.FC<ChartsSectionProps> = ({ riskCounts, riskEv
       .slice(-24);
 
     return sorted.map((e) => ({
-      user: e.username,
+      user: e.hostname || e.username || 'Endpoint',
       score: Math.min(100, Math.max(0, parseFloat(String(e.risk_score || 0)))),
       time: new Date(e.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
     }));
@@ -116,7 +115,7 @@ export const ChartsSection: React.FC<ChartsSectionProps> = ({ riskCounts, riskEv
               <div className="w-full bg-slate-100 rounded-full h-2 overflow-hidden border border-slate-200/60">
                 <div
                   className={`h-full rounded-full ${domain.color} transition-all duration-500`}
-                  style={{ width: `${Math.min(100, Math.max(4, domain.score))}%` }}
+                  style={{ width: `${Math.min(100, Math.max(0, domain.score))}%` }}
                 />
               </div>
             </div>

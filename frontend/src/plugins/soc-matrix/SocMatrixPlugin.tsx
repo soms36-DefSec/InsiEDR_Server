@@ -27,6 +27,8 @@ export const SocMatrixPlugin: React.FC<PluginProps> = ({ context }) => {
   const [drillHostname, setDrillHostname] = useState<string | null>(null);
   const [filterLevel, setFilterLevel] = useState<string | null>(null);
   const [timeRange, setTimeRange] = useState<string>('1h');
+  const [historyStart, setHistoryStart] = useState(() => new Date(Date.now() - 30 * 86400000).toISOString().slice(0, 10));
+  const [historyEnd, setHistoryEnd] = useState(() => new Date(Date.now() - 86400000).toISOString().slice(0, 10));
 
   const handleSelectEndpoint = (user: string, host?: string) => {
     setDrillUser(user);
@@ -44,6 +46,7 @@ export const SocMatrixPlugin: React.FC<PluginProps> = ({ context }) => {
     { key: '1h', label: '1h' },
     { key: '24h', label: '24h' },
     { key: '7d', label: '7d' },
+    { key: 'custom', label: 'UTC dates' },
   ];
 
   return (
@@ -68,7 +71,7 @@ export const SocMatrixPlugin: React.FC<PluginProps> = ({ context }) => {
         }
         subtitle="Chronological frequency and ingestion rate of raw endpoint telemetry"
         action={
-          <div className="flex items-center gap-2">
+          <div className="flex flex-wrap items-center gap-2">
             {/* Time Range Selector */}
             <div className="flex items-center bg-slate-100 p-0.5 rounded-md border border-slate-200/80">
               {timeRanges.map((r) => (
@@ -85,11 +88,21 @@ export const SocMatrixPlugin: React.FC<PluginProps> = ({ context }) => {
                 </button>
               ))}
             </div>
+            {timeRange === 'custom' && <div className="flex items-center gap-1 text-xs">
+              <input aria-label="History start date UTC" type="date" value={historyStart}
+                onChange={(event) => setHistoryStart(event.target.value)} className="rounded border px-1 py-0.5" />
+              <span>to</span>
+              <input aria-label="History end date UTC" type="date" value={historyEnd}
+                onChange={(event) => setHistoryEnd(event.target.value)} className="rounded border px-1 py-0.5" />
+            </div>}
           </div>
         }
       >
         <TelemetryHistogram
           timeRange={timeRange}
+          startTime={timeRange === 'custom' && historyStart ? `${historyStart}T00:00:00Z` : undefined}
+          endTime={timeRange === 'custom' && historyEnd
+            ? new Date(Date.parse(`${historyEnd}T00:00:00Z`) + 86400000).toISOString() : undefined}
           autoRefresh={autoRefresh}
         />
       </Card>
@@ -137,6 +150,7 @@ export const SocMatrixPlugin: React.FC<PluginProps> = ({ context }) => {
         agents={summary?.agents || []}
         riskEvents={summary?.risk_events || []}
         selectedUser={drillUser}
+        selectedHostname={drillHostname}
         filterLevel={filterLevel}
         onClearFilterLevel={() => setFilterLevel(null)}
         onSelectEndpoint={handleSelectEndpoint}

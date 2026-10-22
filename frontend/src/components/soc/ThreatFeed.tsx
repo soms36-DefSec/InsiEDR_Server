@@ -55,6 +55,7 @@ export const ThreatFeed: React.FC<ThreatFeedProps> = ({
         const score = parseFloat(String(ev.risk_score || 0));
         const level = getRiskLevel(score);
         const summary = extractEventSummary(ev);
+        const host = ev.hostname || ev.agent_id || 'Endpoint';
         const user = ev.username || 'unknown';
 
         return (
@@ -68,8 +69,8 @@ export const ThreatFeed: React.FC<ThreatFeedProps> = ({
             </div>
             <div className="flex-1 min-w-0">
               <div className="flex items-center justify-between gap-2">
-                <span className="text-xs font-semibold text-slate-850 group-hover:text-slate-950 transition-colors truncate">
-                  {user}
+                <span className="text-xs font-semibold font-mono text-slate-900 group-hover:text-blue-600 transition-colors truncate">
+                  {host}
                 </span>
                 <span className="text-[11px] font-mono tabular-nums text-slate-500 shrink-0">
                   Risk: <span className="font-semibold text-slate-900">{formatScore(score)}</span>
@@ -80,10 +81,10 @@ export const ThreatFeed: React.FC<ThreatFeedProps> = ({
               </div>
               <div className="text-[10px] text-slate-400 mt-1 flex items-center gap-2">
                 <span>{timeAgo(ev.created_at)}</span>
-                {ev.hostname && (
+                {user && (
                   <>
                     <span>·</span>
-                    <span className="font-mono text-slate-500">{ev.hostname}</span>
+                    <span className="text-slate-500">User: {user}</span>
                   </>
                 )}
               </div>

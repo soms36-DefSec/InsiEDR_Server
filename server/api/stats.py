@@ -109,7 +109,11 @@ def dashboard_summary(include_stats: bool = True, storage=Depends(get_storage),
         medium_count = 0
         low_count = 0
 
+        # Index latest risk events by Hostname (primary), Agent ID, and Username (fallback)
+        host_latest_risk: dict[str, dict] = {}
+        agent_latest_risk: dict[str, dict] = {}
         user_latest_risk: dict[str, dict] = {}
+
         for event in risk_events:
             score = float(event.get("risk_score") or 0.0)
             if score >= 85.0:
@@ -123,18 +127,30 @@ def dashboard_summary(include_stats: bool = True, storage=Depends(get_storage),
             event["risk_level"] = level
             event["_computed_level"] = level
 
-            user = event.get("username") or "unknown"
-            if user not in user_latest_risk:
-                user_latest_risk[user] = event
+            h = event.get("hostname")
+            aid = event.get("agent_id")
+            u = event.get("username")
 
-        unique_endpoints = set()
+            if h and h not in host_latest_risk:
+                host_latest_risk[h] = event
+            if aid and aid not in agent_latest_risk:
+                agent_latest_risk[aid] = event
+            if u and u not in user_latest_risk:
+                user_latest_risk[u] = event
+
+        # Monitored endpoints are distinct physical/virtual endpoints identified by HOSTNAME
+        seen_hosts = set()
         for a in agents:
-            key = a.get("username_last_seen") or a.get("hostname")
-            if key:
-                unique_endpoints.add(key)
+            hostname = a.get("hostname") or a.get("agent_id") or a.get("username_last_seen")
+            if not hostname or hostname in seen_hosts:
+                continue
+            seen_hosts.add(hostname)
 
-        for ep in unique_endpoints:
-            ev = user_latest_risk.get(ep)
+            # Correlate event by Hostname first, then Agent ID, then Username
+            ev = host_latest_risk.get(hostname) or agent_latest_risk.get(a.get("agent_id"))
+            if not ev and a.get("username_last_seen"):
+                ev = user_latest_risk.get(a.get("username_last_seen"))
+
             if ev:
                 lvl = (ev.get("_computed_level") or ev.get("risk_level") or "LOW").upper()
                 if lvl == "CRITICAL":
@@ -148,11 +164,12 @@ def dashboard_summary(include_stats: bool = True, storage=Depends(get_storage),
             else:
                 low_count += 1
 
-        if not unique_endpoints:
-            critical_count = sum(1 for e in user_latest_risk.values() if e.get("_computed_level") == "CRITICAL")
-            high_count = sum(1 for e in user_latest_risk.values() if e.get("_computed_level") == "HIGH")
-            medium_count = sum(1 for e in user_latest_risk.values() if e.get("_computed_level") == "MEDIUM")
-            low_count = sum(1 for e in user_latest_risk.values() if e.get("_computed_level") == "LOW")
+        if not seen_hosts:
+            fallback_map = host_latest_risk or user_latest_risk
+            critical_count = sum(1 for e in fallback_map.values() if e.get("_computed_level") == "CRITICAL")
+            high_count = sum(1 for e in fallback_map.values() if e.get("_computed_level") == "HIGH")
+            medium_count = sum(1 for e in fallback_map.values() if e.get("_computed_level") == "MEDIUM")
+            low_count = sum(1 for e in fallback_map.values() if e.get("_computed_level") == "LOW")
 
         res = {
             "ok": True,

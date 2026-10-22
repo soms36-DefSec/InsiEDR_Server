@@ -34,6 +34,7 @@ export interface UserRiskTableProps {
   agents: AgentEndpoint[];
   riskEvents: RiskEvent[];
   selectedUser?: string | null;
+  selectedHostname?: string | null;
   filterLevel?: string | null;
   onClearFilterLevel?: () => void;
   onSelectEndpoint: (username: string, hostname?: string) => void;
@@ -43,6 +44,7 @@ export const UserRiskTable: React.FC<UserRiskTableProps> = ({
   agents,
   riskEvents,
   selectedUser,
+  selectedHostname,
   filterLevel,
   onClearFilterLevel,
   onSelectEndpoint,
@@ -55,19 +57,28 @@ export const UserRiskTable: React.FC<UserRiskTableProps> = ({
 
   // Compute endpoint rows with latest risk scores and 30-min decay
   const endpointRows = useMemo<EndpointRow[]>(() => {
-    const latestRiskMap: Record<string, RiskEvent> = {};
+    const hostRiskMap: Record<string, RiskEvent> = {};
+    const agentRiskMap: Record<string, RiskEvent> = {};
+    const userRiskMap: Record<string, RiskEvent> = {};
+
     riskEvents.forEach((ev) => {
+      const h = ev.hostname;
+      const aid = ev.agent_id;
       const u = ev.username;
-      if (u && !latestRiskMap[u]) latestRiskMap[u] = ev;
+      if (h && !hostRiskMap[h]) hostRiskMap[h] = ev;
+      if (aid && !agentRiskMap[aid]) agentRiskMap[aid] = ev;
+      if (u && !userRiskMap[u]) userRiskMap[u] = ev;
     });
 
     const now = Date.now();
     const rows: EndpointRow[] = agents.map((agent) => {
-      const user = agent.username_last_seen || '—';
       const hostname = agent.hostname || '—';
+      const user = agent.username_last_seen || '—';
       const agentId = agent.agent_id || `${hostname}_${user}`;
 
-      const risk = latestRiskMap[user] || latestRiskMap[hostname];
+      const risk = (hostname !== '—' && hostRiskMap[hostname]) ||
+                   (agent.agent_id && agentRiskMap[agent.agent_id]) ||
+                   (user !== '—' && userRiskMap[user]);
       let score = 0;
       let level = getRiskLevel(0);
       let isDecayed = false;
@@ -259,18 +270,18 @@ export const UserRiskTable: React.FC<UserRiskTableProps> = ({
               <th className="py-2.5 px-4 w-16">Status</th>
               <th
                 className="py-2.5 px-4 cursor-pointer hover:text-slate-900 select-none"
-                onClick={() => toggleSort('user')}
-              >
-                <div className="flex items-center gap-1">
-                  User <ArrowUpDown className="w-3 h-3 text-slate-400" />
-                </div>
-              </th>
-              <th
-                className="py-2.5 px-4 cursor-pointer hover:text-slate-900 select-none"
                 onClick={() => toggleSort('hostname')}
               >
                 <div className="flex items-center gap-1">
                   Hostname <ArrowUpDown className="w-3 h-3 text-slate-400" />
+                </div>
+              </th>
+              <th
+                className="py-2.5 px-4 cursor-pointer hover:text-slate-900 select-none"
+                onClick={() => toggleSort('user')}
+              >
+                <div className="flex items-center gap-1">
+                  User <ArrowUpDown className="w-3 h-3 text-slate-400" />
                 </div>
               </th>
               <th
@@ -302,7 +313,7 @@ export const UserRiskTable: React.FC<UserRiskTableProps> = ({
               </tr>
             ) : (
               paginated.map((row) => {
-                const isSelected = selectedUser === row.user;
+                const isSelected = selectedHostname ? selectedHostname === row.hostname : (selectedUser === row.user);
                 const scoreColor =
                   row.score >= 85
                     ? 'text-rose-700'
@@ -339,14 +350,14 @@ export const UserRiskTable: React.FC<UserRiskTableProps> = ({
                       />
                     </td>
 
-                    {/* User */}
-                    <td className="py-3 px-4 font-semibold text-slate-900">{row.user}</td>
-
-                    {/* Hostname */}
-                    <td className="py-3 px-4 font-mono text-slate-600 flex items-center gap-1.5">
-                      <Monitor className="w-3.5 h-3.5 text-slate-400" />
+                    {/* Hostname (Primary Identifier) */}
+                    <td className="py-3 px-4 font-mono font-semibold text-slate-900 flex items-center gap-1.5">
+                      <Monitor className="w-3.5 h-3.5 text-blue-600" />
                       {row.hostname}
                     </td>
+
+                    {/* User */}
+                    <td className="py-3 px-4 text-slate-600 font-medium">{row.user}</td>
 
                     {/* Score + Progress Bar */}
                     <td className="py-3 px-4">

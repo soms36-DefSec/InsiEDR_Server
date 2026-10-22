@@ -568,7 +568,8 @@ def telemetry_event_detail(storage, event_id: str) -> dict[str, Any] | None:
     }
 
 
-def telemetry_histogram(storage, time_range='1h', interval=None, collector=None, status=None, agent_id=None):
+def telemetry_histogram(storage, time_range='1h', interval=None, collector=None, status=None,
+                        agent_id=None, start_time=None, end_time=None):
     """
     Server-side Event Frequency Histogram Aggregation.
     Executes in < 5ms over millions of rows on ClickHouse columnar timestamps.
@@ -580,6 +581,7 @@ def telemetry_histogram(storage, time_range='1h', interval=None, collector=None,
         '24h': ("INTERVAL 24 HOUR", "toStartOfInterval(timestamp, INTERVAL 15 MINUTE)", "15m"),
         '7d': ("INTERVAL 7 DAY", "toStartOfInterval(timestamp, INTERVAL 2 HOUR)", "2h"),
         'all': ("INTERVAL 30 DAY", "toStartOfDay(timestamp)", "1d"),
+        'custom': (None, "toStartOfDay(timestamp)", "1d"),
     }
     int_map = {
         '1m': 'toStartOfMinute(timestamp)',
@@ -595,7 +597,13 @@ def telemetry_histogram(storage, time_range='1h', interval=None, collector=None,
     bucket_fn = int_map.get(interval, default_bucket_fn) if interval else default_bucket_fn
 
     params = {}
-    clauses = [f"timestamp >= now() - {time_window}"]
+    if time_range == 'custom':
+        if start_time is None or end_time is None:
+            raise ValueError('Custom histogram requires start and end times')
+        params['start_time'], params['end_time'] = start_time, end_time
+        clauses = ["timestamp >= %(start_time)s", "timestamp < %(end_time)s"]
+    else:
+        clauses = [f"timestamp >= now() - {time_window}"]
     if collector:
         params['collector'] = collector.strip().lower()
         clauses.append("lower(collector_name) = %(collector)s")

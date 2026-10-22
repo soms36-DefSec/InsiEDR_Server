@@ -1293,10 +1293,13 @@ class PostgresStorage(BaseStorage):
                 try:
                     cursor.execute(
                         """
-                        SELECT id, payload_id, agent_id, username, risk_score, risk_level,
-                               correlated_signals_json, summary, created_at
-                        FROM risk_events
-                        ORDER BY created_at DESC
+                        SELECT r.id, r.payload_id, r.agent_id, r.username,
+                               COALESCE(a.hostname, (r.correlated_signals_json->>'hostname'), r.agent_id) AS hostname,
+                               r.risk_score, r.risk_level,
+                               r.correlated_signals_json, r.summary, r.created_at
+                        FROM risk_events r
+                        LEFT JOIN agents a ON r.agent_id = a.agent_id
+                        ORDER BY r.created_at DESC
                         LIMIT %s OFFSET %s
                         """,
                         (limit, offset),
@@ -1898,11 +1901,12 @@ class PostgresStorage(BaseStorage):
                         """
                         SELECT re.risk_score, re.risk_level, re.created_at, re.summary, re.correlated_signals_json
                         FROM risk_events re
-                        WHERE re.username = %s
+                        LEFT JOIN agents a ON re.agent_id = a.agent_id
+                        WHERE re.username = %s OR a.hostname = %s OR (re.correlated_signals_json->>'hostname') = %s
                         ORDER BY re.created_at DESC
                         LIMIT %s
                         """,
-                        (username, limit)
+                        (username, username, username, limit)
                     )
                     results = []
                     for row in cursor.fetchall():

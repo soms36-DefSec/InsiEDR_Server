@@ -68,16 +68,22 @@ export const TopNavbar: React.FC<TopNavbarProps> = ({
   const handleExportFleetRisk = () => {
     if (!summary?.agents) return;
     const now = Date.now();
-    const latestRiskMap: Record<string, RiskEvent> = {};
+    const hostRiskMap: Record<string, RiskEvent> = {};
+    const agentRiskMap: Record<string, RiskEvent> = {};
+    const userRiskMap: Record<string, RiskEvent> = {};
     (summary.risk_events || []).forEach((ev) => {
-      if (ev.username && !latestRiskMap[ev.username]) latestRiskMap[ev.username] = ev;
+      if (ev.hostname && !hostRiskMap[ev.hostname]) hostRiskMap[ev.hostname] = ev;
+      if (ev.agent_id && !agentRiskMap[ev.agent_id]) agentRiskMap[ev.agent_id] = ev;
+      if (ev.username && !userRiskMap[ev.username]) userRiskMap[ev.username] = ev;
     });
 
     const rows: EndpointRow[] = summary.agents.map((agent) => {
-      const user = agent.username_last_seen || '—';
       const hostname = agent.hostname || '—';
+      const user = agent.username_last_seen || '—';
       const agentId = agent.agent_id || `${hostname}_${user}`;
-      const risk = latestRiskMap[user] || latestRiskMap[hostname];
+      const risk = (hostname !== '—' && hostRiskMap[hostname]) ||
+                   (agent.agent_id && agentRiskMap[agent.agent_id]) ||
+                   (user !== '—' && userRiskMap[user]);
       const score = risk ? parseFloat(String(risk.risk_score || 0)) : 0;
       const isOnline =
         agent.status === 'active' ||

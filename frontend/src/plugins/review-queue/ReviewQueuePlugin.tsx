@@ -209,9 +209,17 @@ export function ReviewQueuePlugin(_props: PluginProps) {
         <p className="font-medium">Day {Math.min(trajectory.consecutive_complete_days, 22)} of 22 · {trajectory.review_eligible ? 'Review eligible' : 'Warming up'}</p>
         <p className="text-slate-600">Completed UTC day: {trajectory.as_of}. A missing day or journal gap resets the consecutive count.</p>
         {trajectory.history[0]?.threat_probability != null && <p className="mt-1">Latest Model V3 threat score: {percentScore(trajectory.history[0].threat_probability)} · {trajectory.history[0].predicted_scenario?.replaceAll('_', ' ')}</p>}
-        {trajectory.history.slice(0, 8).map((day) => <p key={day.review_date} className="mt-1 text-xs text-slate-600">
-          {day.review_date}: {day.observation_complete ? day.selection_status : `Incomplete · ${day.missing_sensors.join(', ') || day.selection_status}`}
-        </p>)}
+        <div className="mt-3 max-h-64 overflow-auto rounded border border-slate-200">
+          <table className="w-full text-left text-xs">
+            <thead><tr><th className="p-2">UTC day</th><th>Coverage</th><th>Model threat</th><th>Hypothesis</th></tr></thead>
+            <tbody>{trajectory.history.map((day) => <tr key={day.review_date} className="border-t">
+              <td className="p-2">{day.review_date}</td>
+              <td>{day.observation_complete ? 'Complete' : `Incomplete · ${day.missing_sensors.join(', ') || day.selection_status}`}</td>
+              <td>{percentScore(day.threat_probability)}</td>
+              <td>{day.predicted_scenario?.replaceAll('_', ' ') || '—'}</td>
+            </tr>)}</tbody>
+          </table>
+        </div>
       </div>}
       {scenarioHosts === null && queue.some((row) => row.agent_id === selectedAgent) && <div className="mt-5 grid gap-3 border-t pt-4">
         <label className="text-sm">Analyst status

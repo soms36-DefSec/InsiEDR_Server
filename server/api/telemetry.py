@@ -2,9 +2,9 @@ from __future__ import annotations
 
 import anyio
 import logging
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Literal
-from fastapi import APIRouter, Depends, Query, Request
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import JSONResponse
 
 from server.api.errors import AnalyticsUnavailableError
@@ -200,11 +200,13 @@ async def get_telemetry_event_detail(
 @router.get("/telemetry/histogram")
 @router.get("/v1/telemetry/histogram")
 async def get_telemetry_histogram(
-    time_range: str = Query("1h", pattern="^(15m|1h|24h|7d|all)$"),
+    time_range: str = Query("1h", pattern="^(15m|1h|24h|7d|all|custom)$"),
     interval: str | None = None,
     collector: str | None = None,
     status: str | None = None,
     agent_id: str | None = None,
+    start_time: datetime | None = None,
+    end_time: datetime | None = None,
     storage=Depends(get_storage),
     operator: OperatorPrincipal = Depends(require_operator("operator:read")),
 ):
@@ -212,8 +214,18 @@ async def get_telemetry_histogram(
     from server.api.snapshots import snapshot
     if storage is None or not callable(getattr(storage, 'get_telemetry_histogram', None)):
         raise AnalyticsUnavailableError('Telemetry storage is unavailable')
+    if time_range == 'custom':
+        if not start_time or not end_time:
+            raise HTTPException(status_code=422, detail='Custom range requires start_time and end_time')
+        start = start_time if start_time.tzinfo else start_time.replace(tzinfo=timezone.utc)
+        end = end_time if end_time.tzinfo else end_time.replace(tzinfo=timezone.utc)
+        if start >= end or end - start > timedelta(days=90) or end > datetime.now(timezone.utc):
+            raise HTTPException(status_code=422, detail='Custom range must be completed and at most 90 days')
+        start_time, end_time = start, end
+    else:
+        start_time = end_time = None
     filters = dict(time_range=time_range, interval=interval, collector=collector,
-                   status=status, agent_id=agent_id)
+                   status=status, agent_id=agent_id, start_time=start_time, end_time=end_time)
     actor = getattr(operator, 'actor', 'anon')
     return await anyio.to_thread.run_sync(lambda: snapshot(
         storage, actor, 'histogram', lambda: storage.get_telemetry_histogram(**filters),

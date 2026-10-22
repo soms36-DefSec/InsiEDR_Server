@@ -10,6 +10,8 @@ export interface TelemetryHistogramProps {
   activeCollector?: string;
   statusFilter?: string;
   agentId?: string;
+  startTime?: string;
+  endTime?: string;
   onSelectBucket?: (timestamp: string) => void;
 }
 
@@ -46,6 +48,8 @@ export const TelemetryHistogram: React.FC<TelemetryHistogramProps> = ({
   activeCollector,
   statusFilter,
   agentId,
+  startTime,
+  endTime,
   onSelectBucket,
 }) => {
   const [buckets, setBuckets] = useState<TelemetryHistogramBucket[]>([]);
@@ -80,7 +84,8 @@ export const TelemetryHistogram: React.FC<TelemetryHistogramProps> = ({
       let nextDelay = 30000;
       try {
         const res = await fetchTelemetryHistogram(timeRange, {
-          collector: activeCollector, status: statusFilter, agent_id: agentId, signal: abort.signal,
+          collector: activeCollector, status: statusFilter, agent_id: agentId,
+          start_time: startTime, end_time: endTime, signal: abort.signal,
         });
         if (!active) return;
         if (!res?.ok) throw new Error('Histogram unavailable');
@@ -102,7 +107,7 @@ export const TelemetryHistogram: React.FC<TelemetryHistogramProps> = ({
     };
     void refresh();
     return () => { active = false; abort.abort(); window.clearTimeout(timer); };
-  }, [timeRange, activeCollector, statusFilter, agentId, refreshVersion, autoRefresh]);
+  }, [timeRange, activeCollector, statusFilter, agentId, startTime, endTime, refreshVersion, autoRefresh]);
 
   const maxCount = useMemo(() => {
     if (!buckets.length) return 1;

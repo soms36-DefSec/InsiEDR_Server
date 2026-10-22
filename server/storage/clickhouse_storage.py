@@ -1109,6 +1109,9 @@ class ClickHouseStorage:
                         d["correlated_signals_json"] = json.loads(signals)
                     except Exception:
                         pass
+                if isinstance(d.get("correlated_signals_json"), dict):
+                    sig = d["correlated_signals_json"]
+                    d["hostname"] = sig.get("hostname") or sig.get("host") or d.get("agent_id")
                 results.append(d)
             return results
         except Exception as exc:

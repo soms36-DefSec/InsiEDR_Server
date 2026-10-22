@@ -138,7 +138,7 @@ def trajectory(agent_id: str, storage=Depends(get_storage),
                     "consecutive_complete_days": 0, "review_eligible": False, "history": []}
         run_id, as_of, _, _ = run
         cur.execute("SELECT score_json FROM scenario_replay.daily_scores "
-                    "WHERE run_id=%s AND agent_id=%s ORDER BY review_date DESC LIMIT 30", (run_id, agent_id))
+                    "WHERE run_id=%s AND agent_id=%s ORDER BY review_date DESC LIMIT 90", (run_id, agent_id))
         history = [_score(row[0]) for row in cur.fetchall()]
     days = {date.fromisoformat(row["review_date"]) for row in history if row["observation_complete"]}
     cursor, consecutive = as_of, 0

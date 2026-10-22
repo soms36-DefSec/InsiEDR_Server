@@ -251,29 +251,20 @@ export async function fetchTelemetryEventDetail(eventId: string | number, signal
  */
 export async function fetchTelemetryHistogram(
   timeRange = '1h',
-  filters: { collector?: string | null; status?: string | null; agent_id?: string | null; signal?: AbortSignal } = {},
+  filters: { collector?: string | null; status?: string | null; agent_id?: string | null;
+    start_time?: string | null; end_time?: string | null; signal?: AbortSignal } = {},
 ): Promise<TelemetryHistogramResponse> {
   const params = new URLSearchParams({ time_range: timeRange });
   if (filters.collector && filters.collector !== 'all') params.set('collector', filters.collector);
   if (filters.status && filters.status !== 'all') params.set('status', filters.status);
   if (filters.agent_id) params.set('agent_id', filters.agent_id);
+  if (filters.start_time) params.set('start_time', filters.start_time);
+  if (filters.end_time) params.set('end_time', filters.end_time);
 
-  try {
-    return await fetchApi<TelemetryHistogramResponse>(`/api/v1/telemetry/histogram?${params.toString()}`, {
-      signal: filters.signal,
-      timeoutMs: 30000,
-    });
-  } catch (err) {
-    if (filters.signal?.aborted) throw err;
-    console.warn('Histogram query degraded, serving baseline fallback:', err);
-    return {
-      ok: true,
-      time_range: timeRange,
-      interval: '1m',
-      total_events: 1511377,
-      histogram: [],
-    };
-  }
+  return fetchApi<TelemetryHistogramResponse>(`/api/v1/telemetry/histogram?${params.toString()}`, {
+    signal: filters.signal,
+    timeoutMs: 30000,
+  });
 }
 
 /**

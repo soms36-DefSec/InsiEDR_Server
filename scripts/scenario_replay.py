@@ -258,8 +258,6 @@ def _collector_samples(path, agents, *, windows=None, max_per_key=128):
     snapshots = {agent: {} for agent in agents}
     for collector, file in _files(path).items():
         aliases = COLLECTOR_FIELDS.get(collector, {})
-        if not aliases and windows is None:
-            continue
         with file.open(newline="", encoding="utf-8-sig", errors="replace") as handle:
             for row in csv.DictReader(handle):
                 agent = row.get("agent_id")
@@ -309,6 +307,27 @@ def _vector(agent, scenario, day, index, baseline, peaks):
     return [values[name] for name in RAW_FEATURES]
 
 
+def _history_window(args):
+    """Resolve a window containing only completed UTC calendar days."""
+    days = args.days
+    if not 22 <= days <= 90:
+        raise ValueError("--days must be between 22 and 90")
+    completed_through = datetime.now(timezone.utc).date() - timedelta(days=1)
+    end = (args.start_date + timedelta(days=days - 1) if args.start_date else
+           args.as_of or completed_through)
+    start = end - timedelta(days=days - 1)
+    if end > completed_through:
+        raise ValueError("Replay history must end on a completed UTC day")
+    if args.start_date and args.as_of and args.as_of != end:
+        raise ValueError("--start-date, --days, and --as-of disagree")
+    return start, end, days
+
+
+def _scenario_offsets(days):
+    """Recurring dataset scenario dates, with a consecutive final sequence."""
+    return set(range(7, days - 3, 10)) | set(range(days - 3, days))
+
+
 def _pg():
     import psycopg2
     return psycopg2.connect(config.database_dsn)
@@ -342,8 +361,11 @@ def _save_scores(run_id, as_of, output):
     return summary
 
 
-def _backfill(run_id, as_of, snapshots, dataset_name):
+def _backfill(run_id, start, days, snapshots, dataset_name,
+              scenario_items, scenario_dataset):
     from server.storage.clickhouse_storage import ClickHouseStorage
+    from server.storage.clickhouse_telemetry_queries import extract_summary_preview
+    from server.risk.pipeline import process_telemetry_risk
     ch = ClickHouseStorage(host=config.clickhouse_host, port=config.clickhouse_port,
         username=config.clickhouse_user, password=config.clickhouse_password,
         database=config.clickhouse_db, secure=config.clickhouse_secure, dlq_enabled=False)
@@ -354,38 +376,94 @@ def _backfill(run_id, as_of, snapshots, dataset_name):
         explorer_rows = []
         for agent, collectors in snapshots.items():
             hostname = agent.removeprefix("AGENT-")
-            for offset in range(22):
-                day = as_of - timedelta(days=21-offset)
+            for offset in range(days):
+                day = start + timedelta(days=offset)
                 for collector, sources in collectors.items():
-                    source = sources[offset % len(sources)]
-                    payload = {key: value for key, value in source.items()
-                               if key not in ("timestamp", "username", "hostname", "agent_id", "status") and value not in ("", None)}
-                    original = source.get("timestamp", "")
+                    for slot in range(3):
+                        source = sources[(offset * 3 + slot) % len(sources)]
+                        payload = {key: value for key, value in source.items()
+                                   if key not in ("timestamp", "username", "hostname", "agent_id", "status") and value not in ("", None)}
+                        original = source.get("timestamp", "")
+                        shifted = datetime.combine(day, _utc(original).time(), timezone.utc)
+                        payload_id = f"scenario-{run_id}-{agent}-{collector}-{offset}-{slot}"
+                        rows.append((payload_id, agent, collector, shifted,
+                                     hostname, "success", json.dumps(payload), "scenario_replay",
+                                     json.dumps({"source_dataset": dataset_name, "original_timestamp": original,
+                                                 "run_id": run_id, "source_kind": "synthetic"})))
+                        explorer_rows.append((payload_id, agent, collector, shifted, hostname,
+                            source.get("username", ""), "success",
+                            extract_summary_preview(collector, payload), json.dumps(payload)))
+        risk_rows = []
+        for scenario, agent in SCENARIOS:
+            item = scenario_items[scenario]
+            frames = _scenario_frames(scenario_dataset, item)
+            hostname = agent.removeprefix("AGENT-")
+            username = item.get("target_username", "")
+            for offset in sorted(_scenario_offsets(days)):
+                day = start + timedelta(days=offset)
+                best = None
+                for frame_index, (_, sources) in enumerate(frames):
+                    source_row = next(iter(sources.values()))
+                    original = source_row["timestamp"]
                     shifted = datetime.combine(day, _utc(original).time(), timezone.utc)
-                    payload_id = f"scenario-{run_id}-{agent}-{collector}-{offset}"
-                    rows.append((payload_id, agent, collector, shifted,
-                                 hostname, "success", json.dumps(payload), "scenario_replay",
-                                 json.dumps({"source_dataset": dataset_name, "original_timestamp": original,
-                                             "run_id": run_id, "source_kind": "synthetic"})))
-                    explorer_rows.append((payload_id, agent, collector, shifted, hostname,
-                        "", "success", f"{collector}: historical collector observation", json.dumps(payload)))
+                    payload_id = f"scenario-{run_id}-{agent}-evidence-{offset}-{frame_index}"
+                    collectors = []
+                    for collector, source in sources.items():
+                        body = {key: value for key, value in source.items()
+                                if key not in ("timestamp", "username", "hostname", "agent_id", "status")
+                                and value not in ("", None)}
+                        collectors.append({"collector": collector, "status": "success", "payload": body})
+                        rows.append((payload_id, agent, collector, shifted, hostname, "success",
+                            json.dumps(body), "scenario_replay", json.dumps({"source_dataset": "Dataset_Simulated",
+                                "original_timestamp": source["timestamp"], "run_id": run_id,
+                                "source_kind": "synthetic", "scenario": scenario})))
+                        explorer_rows.append((payload_id, agent, collector, shifted, hostname, username,
+                            "success", extract_summary_preview(collector, body), json.dumps(body)))
+                    result = process_telemetry_risk(None, {"payload_id": payload_id, "agent_id": agent,
+                        "hostname": hostname, "username": username,
+                        "collected_at": shifted.isoformat(), "collectors": collectors}, emit=False)
+                    if result.get("summary") == "Error evaluating risk.":
+                        raise RuntimeError(f"Historical risk evaluation failed for {agent} {day}")
+                    if best is None or result["risk_score"] > best["risk_score"]:
+                        best = result
+                if best is not None and best["risk_score"] > 0:
+                    risk_rows.append((best["payload_id"], agent, username, best["risk_score"],
+                        best["risk_level"], json.dumps(best["correlated_signals_json"]),
+                        best["summary"], _utc(best["collected_at"])))
         ch._client.insert("collector_results", rows, column_names=(
             "payload_id", "agent_id", "collector", "collector_collected_at", "hostname",
             "status", "payload_json", "source_quality", "agent_quality_json"))
         ch._client.insert("telemetry_events", explorer_rows, column_names=(
             "payload_id", "agent_id", "collector_name", "timestamp", "hostname",
             "username", "status", "summary_preview", "raw_payload_json"))
+        if risk_rows:
+            ch._client.insert("risk_events", risk_rows, column_names=(
+                "payload_id", "agent_id", "username", "risk_score", "risk_level",
+                "correlated_signals_json", "summary", "created_at"))
     finally:
         ch.close()
+    with _pg() as conn, conn.cursor() as cur:
+        for scenario, agent in SCENARIOS:
+            cur.execute("INSERT INTO agents (agent_id, hostname, username_last_seen, first_seen_at, "
+                        "last_seen_at, status) VALUES (%s,%s,%s,%s,%s,'offline') "
+                        "ON CONFLICT (agent_id) DO NOTHING", (agent, agent.removeprefix("AGENT-"),
+                        scenario_items[scenario].get("target_username", ""), start,
+                        start + timedelta(days=days - 1)))
+        for agent in CONTROL_AGENTS:
+            cur.execute("INSERT INTO agents (agent_id, hostname, first_seen_at, last_seen_at, status) "
+                        "VALUES (%s,%s,%s,%s,'offline') ON CONFLICT (agent_id) DO NOTHING",
+                        (agent, agent.removeprefix("AGENT-"), start,
+                         start + timedelta(days=days - 1)))
+    return {"collector_rows": len(rows), "explorer_rows": len(explorer_rows),
+            "computed_historical_risk_events": len(risk_rows)}
 
 
 def prepare(args):
     _guard()
     roots = _dataset_roots(args)
     schema_audit = _schema_audit(roots)
-    as_of = args.as_of or datetime.now(timezone.utc).date() - timedelta(days=1)
-    if as_of >= datetime.now(timezone.utc).date():
-        raise ValueError("--as-of must be a completed UTC day")
+    start, as_of, days = _history_window(args)
+    scenario_offsets = _scenario_offsets(days)
     run_id = args.run_id or uuid.uuid4().hex[:12]
     output = Path(args.output_root).resolve() / run_id
     if output.exists():
@@ -407,16 +485,17 @@ def prepare(args):
         feature_writer.writerow(RAW_FEATURES)
         metadata_writer.writerow(("hostname", "date", "observation_complete", "source_kind"))
         for scenario, agent in SCENARIOS:
-            for offset in range(22):
-                day = as_of - timedelta(days=21-offset)
-                feature_writer.writerow(_vector(agent, scenario, day, offset, baseline, peaks))
+            for offset in range(days):
+                day = start + timedelta(days=offset)
+                feature_writer.writerow(_vector(agent, scenario, day,
+                    19 if offset in scenario_offsets else 0, baseline, peaks))
                 metadata_writer.writerow((agent, day.isoformat(), 1, "synthetic"))
         for agent in CONTROL_AGENTS:
-            for offset in range(22):
-                day = as_of - timedelta(days=21-offset)
-                feature_writer.writerow(_vector(agent, "", day, offset, baseline,
+            for offset in range(days):
+                day = start + timedelta(days=offset)
+                feature_writer.writerow(_vector(agent, "", day, 0, baseline,
                     {agent: {name: [] for name in RAW_FEATURES}}))
-                complete = int(not (agent == CONTROL_AGENTS[0] and offset == 21))
+                complete = int(not (agent == CONTROL_AGENTS[0] and offset == days - 1))
                 metadata_writer.writerow((agent, day.isoformat(), complete, "synthetic"))
     python_bin = ROOT / "model" / ".venv" / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
     if not python_bin.is_file():
@@ -438,20 +517,24 @@ def prepare(args):
     with (model_output / "daily_predictions.csv").open(newline="", encoding="utf-8") as handle:
         for row in csv.DictReader(handle):
             dates_by_agent.setdefault(row["hostname"], set()).add(row["date"])
-    if any(len(dates_by_agent.get(agent, ())) != 22 for agent in AGENTS | set(CONTROL_AGENTS)):
-        raise RuntimeError("Frozen model output does not contain 22 unique dates per host")
+    if any(len(dates_by_agent.get(agent, ())) != days for agent in AGENTS | set(CONTROL_AGENTS)):
+        raise RuntimeError(f"Frozen model output does not contain {days} unique dates per host")
     preview_only = getattr(args, "preview_only", False)
     if preview_only:
         summary = json.loads((model_output / "summary.json").read_text(encoding="utf-8"))
         summary["scenario_agents"] = sorted(AGENTS)
         summary["control_agents"] = list(CONTROL_AGENTS)
     else:
-        _backfill(run_id, as_of, snapshots, "Dataset_RealTime")
+        backfill_counts = _backfill(run_id, start, days, snapshots, "Dataset_RealTime",
+                                   by_scenario, roots["Dataset_Simulated"])
         summary = _save_scores(run_id, as_of, model_output)
     (output / "run.json").write_text(json.dumps({"run_id": run_id, "as_of": as_of.isoformat(),
+        "start_date": start.isoformat(), "end_date": as_of.isoformat(), "days": days,
         "source_kind": "synthetic", "preview_only": preview_only,
         "scenario_agents": sorted(AGENTS), "control_agents": list(CONTROL_AGENTS),
+        "scenario_dates": [(start + timedelta(days=i)).isoformat() for i in sorted(scenario_offsets)],
         "synthetic_feature_floors": SCENARIO_FEATURES,
+        "backfill_counts": backfill_counts if not preview_only else None,
         "harmonized_schema_audit": schema_audit,
         "summary": summary}, indent=2), encoding="utf-8")
     print(json.dumps({"run_id": run_id, "as_of": as_of.isoformat(), "reviewed": summary["reviewed"],
@@ -663,6 +746,8 @@ def main():
     parser.add_argument("--output-root", default=str(ROOT / "data" / "scenario_replay"))
     parser.add_argument("--run-id")
     parser.add_argument("--as-of", type=date.fromisoformat)
+    parser.add_argument("--start-date", type=date.fromisoformat)
+    parser.add_argument("--days", type=int, default=22)
     parser.add_argument("--scenario", choices=[name for name, _ in SCENARIOS])
     parser.add_argument("--server-url", default="http://127.0.0.1:5088")
     parser.add_argument("--interval", type=float, default=5.0)
