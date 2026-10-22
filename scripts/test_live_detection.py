@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import argparse
 import sys
+import time
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
@@ -17,8 +18,12 @@ for candidate in ["/app", str(ROOT)]:
     if candidate not in sys.path and Path(candidate).exists():
         sys.path.insert(0, candidate)
 
-from server.db import get_storage
+from server.config import config
+from server.storage.postgres_storage import PostgresStorage
+from server.storage.clickhouse_storage import ClickHouseStorage
+from server.storage.hybrid_storage import HybridStorage
 from server.risk.pipeline import process_telemetry_risk
+from server.api.events import broadcaster, dispatch_telemetry_event
 
 SCENARIO_PAYLOADS = {
     "credential_dump": {
@@ -118,6 +123,27 @@ SCENARIO_PAYLOADS = {
 }
 
 
+def init_storage() -> HybridStorage:
+    pg = PostgresStorage(config.database_dsn, minconn=1, maxconn=4)
+    ch = None
+    try:
+        ch = ClickHouseStorage(
+            host=config.clickhouse_host,
+            port=config.clickhouse_port,
+            username=config.clickhouse_user,
+            password=config.clickhouse_password,
+            database=config.clickhouse_db,
+            secure=config.clickhouse_secure,
+            ca_cert=config.clickhouse_ca_cert,
+            query_timeout=config.clickhouse_query_timeout,
+        )
+        if not ch.is_connected():
+            ch = None
+    except Exception:
+        ch = None
+    return HybridStorage(postgres_storage=pg, clickhouse_storage=ch)
+
+
 def main():
     parser = argparse.ArgumentParser(description="Trigger a live threat scenario in InsiEDR pipeline.")
     parser.add_argument("--scenario", choices=list(SCENARIO_PAYLOADS.keys()), default="credential_dump",
@@ -133,42 +159,77 @@ def main():
     agent_id = args.agent_id or f"AGENT-{args.hostname}"
     scenario_info = SCENARIO_PAYLOADS[args.scenario]
     payload_id = f"demo-sim-{uuid.uuid4().hex[:12]}"
+    now_iso = datetime.now(timezone.utc).isoformat()
 
     payload = {
         "payload_id": payload_id,
         "agent_id": agent_id,
         "hostname": args.hostname,
         "username": args.username,
-        "collected_at": datetime.now(timezone.utc).isoformat(),
+        "collected_at": now_iso,
+        "os": {
+            "system": "Windows",
+            "release": "10",
+            "version": "10.0.19045",
+            "machine": "AMD64",
+        },
         "collectors": scenario_info["collectors"],
     }
 
-    storage = get_storage()
-    print(f"\n=======================================================")
-    print(f" InsiEDR Live Detection Pipeline - Simulation Trigger")
-    print(f"=======================================================")
-    print(f" Scenario  : {scenario_info['title']}")
-    print(f" Hostname  : {args.hostname}")
-    print(f" Agent ID  : {agent_id}")
-    print(f" Username  : {args.username}")
-    print(f" Payload ID: {payload_id}")
-    print(f"-------------------------------------------------------")
-    print(f" Executing heuristics detection engine and risk aggregator...")
+    envelope = {
+        "agent_id": agent_id,
+        "hostname": args.hostname,
+        "timestamp": now_iso,
+        "payload_id": payload_id,
+    }
 
+    # Start the SSE event broadcaster so Redis pub/sub bridges across containers
+    broadcaster.start()
+
+    storage = init_storage()
+    print(f"\n=======================================================", flush=True)
+    print(f" InsiEDR Live Detection Pipeline - Simulation Trigger", flush=True)
+    print(f"=======================================================", flush=True)
+    print(f" Scenario  : {scenario_info['title']}", flush=True)
+    print(f" Hostname  : {args.hostname}", flush=True)
+    print(f" Agent ID  : {agent_id}", flush=True)
+    print(f" Username  : {args.username}", flush=True)
+    print(f" Payload ID: {payload_id}", flush=True)
+    print(f"-------------------------------------------------------", flush=True)
+
+    # 1. Store raw payload and register/update agent in fleet
+    try:
+        storage.store_raw_payload(envelope, payload)
+        print(f" [OK] Telemetry ingested and agent '{args.hostname}' recorded.", flush=True)
+    except Exception as store_err:
+        print(f" [!] Telemetry store notice: {store_err}", flush=True)
+
+    # 2. Execute heuristics detection engine and risk aggregator
+    print(f" Executing heuristics detection engine and risk aggregator...", flush=True)
     result = process_telemetry_risk(storage, payload, emit=True)
+
+    # 3. Notify telemetry change
+    try:
+        dispatch_telemetry_event(payload_id)
+    except Exception:
+        pass
 
     risk_score = result.get("risk_score", 0.0)
     risk_level = str(result.get("risk_level", "low")).upper()
     summary = result.get("summary", "Normal")
 
-    print(f"\n >>> DETECTION PIPELINE RESULT <<<")
-    print(f" Calculated Risk Score : {risk_score:.1f} / 100")
-    print(f" Severity Level        : {risk_level}")
-    print(f" Pipeline Summary      : {summary}")
-    print(f"-------------------------------------------------------")
-    print(f" [OK] Threat dispatched via SSE stream to active dashboards!")
-    print(f" Open http://172.16.22.198/dashboard/ to see the live alert card.")
-    print(f"=======================================================\n")
+    # Allow background Redis publisher thread to flush message to socket
+    time.sleep(1.0)
+    storage.close()
+
+    print(f"\n >>> DETECTION PIPELINE RESULT <<<", flush=True)
+    print(f" Calculated Risk Score : {risk_score:.1f} / 100", flush=True)
+    print(f" Severity Level        : {risk_level}", flush=True)
+    print(f" Pipeline Summary      : {summary}", flush=True)
+    print(f"-------------------------------------------------------", flush=True)
+    print(f" [OK] Threat dispatched via SSE stream to active dashboards!", flush=True)
+    print(f" Open http://172.16.22.198/dashboard/ to see the live alert card.", flush=True)
+    print(f"=======================================================\n", flush=True)
 
 
 if __name__ == "__main__":
