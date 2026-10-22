@@ -55,6 +55,7 @@ COPY server/ ./server/
 COPY shared/ ./shared/
 COPY scripts/ ./scripts/
 COPY heuristics/ ./heuristics/
+COPY model/run/schema.json ./model/run/schema.json
 
 # Add freshly compiled frontend assets; local dist is excluded by .dockerignore.
 COPY --from=frontend-builder /build/server/dashboard/dist/ ./server/dashboard/dist/

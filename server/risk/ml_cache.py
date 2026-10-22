@@ -8,9 +8,12 @@ import math
 from typing import Any, Mapping
 
 from server.config import config
-from server.risk.daily_adapter import SCHEMA_PATH
+from server.risk.daily_adapter import SCHEMA_PATH, FALLBACK_CLASSES
 
-CLASSES = frozenset(json.loads(SCHEMA_PATH.read_text(encoding="utf-8"))["classes"])
+try:
+    CLASSES = frozenset(json.loads(SCHEMA_PATH.read_text(encoding="utf-8"))["classes"])
+except Exception:
+    CLASSES = frozenset(FALLBACK_CLASSES)
 
 
 @lru_cache(maxsize=4)
