@@ -294,21 +294,6 @@ export interface TelemetryExplorerResponse {
   error?: string;
 }
 
-export interface TelemetryHistogramBucket {
-  timestamp: string;
-  count: number;
-}
-
-export interface TelemetryHistogramResponse {
-  freshness?: DataFreshness;
-  ok: boolean;
-  time_range: string;
-  interval: string;
-  total_events: number;
-  histogram: TelemetryHistogramBucket[];
-  error?: string;
-}
-
 export interface TelemetryEventDetailResponse {
   ok: boolean;
   event?: TelemetryLog;

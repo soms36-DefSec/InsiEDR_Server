@@ -25,7 +25,6 @@ import type {
   UserRiskScoresResponse,
   TelemetryResponse,
   TelemetryExplorerResponse,
-  TelemetryHistogramResponse,
   TelemetryEventDetailResponse,
   TelemetryLog,
   EndpointRow,
@@ -227,28 +226,6 @@ export async function fetchTelemetryExplorer(
  */
 export async function fetchTelemetryEventDetail(eventId: string | number, signal?: AbortSignal): Promise<TelemetryEventDetailResponse> {
   return fetchApi<TelemetryEventDetailResponse>(`/api/v1/telemetry/events/${encodeURIComponent(String(eventId))}`, { signal });
-}
-
-/**
- * Server-side event frequency histogram aggregation query.
- * Maps to `GET /api/v1/telemetry/histogram`.
- */
-export async function fetchTelemetryHistogram(
-  timeRange = '1h',
-  filters: { collector?: string | null; status?: string | null; agent_id?: string | null;
-    start_time?: string | null; end_time?: string | null; signal?: AbortSignal } = {},
-): Promise<TelemetryHistogramResponse> {
-  const params = new URLSearchParams({ time_range: timeRange });
-  if (filters.collector && filters.collector !== 'all') params.set('collector', filters.collector);
-  if (filters.status && filters.status !== 'all') params.set('status', filters.status);
-  if (filters.agent_id) params.set('agent_id', filters.agent_id);
-  if (filters.start_time) params.set('start_time', filters.start_time);
-  if (filters.end_time) params.set('end_time', filters.end_time);
-
-  return fetchApi<TelemetryHistogramResponse>(`/api/v1/telemetry/histogram?${params.toString()}`, {
-    signal: filters.signal,
-    timeoutMs: 30000,
-  });
 }
 
 /**

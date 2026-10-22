@@ -22,7 +22,6 @@ import { subscribeTelemetry } from '../../services/telemetryStream';
 import type { PluginProps } from '../registry';
 import { VirtualizedLogTable } from '../../components/telemetry/VirtualizedLogTable';
 import { LogInspectorDrawer } from '../../components/telemetry/LogInspectorDrawer';
-import { TelemetryHistogram } from '../../components/telemetry/TelemetryHistogram';
 import { CollectorDatasetExportModal } from '../../components/telemetry/CollectorDatasetExportModal';
 import { Button } from '../../components/ui/Button';
 import type { TelemetryLog } from '../../types/telemetry';
@@ -98,7 +97,6 @@ export const TelemetryExplorerPlugin: React.FC<TelemetryExplorerPluginProps> = (
   const [searchScope, setSearchScope] = useState<'metadata' | 'payload'>('metadata');
   const [loadError, setLoadError] = useState<string | null>(null);
   const [liveUpdatesEnabled, setLiveUpdatesEnabled] = useState(false);
-  const [histogramRefreshVersion, setHistogramRefreshVersion] = useState(0);
   const [pendingTelemetryUpdates, setPendingTelemetryUpdates] = useState(0);
   const request = useRef<AbortController | null>(null);
   const queuedRefresh = useRef(false);
@@ -277,7 +275,6 @@ export const TelemetryExplorerPlugin: React.FC<TelemetryExplorerPluginProps> = (
   };
 
   const handleRefresh = () => {
-    setHistogramRefreshVersion((version) => version + 1);
     void loadLogs(1, pageSize);
   };
 
@@ -358,15 +355,6 @@ export const TelemetryExplorerPlugin: React.FC<TelemetryExplorerPluginProps> = (
           <button type="button" onClick={() => loadLogs(currentPage, pageSize)} className="ml-3 underline">Retry</button>
         </div>
       )}
-
-      {/* Server-Side Event Frequency Histogram (ClickHouse Aggregation) */}
-      <TelemetryHistogram
-          autoRefresh={context.autoRefresh}
-        refreshVersion={histogramRefreshVersion}
-        timeRange={timeRange}
-        activeCollector={activeCollector}
-        statusFilter={statusFilter}
-      />
 
       {/* Comprehensive Filter Toolbar */}
       <div className="bg-white border border-slate-200 rounded-lg p-5 shadow-[0_1px_3px_rgba(0,0,0,0.06)] space-y-4">
