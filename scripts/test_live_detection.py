@@ -44,25 +44,25 @@ SCENARIO_PAYLOADS = {
         "title": "Honeytoken Trip / Decoy File Access",
         "collectors": [
             {
-                "collector": "file",
+                "collector": "decoy-monitor",
                 "status": "success",
                 "payload": {
-                    "honeytoken_access": True,
-                    "honeytoken_filename": "passwords_backup.xlsx",
-                    "file_read_count": 1,
+                    "threat_triggered": True,
+                    "honeytoken_name": "passwords_backup.xlsx",
+                    "action": "read",
                 },
             }
         ],
     },
     "usb_exfiltration": {
-        "title": "Bulk USB Data Exfiltration Precursor",
+        "title": "Bulk USB Data Exfiltration",
         "collectors": [
             {
                 "collector": "device",
                 "status": "success",
                 "payload": {
-                    "usb_inserted": True,
-                    "unapproved_device": True,
+                    "unauthorized_usb_detected": True,
+                    "usb_connect_count": 1,
                     "usb_serial": "USB-SANDISK-09823",
                 },
             },
@@ -70,9 +70,8 @@ SCENARIO_PAYLOADS = {
                 "collector": "file",
                 "status": "success",
                 "payload": {
-                    "bulk_file_write": True,
-                    "daily_file_write_count": 150,
-                    "usb_file_transfer": True,
+                    "daily_files_to_removable_count": 45,
+                    "usb_file_transfer_count": 45,
                 },
             },
         ],
@@ -84,40 +83,55 @@ SCENARIO_PAYLOADS = {
                 "collector": "file",
                 "status": "success",
                 "payload": {
-                    "daily_file_delete_count": 450,
-                    "mass_deletion": True,
+                    "file_delete_count": 120,
+                    "daily_file_delete_count": 120,
                 },
             },
             {
                 "collector": "integrity",
                 "status": "success",
                 "payload": {
-                    "persistence_tampering": True,
                     "modifications_detected": True,
+                    "after_hours_logon": 3,
                 },
             },
         ],
     },
     "cloud_upload": {
-        "title": "Cloud Exfiltration Precursor (Archive + Spike)",
+        "title": "Cloud Exfiltration (Sensitive File Archive + Spike)",
         "collectors": [
             {
                 "collector": "file",
                 "status": "success",
                 "payload": {
-                    "bulk_file_access": True,
-                    "daily_file_open_count": 200,
+                    "sensitive_file_access": 15,
+                    "file_access_count": 80,
+                    "daily_unique_filename_count": 60,
                 },
             },
             {
                 "collector": "http",
                 "status": "success",
                 "payload": {
-                    "cloud_upload_spike": True,
-                    "bytes_sent": 524288000,
+                    "cloud_storage_uploads": 5,
+                    "upload_bytes": 524288000,
                     "destination_domain": "mega.nz",
                 },
             },
+        ],
+    },
+    "network_tunneling": {
+        "title": "C2 Network Tunneling (DNS / Process Tunnel)",
+        "collectors": [
+            {
+                "collector": "process-watcher",
+                "status": "success",
+                "payload": {
+                    "tunneling_process_count": 1,
+                    "tunneling_detected": True,
+                    "process_name": "chisel.exe",
+                },
+            }
         ],
     },
 }
