@@ -1060,21 +1060,21 @@ def play(args):
                 # The runner is on the private Compose network; the public
                 # HTTPS hop terminates at the main Nginx proxy.
                 headers["X-Forwarded-Proto"] = "https"
-                for attempt in range(5):
+                for attempt in range(12):
                     response = client.post(base_url + "/api/logs", json=envelope, headers=headers)
                     if response.status_code != 503:
                         break
                     detail = getattr(response, "text", None)
                     if detail is None:
                         detail = response.content.decode("utf-8", errors="replace")
-                    if attempt == 4:
+                    if attempt == 11:
                         raise RuntimeError(
                             f"Ingest returned HTTP 503 for {agent} {scenario} frame {bucket} "
-                            f"after 5 attempts: {detail[:300]}"
+                            f"after 12 attempts: {detail[:300]}"
                         )
-                    delay = min(0.5 * (2 ** attempt), 4.0)
+                    delay = min(0.5 * (2 ** attempt), 8.0)
                     print(f"{agent} {scenario} frame={bucket} got HTTP 503; "
-                          f"retrying in {delay:g}s ({attempt + 1}/5): {detail[:200]}", flush=True)
+                          f"retrying in {delay:g}s ({attempt + 1}/12): {detail[:200]}", flush=True)
                     time.sleep(delay)
                 response.raise_for_status()
                 if response.status_code != 202:
