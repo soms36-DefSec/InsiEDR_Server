@@ -49,8 +49,9 @@ MAIN_AGENT_IDS = {agent: f"AGENT-EMPLOYEE-{index:02d}"
                   for index, (_, agent) in enumerate(SCENARIOS, 1)}
 MAIN_CONTROL_IDS = {agent: f"AGENT-CONTROL-{index:02d}"
                     for index, agent in enumerate(CONTROL_AGENTS, 1)}
-DISPLAY_HOSTNAMES = {agent: f"EMPLOYEE-{index:02d}"
-                     for index, (_, agent) in enumerate(SCENARIOS, 1)}
+DISPLAY_HOSTNAMES = {agent: f"SOC_Lab-{suffix}"
+                     for (_, agent), suffix in zip(
+                         SCENARIOS, (32, 47, 58, 63, 71, 84, 96), strict=True)}
 DISPLAY_HOSTNAMES.update({agent: f"CONTROL-{index:02d}"
                           for index, agent in enumerate(CONTROL_AGENTS, 1)})
 

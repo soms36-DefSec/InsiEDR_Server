@@ -17,10 +17,10 @@ from server.config import config
 router = APIRouter(prefix="/api/v1/detection/ml/scenario", tags=["Scenario Replay"])
 
 SCENARIO_HOSTNAMES = {
-    "AGENT-SOCL2-64": "EMPLOYEE-01", "AGENT-DSL-174": "EMPLOYEE-02",
-    "AGENT-DATASL-173": "EMPLOYEE-03", "AGENT-MCALAB1-07": "EMPLOYEE-04",
-    "AGENT-SOCL8-53": "EMPLOYEE-05", "AGENT-SOCL8-03": "EMPLOYEE-06",
-    "AGENT-SOCL4-61": "EMPLOYEE-07",
+    "AGENT-SOCL2-64": "SOC_Lab-32", "AGENT-DSL-174": "SOC_Lab-47",
+    "AGENT-DATASL-173": "SOC_Lab-58", "AGENT-MCALAB1-07": "SOC_Lab-63",
+    "AGENT-SOCL8-53": "SOC_Lab-71", "AGENT-SOCL8-03": "SOC_Lab-84",
+    "AGENT-SOCL4-61": "SOC_Lab-96",
 }
 
 

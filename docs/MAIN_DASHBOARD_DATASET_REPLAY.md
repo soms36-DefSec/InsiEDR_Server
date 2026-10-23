@@ -1,7 +1,8 @@
 # Dataset replay into the normal InsiEDR dashboard
 
 This procedure keeps `http://172.16.22.198/dashboard/` on the **main** backend and
-adds seven distinct `EMPLOYEE-01` through `EMPLOYEE-07` attack hosts. Their
+adds seven distinct `SOC_Lab-32`, `SOC_Lab-47`, `SOC_Lab-58`, `SOC_Lab-63`,
+`SOC_Lab-71`, `SOC_Lab-84`, and `SOC_Lab-96` attack hosts. Their
 authenticated IDs are `AGENT-EMPLOYEE-01` through `AGENT-EMPLOYEE-07`; the seven
 original dataset agent IDs are retained in provenance. Existing fleet rows and
 volumes remain in place. Historical Model V3 scores come from
