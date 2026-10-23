@@ -23,17 +23,20 @@ export const SocMatrixPlugin: React.FC<PluginProps> = ({ context }) => {
   const { summary, health, onOpenDrillDown } = context;
   const [drillUser, setDrillUser] = useState<string | null>(null);
   const [drillHostname, setDrillHostname] = useState<string | null>(null);
+  const [drillAgentId, setDrillAgentId] = useState<string | null>(null);
   const [filterLevel, setFilterLevel] = useState<string | null>(null);
 
-  const handleSelectEndpoint = (user: string, host?: string) => {
+  const handleSelectEndpoint = (user: string, host?: string, agentId?: string) => {
     setDrillUser(user);
     setDrillHostname(host || null);
+    setDrillAgentId(agentId || summary?.agents?.find((agent) => agent.hostname === host && agent.username_last_seen === user)?.agent_id || null);
     if (onOpenDrillDown) onOpenDrillDown(user, host);
   };
 
   const handleCloseDrillDown = () => {
     setDrillUser(null);
     setDrillHostname(null);
+    setDrillAgentId(null);
   };
 
   return (
@@ -99,6 +102,7 @@ export const SocMatrixPlugin: React.FC<PluginProps> = ({ context }) => {
       <DrillDownDrawer
         username={drillUser}
         hostname={drillHostname}
+        agentId={drillAgentId}
         riskEvents={summary?.risk_events || []}
         onClose={handleCloseDrillDown}
       />

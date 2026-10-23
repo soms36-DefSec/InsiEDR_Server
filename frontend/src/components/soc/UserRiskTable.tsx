@@ -37,7 +37,7 @@ export interface UserRiskTableProps {
   selectedHostname?: string | null;
   filterLevel?: string | null;
   onClearFilterLevel?: () => void;
-  onSelectEndpoint: (username: string, hostname?: string) => void;
+  onSelectEndpoint: (username: string, hostname?: string, agentId?: string) => void;
 }
 
 export const UserRiskTable: React.FC<UserRiskTableProps> = ({
@@ -331,7 +331,7 @@ export const UserRiskTable: React.FC<UserRiskTableProps> = ({
                 return (
                   <tr
                     key={row.agentId}
-                    onClick={() => onSelectEndpoint(row.user, row.hostname)}
+                    onClick={() => onSelectEndpoint(row.user, row.hostname, row.agentId)}
                     className={`transition-colors cursor-pointer hover:bg-slate-50/80 ${
                       isSelected ? 'bg-blue-50/60 font-medium' : ''
                     }`}

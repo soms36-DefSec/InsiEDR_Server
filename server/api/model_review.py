@@ -59,6 +59,7 @@ def get_endpoint_trajectory(
 ):
     day = as_of or (datetime.now(timezone.utc).date() - timedelta(days=1))
     rows = _repo(storage).get_endpoint_trajectory(agent_id, limit)
+    latest = next((row for row in rows if row["review_date"] <= day.isoformat()), None)
     complete_dates = {date.fromisoformat(row["review_date"]) for row in rows
                       if row["observation_complete"]}
     consecutive = 0
@@ -67,6 +68,14 @@ def get_endpoint_trajectory(
         consecutive += 1
         cursor -= timedelta(days=1)
     return {"ok": True, "agent_id": agent_id, "as_of": day.isoformat(),
+            "prediction": latest,
+            "model_state": ("stale" if latest and (day - date.fromisoformat(latest["review_date"])).days > 0
+                            else "available" if latest and latest.get("threat_probability") is not None
+                            else "no_input" if latest is None
+                            else "invalid_coverage" if not latest.get("observation_complete")
+                            else "temporal_warmup"),
+            "freshness_days": ((day - date.fromisoformat(latest["review_date"])).days
+                               if latest else None),
             "consecutive_complete_days": consecutive,
             "forecast_ready": consecutive >= 8, "review_eligible": consecutive >= 22,
             "history": rows}

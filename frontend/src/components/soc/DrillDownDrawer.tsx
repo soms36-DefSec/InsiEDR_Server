@@ -20,14 +20,16 @@ import React, { useState, useEffect } from 'react';
 import { Drawer } from '../ui/Drawer';
 import { Badge } from '../ui/Badge';
 import { Button } from '../ui/Button';
-import { fetchUserPredictions, fetchUserRiskScores, exportAssessmentJSON } from '../../services/api';
-import type { UserPrediction, RiskEvent, HeuristicDetection } from '../../types/telemetry';
+import { fetchEndpointTrajectory, fetchUserRiskScores, exportAssessmentJSON } from '../../services/api';
+import type { EndpointModelPrediction, EndpointTrajectoryResponse } from '../../services/api';
+import type { RiskEvent, HeuristicDetection } from '../../types/telemetry';
 import { formatScore, getRiskLevel, parseCorrelatedSignals } from '../../utils/formatters';
 import { Download, ShieldAlert, CheckCircle } from 'lucide-react';
 
 export interface DrillDownDrawerProps {
   username: string | null;
   hostname?: string | null;
+  agentId?: string | null;
   riskEvents?: RiskEvent[];
   onClose: () => void;
 }
@@ -37,10 +39,12 @@ const EMPTY_RISK_EVENTS: RiskEvent[] = [];
 export const DrillDownDrawer: React.FC<DrillDownDrawerProps> = ({
   username,
   hostname,
+  agentId,
   riskEvents = EMPTY_RISK_EVENTS,
   onClose,
 }) => {
-  const [prediction, setPrediction] = useState<UserPrediction | null>(null);
+  const [trajectory, setTrajectory] = useState<EndpointTrajectoryResponse | null>(null);
+  const [prediction, setPrediction] = useState<EndpointModelPrediction | null>(null);
   const [latestEvent, setLatestEvent] = useState<RiskEvent | null>(null);
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -48,6 +52,7 @@ export const DrillDownDrawer: React.FC<DrillDownDrawerProps> = ({
   useEffect(() => {
     if (!username) {
       setPrediction(null);
+      setTrajectory(null);
       setLatestEvent(null);
       return;
     }
@@ -55,27 +60,30 @@ export const DrillDownDrawer: React.FC<DrillDownDrawerProps> = ({
     let active = true;
     setIsLoading(true);
     setError(null);
+    setPrediction(null);
+    setTrajectory(null);
 
-    Promise.all([
-      hostname ? Promise.resolve({ ok: true, username, predictions: null })
-        : fetchUserPredictions(username).catch(() => ({ ok: false, username, predictions: null })),
+    Promise.allSettled([
+      agentId ? fetchEndpointTrajectory(agentId) : Promise.resolve(null),
       hostname ? Promise.resolve({ ok: true, username, risk_scores: riskEvents.filter(
         (event) => event.hostname === hostname,
-      ) }) : fetchUserRiskScores(username, 20).catch(() => ({ ok: false, username, risk_scores: [] })),
+      ) }) : fetchUserRiskScores(username, 20),
     ])
-      .then(([predRes, scoresRes]) => {
+      .then(([predResult, scoresResult]) => {
         if (!active) return;
-        setPrediction(predRes.predictions || null);
+        if (predResult.status === 'rejected') setError(`Model prediction unavailable: ${predResult.reason?.message || 'request failed'}`);
+        if (predResult.status === 'fulfilled' && predResult.value) {
+          setTrajectory(predResult.value);
+          setPrediction(predResult.value.prediction);
+        }
+        if (scoresResult.status === 'rejected') setError((previous) => [previous, `Heuristic request failed: ${scoresResult.reason?.message || 'request failed'}`].filter(Boolean).join(' '));
+        const scoresRes = scoresResult.status === 'fulfilled' ? scoresResult.value : { risk_scores: [] };
         const rawScores = scoresRes.risk_scores || [];
         // Defensively sort newest first to ensure index 0 is always the latest event
         const sortedScores = [...rawScores].sort(
           (a, b) => new Date(b.created_at || 0).getTime() - new Date(a.created_at || 0).getTime()
         );
         setLatestEvent(sortedScores.length > 0 ? sortedScores[0] : null);
-      })
-      .catch((err) => {
-        if (!active) return;
-        setError(err.message || 'Failed to load assessment data');
       })
       .finally(() => {
         if (active) setIsLoading(false);
@@ -84,14 +92,14 @@ export const DrillDownDrawer: React.FC<DrillDownDrawerProps> = ({
     return () => {
       active = false;
     };
-  }, [username, hostname, riskEvents]);
+  }, [username, hostname, agentId, riskEvents]);
 
   if (!username) return null;
 
-  const currentScore = latestEvent
-    ? parseFloat(String(latestEvent.risk_score || 0))
-    : prediction?.score || 0;
-  const currentLevel = getRiskLevel(currentScore);
+  const currentScore = latestEvent && latestEvent.risk_score != null
+    ? parseFloat(String(latestEvent.risk_score))
+    : undefined;
+  const currentLevel = getRiskLevel(currentScore ?? 0);
 
   // Extract detections from latest signals
   const detections: HeuristicDetection[] = [];
@@ -117,7 +125,7 @@ export const DrillDownDrawer: React.FC<DrillDownDrawerProps> = ({
       username,
       hostname,
       timestamp: new Date().toISOString(),
-      score: currentScore,
+      score: currentScore ?? null,
       level: currentLevel,
       prediction,
       latestEvent,
@@ -132,7 +140,7 @@ export const DrillDownDrawer: React.FC<DrillDownDrawerProps> = ({
       title={
         <div className="flex items-center gap-3">
           <span className="font-bold text-slate-900">{username}</span>
-          <Badge level={currentLevel} size="md" />
+          {currentScore === undefined ? <span className="text-xs text-slate-500">Risk unavailable</span> : <Badge level={currentLevel} size="md" />}
         </div>
       }
       subtitle={`Target Identity: ${username} ${hostname ? `· Host: ${hostname}` : ''}`}
@@ -153,21 +161,18 @@ export const DrillDownDrawer: React.FC<DrillDownDrawerProps> = ({
           <span className="w-5 h-5 border-2 border-slate-300 border-t-blue-600 rounded-full animate-spin mb-3" />
           Loading deep behavioral assessment...
         </div>
-      ) : error ? (
-        <div className="p-4 bg-rose-50 border border-rose-200 rounded-lg text-rose-700 text-xs">
-          {error}
-        </div>
       ) : (
         <div className="space-y-6">
+          {error && <div className="p-3 bg-amber-50 border border-amber-200 rounded-lg text-amber-800 text-xs">{error}. Heuristic evidence remains available below.</div>}
           {/* Metrics Grid */}
           <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
             {/* Score */}
             <div className="bg-slate-50 border border-slate-200 rounded-lg p-3.5">
               <div className="text-[10px] uppercase font-semibold text-slate-500 tracking-wider">
-                Risk Score
+                Heuristic Risk Score
               </div>
               <div className="text-xl font-bold font-mono text-slate-900 mt-1">
-                {formatScore(currentScore)}
+                {currentScore === undefined ? 'Unavailable' : formatScore(currentScore)}
                 <span className="text-xs font-normal text-slate-400 ml-1">/ 100</span>
               </div>
             </div>
@@ -178,7 +183,7 @@ export const DrillDownDrawer: React.FC<DrillDownDrawerProps> = ({
                 Risk Level
               </div>
               <div className="mt-1.5">
-                <Badge level={currentLevel} size="sm" />
+                {currentScore === undefined ? <span className="text-xs text-slate-500">Unavailable</span> : <Badge level={currentLevel} size="sm" />}
               </div>
             </div>
 
@@ -188,28 +193,39 @@ export const DrillDownDrawer: React.FC<DrillDownDrawerProps> = ({
                 RVFL Drift Error
               </div>
               <div className="text-sm font-mono font-bold text-slate-900 mt-1">
-                {prediction ? prediction.rvfl_error.toFixed(5) : '0.00000'}
+                {prediction?.drift_error == null ? 'Unavailable' : prediction.drift_error.toFixed(5)}
               </div>
               <div className="text-[10px] text-slate-400 mt-0.5">
-                {prediction?.behavioral_risk || 'LOW'} deviation
+                {prediction?.drift_error == null ? 'No drift measurement' : 'V3 drift measurement'}
               </div>
             </div>
 
             {/* Predicted Scenario */}
             <div className="bg-slate-50 border border-slate-200 rounded-lg p-3.5">
               <div className="text-[10px] uppercase font-semibold text-slate-500 tracking-wider">
-                XGBoost Scenario
+                V3 Scenario
               </div>
-              <div className="text-xs font-semibold text-slate-900 mt-1 truncate" title={prediction?.predicted_scenario?.scenario}>
-                {prediction?.predicted_scenario?.scenario || 'Normal'}
+              <div className="text-xs font-semibold text-slate-900 mt-1 truncate" title={prediction?.predicted_scenario || undefined}>
+                {prediction?.predicted_scenario || 'Unavailable'}
               </div>
               <div className="text-[10px] text-blue-600 font-mono mt-0.5">
-                {prediction?.predicted_scenario?.confidence
-                  ? `${(prediction.predicted_scenario.confidence * 100).toFixed(1)}% conf`
+                {prediction?.predicted_scenario && prediction.scenario_probabilities?.[prediction.predicted_scenario] != null
+                  ? `${(prediction.scenario_probabilities[prediction.predicted_scenario] * 100).toFixed(1)}% classifier probability`
                   : '—'}
               </div>
             </div>
           </div>
+
+          <section className="rounded-lg border border-indigo-100 bg-indigo-50/40 p-4">
+            <div className="mb-3 text-[10px] font-semibold uppercase tracking-wider text-indigo-800">Model V3 · endpoint daily result</div>
+            <div className="grid grid-cols-2 gap-3 text-xs md:grid-cols-4">
+              <div><div className="text-slate-500">Threat probability</div><div className="mt-1 font-mono font-semibold">{prediction?.threat_probability == null ? 'Unavailable' : `${(prediction.threat_probability * 100).toFixed(1)}%`}</div></div>
+              <div><div className="text-slate-500">V3 fused risk</div><div className="mt-1 font-mono font-semibold">{prediction?.fused_risk == null ? 'Unavailable' : prediction.fused_risk.toFixed(4)}</div></div>
+              <div><div className="text-slate-500">Isolation Forest risk</div><div className="mt-1 font-mono font-semibold">{prediction?.if_risk == null ? 'Unavailable' : prediction.if_risk.toFixed(4)}</div></div>
+              <div><div className="text-slate-500">Temporal forecast</div><div className="mt-1 font-mono font-semibold">{prediction?.forecasted_risk == null ? 'Unavailable' : prediction.forecasted_risk.toFixed(4)}</div></div>
+            </div>
+            {prediction && <div className="mt-3 text-[10px] text-slate-500">Observed-data status: {prediction.selection_status} · {prediction.observation_complete ? 'complete observation' : 'incomplete observation'} · Contract {prediction.feature_contract_version || 'unavailable'}</div>}
+          </section>
 
           {/* Recommended Action Protocol */}
           <div className="bg-slate-50 border border-slate-200 rounded-lg p-4">
@@ -218,11 +234,18 @@ export const DrillDownDrawer: React.FC<DrillDownDrawerProps> = ({
               SOC Action Protocol
             </div>
             <p className="text-xs text-slate-600 leading-relaxed">
-              {prediction?.recommended_action ||
-                (currentScore >= 60
+              {currentScore === undefined
+                ? 'ML risk score unavailable. Review the heuristic evidence below and check model availability.'
+                : (currentScore >= 60
                   ? 'Isolate endpoint and conduct deep packet inspection immediately.'
                   : 'Routine baseline monitoring. No active intervention required.')}
             </p>
+          </div>
+
+          <div className="text-[11px] text-slate-500">
+            Model state: <span className="font-semibold">{trajectory?.model_state || (agentId ? 'loading' : 'endpoint identity unavailable')}</span>
+            {prediction && <> · Day: {prediction.review_date} · {trajectory?.freshness_days === 0 ? 'current completed day' : `${trajectory?.freshness_days} day(s) old`} · {prediction.model_version || 'version unavailable'} · {prediction.source_kind}</>}
+            {trajectory && <> · {trajectory.consecutive_complete_days} consecutive complete day(s); forecast {trajectory.forecast_ready ? 'ready' : 'warming up'}, review {trajectory.review_eligible ? 'eligible' : 'not eligible'}</>}
           </div>
 
           {/* Heuristic Rule Detections */}

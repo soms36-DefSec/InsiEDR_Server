@@ -143,16 +143,19 @@ class ModelReviewRepository:
         with self.storage.connection() as conn:
             with conn.cursor() as cur:
                 cur.execute("""
-                    SELECT review_date, threat_probability, if_risk, fused_risk,
+                    SELECT review_date, source_kind, observation_complete, selection_status,
+                           feature_contract_version, model_version, threat_probability, if_risk, fused_risk,
                            forecasted_risk, drift_error, pair_threat_score,
-                           predicted_scenario, observation_complete, selection_status,
-                           missing_sensors_json
+                           predicted_scenario, scenario_probabilities_json, behavior_heads_json,
+                           missing_sensors_json, coverage_details_json, scored_at
                     FROM endpoint_daily_model_scores WHERE agent_id=%s
                     ORDER BY review_date DESC LIMIT %s
                 """, (agent_id, limit))
                 rows = cur.fetchall()
-        return [dict(review_date=r[0].isoformat(), threat_probability=r[1], if_risk=r[2],
-                     fused_risk=r[3], forecasted_risk=r[4], drift_error=r[5],
-                     pair_threat_score=r[6], predicted_scenario=r[7],
-                     observation_complete=r[8], selection_status=r[9],
-                     missing_sensors=r[10]) for r in rows]
+        return [dict(review_date=r[0].isoformat(), source_kind=r[1], observation_complete=r[2],
+                     selection_status=r[3], feature_contract_version=r[4], model_version=r[5],
+                     threat_probability=r[6], if_risk=r[7], fused_risk=r[8],
+                     forecasted_risk=r[9], drift_error=r[10], pair_threat_score=r[11],
+                     predicted_scenario=r[12], scenario_probabilities=r[13], behavior_heads=r[14],
+                     missing_sensors=r[15], coverage_details=r[16],
+                     scored_at=r[17].isoformat() if r[17] else None) for r in rows]

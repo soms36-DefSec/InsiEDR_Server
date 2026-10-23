@@ -144,6 +144,44 @@ export async function fetchUserPredictions(username: string): Promise<UserPredic
   return fetchApi<UserPredictionResponse>(`/api/user-predictions/${encodeURIComponent(username)}`);
 }
 
+export interface EndpointModelPrediction {
+  review_date: string;
+  source_kind: string;
+  observation_complete: boolean;
+  selection_status: string;
+  feature_contract_version: string | null;
+  model_version: string | null;
+  threat_probability: number | null;
+  if_risk: number | null;
+  fused_risk: number | null;
+  forecasted_risk: number | null;
+  drift_error: number | null;
+  predicted_scenario: string | null;
+  scenario_probabilities: Record<string, number> | null;
+  missing_sensors: string[];
+  coverage_details: Record<string, unknown>;
+  scored_at: string | null;
+}
+
+export interface EndpointTrajectoryResponse {
+  ok: boolean;
+  agent_id: string;
+  as_of: string;
+  prediction: EndpointModelPrediction | null;
+  model_state: 'available' | 'stale' | 'no_input' | 'invalid_coverage' | 'temporal_warmup';
+  freshness_days: number | null;
+  consecutive_complete_days: number;
+  forecast_ready: boolean;
+  review_eligible: boolean;
+  history: EndpointModelPrediction[];
+}
+
+export async function fetchEndpointTrajectory(agentId: string, signal?: AbortSignal): Promise<EndpointTrajectoryResponse> {
+  return fetchApi<EndpointTrajectoryResponse>(
+    `/api/v1/detection/ml/endpoints/${encodeURIComponent(agentId)}/trajectory`, { signal },
+  );
+}
+
 /**
  * Fetches chronological risk events for a specific user identity.
  * Note: The backend returns records ordered with newest first (`ORDER BY created_at DESC`).
