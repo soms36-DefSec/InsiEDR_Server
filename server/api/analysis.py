@@ -5,6 +5,7 @@ from fastapi.responses import JSONResponse
 
 from server.api.cache import api_cache
 from server.api.deps import get_storage
+from server.risk.presentation import annotate_risk_event
 
 router = APIRouter(prefix="/api", tags=["Threat Intelligence & Analysis"])
 bp = router  # Backward compatibility alias
@@ -89,13 +90,13 @@ async def get_user_predictions(username: str, storage=Depends(get_storage)):
         score = float(st.get("score", 0.0))
 
         # Determine behavioral risk level and recommended protocol
-        if rvfl_err >= 0.08 or score >= 85.0:
-            b_risk = "CRITICAL" if score >= 85.0 else "HIGH"
+        if rvfl_err >= 0.08 or score >= 90.0:
+            b_risk = "CRITICAL" if score >= 90.0 else "HIGH"
             action = "Isolate endpoint and revoke active sessions immediately."
-        elif rvfl_err >= 0.03 or score >= 60.0:
-            b_risk = "HIGH" if score >= 60.0 else "MEDIUM"
+        elif rvfl_err >= 0.03 or score >= 70.0:
+            b_risk = "HIGH" if score >= 70.0 else "MEDIUM"
             action = "Escalate for analyst review; monitor telemetry closely."
-        elif score >= 35.0:
+        elif score >= 40.0:
             b_risk = "MEDIUM"
             action = "Minor baseline variance detected; standard monitoring."
         else:
@@ -148,17 +149,7 @@ async def get_user_analysis(username: str, storage=Depends(get_storage)):
 
 
 def _patch_risk_level(event: dict):
-    score = float(event.get("risk_score") or 0.0)
-    if score >= 85.0:
-        level = "CRITICAL"
-    elif score >= 60.0:
-        level = "HIGH"
-    elif score >= 35.0:
-        level = "MEDIUM"
-    else:
-        level = "LOW"
-    event["risk_level"] = level
-    event["_computed_level"] = level
+    annotate_risk_event(event)
 
 
 @router.get("/risk-events")

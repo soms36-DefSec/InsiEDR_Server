@@ -15,7 +15,7 @@
 import React, { useMemo } from 'react';
 import { Card } from '../ui/Card';
 import type { RiskCounts, RiskEvent } from '../../types/telemetry';
-import { parseCorrelatedSignals, formatScore } from '../../utils/formatters';
+import { parseCorrelatedSignals, formatScore, THREAT_DECAY_WINDOW_MS } from '../../utils/formatters';
 
 export interface ChartsSectionProps {
   riskCounts: RiskCounts | null;
@@ -23,18 +23,22 @@ export interface ChartsSectionProps {
 }
 
 export const ChartsSection: React.FC<ChartsSectionProps> = ({ riskCounts, riskEvents }) => {
+  const activeEvents = useMemo(() => riskEvents.filter((event) => {
+    const age = Date.now() - new Date(event.created_at).getTime();
+    return !event.is_test && (event.is_active ?? (age >= -120000 && age <= THREAT_DECAY_WINDOW_MS));
+  }), [riskEvents]);
   // Domain risk extraction matching heuristics/detector.py and model_bridge.py
   const domainAverages = useMemo(() => {
     const domains = { Logon: [] as number[], File: [] as number[], Device: [] as number[], HTTP: [] as number[] };
 
-    riskEvents.forEach((ev) => {
+    activeEvents.forEach((ev) => {
       const signals = parseCorrelatedSignals(ev.correlated_signals_json);
       if (signals) {
         // 1. Direct domain risk features from model bridge
-        if (signals.logon_risk != null) domains.Logon.push(Number(signals.logon_risk));
-        if (signals.file_risk != null) domains.File.push(Number(signals.file_risk));
-        if (signals.device_risk != null) domains.Device.push(Number(signals.device_risk));
-        if (signals.http_risk != null) domains.HTTP.push(Number(signals.http_risk));
+        if (signals.logon_risk != null && Number.isFinite(Number(signals.logon_risk))) domains.Logon.push(Number(signals.logon_risk));
+        if (signals.file_risk != null && Number.isFinite(Number(signals.file_risk))) domains.File.push(Number(signals.file_risk));
+        if (signals.device_risk != null && Number.isFinite(Number(signals.device_risk))) domains.Device.push(Number(signals.device_risk));
+        if (signals.http_risk != null && Number.isFinite(Number(signals.http_risk))) domains.HTTP.push(Number(signals.http_risk));
 
         // 2. Heuristics domain scores from heuristics/detector.py
         const hDomain = signals.heuristics?.domain_scores || signals.domain_scores;
@@ -44,15 +48,15 @@ export const ChartsSection: React.FC<ChartsSectionProps> = ({ riskCounts, riskEv
           const dScore = hDomain.DEVICE ?? hDomain.device;
           const hScore = hDomain.HTTP ?? hDomain.http;
 
-          if (lScore != null) domains.Logon.push(Number(lScore));
-          if (fScore != null) domains.File.push(Number(fScore));
-          if (dScore != null) domains.Device.push(Number(dScore));
-          if (hScore != null) domains.HTTP.push(Number(hScore));
+          if (lScore != null && Number.isFinite(Number(lScore))) domains.Logon.push(Number(lScore));
+          if (fScore != null && Number.isFinite(Number(fScore))) domains.File.push(Number(fScore));
+          if (dScore != null && Number.isFinite(Number(dScore))) domains.Device.push(Number(dScore));
+          if (hScore != null && Number.isFinite(Number(hScore))) domains.HTTP.push(Number(hScore));
         }
       }
     });
 
-    const avg = (arr: number[]) => (arr.length ? arr.reduce((a, b) => a + b, 0) / arr.length : 0);
+    const avg = (arr: number[]) => (arr.length ? arr.reduce((a, b) => a + b, 0) / arr.length : null);
     const dLogon = avg(domains.Logon);
     const dFile = avg(domains.File);
     const dDevice = avg(domains.Device);
@@ -64,7 +68,7 @@ export const ChartsSection: React.FC<ChartsSectionProps> = ({ riskCounts, riskEv
       { name: 'USB / Devices', score: dDevice, color: 'bg-amber-600', fill: '#d97706' },
       { name: 'HTTP & Web Traffic', score: dHTTP, color: 'bg-cyan-600', fill: '#0891b2' },
     ];
-  }, [riskEvents]);
+  }, [activeEvents]);
 
   // Severity counts for Donut Chart
   const severityData = useMemo(() => {
@@ -84,7 +88,7 @@ export const ChartsSection: React.FC<ChartsSectionProps> = ({ riskCounts, riskEv
 
   // Timeline points
   const timelinePoints = useMemo(() => {
-    const sorted = [...riskEvents]
+    const sorted = [...activeEvents]
       .filter((e) => e.created_at)
       .sort((a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime())
       .slice(-24);
@@ -94,7 +98,7 @@ export const ChartsSection: React.FC<ChartsSectionProps> = ({ riskCounts, riskEv
       score: Math.min(100, Math.max(0, parseFloat(String(e.risk_score || 0)))),
       time: new Date(e.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
     }));
-  }, [riskEvents]);
+  }, [activeEvents]);
 
   // Donut SVG circumference calculation
   const radius = 38;
@@ -104,18 +108,18 @@ export const ChartsSection: React.FC<ChartsSectionProps> = ({ riskCounts, riskEv
   return (
     <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
       {/* Domain Risk Breakdown */}
-      <Card title="Attack Surface & Domain Vectors" subtitle="Aggregated risk by collector domain telemetry">
+      <Card title="Attack Surface & Domain Vectors" subtitle="Available scores from active collector domain telemetry">
         <div className="space-y-4 pt-1">
           {domainAverages.map((domain, idx) => (
             <div key={idx} className="space-y-1.5">
               <div className="flex items-center justify-between text-xs">
                 <span className="font-medium text-slate-700">{domain.name}</span>
-                <span className="font-mono font-semibold text-slate-900">{formatScore(domain.score)}</span>
+                <span className="font-mono font-semibold text-slate-900">{domain.score === null ? 'Not available' : formatScore(domain.score)}</span>
               </div>
               <div className="w-full bg-slate-100 rounded-full h-2 overflow-hidden border border-slate-200/60">
                 <div
                   className={`h-full rounded-full ${domain.color} transition-all duration-500`}
-                  style={{ width: `${Math.min(100, Math.max(0, domain.score))}%` }}
+                  style={{ width: `${Math.min(100, Math.max(0, domain.score ?? 0))}%` }}
                 />
               </div>
             </div>
@@ -191,7 +195,7 @@ export const ChartsSection: React.FC<ChartsSectionProps> = ({ riskCounts, riskEv
       <div className="md:col-span-2">
         <Card
           title="Telemetry Risk Score Timeline"
-          subtitle="Chronological sequence of calibrated threat scores (0–100 scale)"
+          subtitle="Recent active endpoint risk scores (0–100 scale)"
         >
           {timelinePoints.length === 0 ? (
             <div className="p-8 text-center text-xs text-slate-400">
@@ -237,7 +241,7 @@ export const ChartsSection: React.FC<ChartsSectionProps> = ({ riskCounts, riskEv
                       {timelinePoints.map((p, i) => {
                         const x = (i / Math.max(1, timelinePoints.length - 1)) * 800;
                         const y = 115 - (p.score / 100) * 105;
-                        const ptColor = p.score >= 85 ? '#e11d48' : p.score >= 60 ? '#f97316' : '#2563eb';
+                        const ptColor = p.score >= 90 ? '#e11d48' : p.score >= 70 ? '#f97316' : '#2563eb';
                         return (
                           <circle
                             key={i}

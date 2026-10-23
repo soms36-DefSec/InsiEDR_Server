@@ -14,7 +14,7 @@
 import React from 'react';
 import type { RiskEvent } from '../../types/telemetry';
 import { Badge } from '../ui/Badge';
-import { formatScore, getRiskLevel, extractEventSummary, timeAgo } from '../../utils/formatters';
+import { formatScore, getRiskLevel, extractEventSummary, timeAgo, THREAT_DECAY_WINDOW_MS } from '../../utils/formatters';
 import { AlertCircle } from 'lucide-react';
 
 export interface ThreatFeedProps {
@@ -28,7 +28,12 @@ export const ThreatFeed: React.FC<ThreatFeedProps> = ({
   onSelectThreat,
   isLoading = false,
 }) => {
-  if (isLoading && (!events || events.length === 0)) {
+  const activeEvents = (events || []).filter((event) => {
+    const age = Date.now() - new Date(event.created_at).getTime();
+    const active = event.is_active ?? (age >= -120000 && age <= THREAT_DECAY_WINDOW_MS);
+    return active && !event.is_test && Number(event.risk_score || 0) >= 40;
+  });
+  if (isLoading && activeEvents.length === 0) {
     return (
       <div className="flex items-center justify-center p-8 text-xs text-slate-400">
         <span className="w-4 h-4 border-2 border-slate-300 border-t-blue-600 rounded-full animate-spin mr-2" />
@@ -37,7 +42,7 @@ export const ThreatFeed: React.FC<ThreatFeedProps> = ({
     );
   }
 
-  if (!events || events.length === 0) {
+  if (activeEvents.length === 0) {
     return (
       <div className="flex flex-col items-center justify-center p-8 text-center bg-slate-50/50 rounded-lg border border-dashed border-slate-200">
         <AlertCircle className="w-6 h-6 text-slate-400 mb-2" />
@@ -51,7 +56,7 @@ export const ThreatFeed: React.FC<ThreatFeedProps> = ({
 
   return (
     <div className="divide-y divide-slate-100 max-h-[380px] overflow-y-auto pr-1">
-      {events.slice(0, 30).map((ev, idx) => {
+      {activeEvents.slice(0, 30).map((ev, idx) => {
         const score = parseFloat(String(ev.risk_score || 0));
         const level = getRiskLevel(score);
         const summary = extractEventSummary(ev);

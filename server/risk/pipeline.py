@@ -219,6 +219,36 @@ def process_telemetry_risk(storage, payload: Dict[str, Any], *, emit: bool = Tru
         correlated_signals = dict(risk_result.get("correlated_signals_json") or {})
         if payload.get("hostname"):
             correlated_signals["hostname"] = str(payload["hostname"])
+        if agent_id in config.test_agent_ids:
+            correlated_signals["source_kind"] = "synthetic_test"
+        # Keep the matched process details with a tunneling finding so an analyst
+        # can inspect the exact process instead of a count-only assertion.
+        processes = raw_features.get("processes")
+        try:
+            tunneling_process_count = float(raw_features.get("tunneling_process_count") or 0)
+        except (TypeError, ValueError):
+            tunneling_process_count = 0
+        if tunneling_process_count > 0 and isinstance(processes, list):
+            indicators = ("ngrok", "ssh", "plink", "localtunnel", "chisel", "frpc")
+            evidence = []
+            for process in processes:
+                if not isinstance(process, dict):
+                    continue
+                name = str(process.get("name") or "")
+                command = str(process.get("cmd") or "")
+                if not any(indicator in f"{name} {command}".lower() for indicator in indicators):
+                    continue
+                evidence.append({
+                    "pid": process.get("pid"),
+                    "name": name[:260],
+                    "command_line": command[:512],
+                    "source": str(process.get("source") or "")[:80],
+                    "observed_at": payload.get("collected_at"),
+                })
+                if len(evidence) == 5:
+                    break
+            if evidence:
+                correlated_signals["process_evidence"] = evidence
 
         event_dict = {
             "payload_id": payload_id,

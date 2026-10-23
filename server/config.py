@@ -569,6 +569,12 @@ class ServerConfig:
         return self._env_bool("INSIEDR_ENABLE_MODEL_PIPELINE", False)
 
     @property
+    def test_agent_ids(self) -> frozenset[str]:
+        """Explicit IDs whose telemetry must be marked as test data in fleet views."""
+        raw = os.environ.get("INSIEDR_TEST_AGENT_IDS", "")
+        return frozenset(value.strip() for value in raw.split(",") if value.strip())
+
+    @property
     def model_isolation_forest_path(self) -> str:
         return os.environ.get("INSIEDR_MODEL_IF_PATH", "v2_domain_isolation_forest.pkl")
 

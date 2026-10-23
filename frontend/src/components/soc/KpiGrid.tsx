@@ -26,8 +26,8 @@ export const KpiGrid: React.FC<KpiGridProps> = ({
 }) => {
   const pc = summary?.pc_status || { total_pcs: 0, online_pcs: 0, offline_pcs: 0 };
   const rc = summary?.risk_counts || { critical: 0, high: 0, medium: 0, low: 0 };
-  const totalEvents = summary?.total_risk_events || summary?.stats?.risk_events || 0;
-  const modelStatus = health?.model_pipeline || 'ready';
+  const totalEvents = summary?.total_risk_events ?? summary?.stats?.risk_events ?? 0;
+  const modelStatus = health?.model_pipeline || 'unknown';
 
   const totalEvaluated = (rc.critical + rc.high + rc.medium + rc.low) || (pc.total_pcs || 1);
   const critPct = Math.round((rc.critical / totalEvaluated) * 100);
@@ -266,7 +266,7 @@ export const KpiGrid: React.FC<KpiGridProps> = ({
               </span>
               <Activity className="w-4 h-4 text-blue-600" />
             </div>
-            <div className="text-[11px] text-slate-500 mt-0.5">Correlated Risk Detections</div>
+            <div className="text-[11px] text-slate-500 mt-0.5">Retained Risk Event Rows</div>
           </div>
         </div>
 
@@ -277,7 +277,7 @@ export const KpiGrid: React.FC<KpiGridProps> = ({
           </div>
           <div className="flex items-center justify-between text-slate-600">
             <span className="text-slate-400">CERT Scenarios:</span>
-            <span className="font-medium text-slate-800">S1/S2, S3, S5 Active</span>
+            <span className="font-medium text-slate-800">S1–S4 rules configured</span>
           </div>
         </div>
       </div>

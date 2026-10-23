@@ -374,6 +374,11 @@ def detect_insider_threat(features: Dict[str, Any], system_profile: Optional[str
         "detections": processed_detections,
         "evidence_summary": evidence_summary,
         "active_domains": active_domains,
+        "domain_scores": {
+            domain: round(domain_peaks[domain], 2)
+            for domain in ("LOGON", "FILE", "DEVICE", "HTTP")
+            if domain in domain_peaks
+        },
         "active_groups": list(grouped.keys()),
         "system_profile": profile
     }

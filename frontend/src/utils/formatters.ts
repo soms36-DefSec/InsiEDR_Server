@@ -8,10 +8,10 @@
  *   and modular developer plugins.
  *
  * Risk Thresholds:
- *   - CRITICAL: >= 85.0
- *   - HIGH:     >= 60.0 and < 85.0
- *   - MEDIUM:   >= 35.0 and < 60.0
- *   - LOW:      < 35.0
+ *   - CRITICAL: >= 90.0
+ *   - HIGH:     >= 70.0 and < 90.0
+ *   - MEDIUM:   >= 40.0 and < 70.0
+ *   - LOW:      < 40.0
  *
  * Threat Decay:
  *   - 30-minute rolling decay window (`THREAT_DECAY_WINDOW_MS`) to reduce analyst
@@ -41,9 +41,9 @@ export function formatScore(score: number | string | null | undefined): string {
 
 export function getRiskLevel(score: number | string | null | undefined): RiskLevel {
   const num = typeof score === 'number' ? score : parseFloat(String(score || 0));
-  if (num >= 85.0) return 'CRITICAL';
-  if (num >= 60.0) return 'HIGH';
-  if (num >= 35.0) return 'MEDIUM';
+  if (num >= 90.0) return 'CRITICAL';
+  if (num >= 70.0) return 'HIGH';
+  if (num >= 40.0) return 'MEDIUM';
   return 'LOW';
 }
 

@@ -357,6 +357,11 @@ class HybridStorage(BaseStorage):
     def list_risk_events(self, limit: int = 100, offset: int = 0) -> List[Dict[str, Any]]:
         return self.threat.list_risk_events(limit=limit, offset=offset)
 
+    def get_latest_risk_events_for_agents(self, agent_ids: list[str]) -> List[Dict[str, Any]]:
+        # Risk events are dual-written; PostgreSQL provides a bounded fleet lookup
+        # even when ClickHouse contains millions of retained historical rows.
+        return self.pg.get_latest_risk_events_for_agents(agent_ids)
+
     def list_anomalies(self, limit: int = 100, offset: int = 0) -> List[Dict[str, Any]]:
         return self.threat.list_anomalies(limit=limit, offset=offset)
 

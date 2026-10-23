@@ -1309,6 +1309,37 @@ class PostgresStorage(BaseStorage):
                     conn.rollback()
                     return []
 
+    def get_latest_risk_events_for_agents(self, agent_ids: list[str]) -> list[dict[str, Any]]:
+        """Return one latest persisted event for each requested agent, without a global row cap."""
+        if not agent_ids:
+            return []
+        events: list[dict[str, Any]] = []
+        with self.connection() as conn:
+            with closing(conn.cursor()) as cursor:
+                for start in range(0, len(agent_ids), 500):
+                    batch = agent_ids[start:start + 500]
+                    placeholders = ", ".join(["%s"] * len(batch))
+                    cursor.execute(
+                        f"""
+                        SELECT latest.id, latest.payload_id, latest.agent_id, latest.username,
+                               COALESCE(a.hostname, latest.agent_id) AS hostname,
+                               latest.risk_score, latest.risk_level, latest.correlated_signals_json,
+                               latest.summary, latest.created_at
+                        FROM (
+                            SELECT r.*, ROW_NUMBER() OVER (
+                                PARTITION BY r.agent_id ORDER BY r.created_at DESC, r.id DESC
+                            ) AS row_num
+                            FROM risk_events r
+                            WHERE r.agent_id IN ({placeholders})
+                        ) latest
+                        LEFT JOIN agents a ON a.agent_id = latest.agent_id
+                        WHERE latest.row_num = 1
+                        """,
+                        tuple(batch),
+                    )
+                    events.extend(self._rows_to_dicts(cursor))
+        return sorted(events, key=lambda event: str(event.get("created_at") or ""), reverse=True)
+
     def list_baselines(self, limit: int = 100, offset: int = 0) -> list[dict[str, Any]]:
         with self.connection() as conn:
             with closing(conn.cursor()) as cursor:

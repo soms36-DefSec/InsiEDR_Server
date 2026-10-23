@@ -54,6 +54,7 @@ export const UserRiskTable: React.FC<UserRiskTableProps> = ({
   const [sortAsc, setSortAsc] = useState(false);
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState(10);
+  const [showTestData, setShowTestData] = useState(false);
 
   // Compute endpoint rows with latest risk scores and 30-min decay
   const endpointRows = useMemo<EndpointRow[]>(() => {
@@ -73,19 +74,19 @@ export const UserRiskTable: React.FC<UserRiskTableProps> = ({
       const user = agent.username_last_seen || '—';
       const agentId = agent.agent_id || `${hostname}_${user}`;
 
-      const risk = (agent.agent_id && agentRiskMap[agent.agent_id]) ||
-                   (hostname !== '—' && hostRiskMap[hostname]);
+      const risk = agent.agent_id ? agentRiskMap[agent.agent_id] : hostRiskMap[hostname];
       let score = 0;
       let level = getRiskLevel(0);
       let isDecayed = false;
+      let historicalScore: number | undefined;
 
       if (risk) {
-        score = parseFloat(String(risk.risk_score || 0));
-        level = getRiskLevel(score);
+        historicalScore = parseFloat(String(risk.risk_score || 0));
         const eventTime = new Date(risk.created_at).getTime();
-        if (!isNaN(eventTime) && now - eventTime > THREAT_DECAY_WINDOW_MS) {
-          isDecayed = true;
-        }
+        const isActive = risk.is_active ?? (!isNaN(eventTime) && now - eventTime <= THREAT_DECAY_WINDOW_MS && now - eventTime >= -120000);
+        score = isActive ? historicalScore : 0;
+        level = getRiskLevel(score);
+        isDecayed = !isActive;
       }
 
       const scenarioTags: Array<{ id: string; desc: string }> = [];
@@ -126,7 +127,7 @@ export const UserRiskTable: React.FC<UserRiskTableProps> = ({
         }
       }
 
-      if (scenarioTags.length === 0 && score >= 35.0) {
+      if (scenarioTags.length === 0 && score >= 40.0) {
         scenarioTags.push({ id: 'Anomaly', desc: 'Anomaly Pattern Detected' });
       }
 
@@ -141,6 +142,8 @@ export const UserRiskTable: React.FC<UserRiskTableProps> = ({
         score,
         level,
         isDecayed,
+        historicalScore,
+        isTest: Boolean(agent.is_test),
         scenarios: scenarioTags,
         lastSeen: agent.last_seen_at,
         isOnline: Boolean(isOnline),
@@ -163,7 +166,7 @@ export const UserRiskTable: React.FC<UserRiskTableProps> = ({
 
   // Filter
   const filtered = useMemo(() => {
-    let list = endpointRows;
+    let list = showTestData ? endpointRows : endpointRows.filter((row) => !row.isTest);
     if (filterLevel) {
       list = list.filter((r) => r.level.toUpperCase() === filterLevel.toUpperCase());
     }
@@ -175,7 +178,7 @@ export const UserRiskTable: React.FC<UserRiskTableProps> = ({
         r.hostname.toLowerCase().includes(q) ||
         r.level.toLowerCase().includes(q)
     );
-  }, [endpointRows, searchTerm, filterLevel]);
+  }, [endpointRows, searchTerm, filterLevel, showTestData]);
 
   // Sort
   const sorted = useMemo(() => {
@@ -213,7 +216,7 @@ export const UserRiskTable: React.FC<UserRiskTableProps> = ({
         <div className="flex items-center gap-2">
           <span>Endpoint Fleet Risk Matrix</span>
           <span className="text-xs px-2 py-0.5 rounded-full bg-slate-100 text-slate-600 font-semibold tabular-nums">
-            {endpointRows.length} endpoints
+            {endpointRows.filter((row) => !row.isTest).length} endpoints
           </span>
           {filterLevel && (
             <span className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full text-[11px] font-semibold bg-rose-50 text-rose-800 border border-rose-200">
@@ -234,6 +237,15 @@ export const UserRiskTable: React.FC<UserRiskTableProps> = ({
       subtitle="Live risk calibration and anomalous scenario posture across connected devices"
       action={
         <div className="flex items-center gap-2">
+          {endpointRows.some((row) => row.isTest) && (
+            <button
+              type="button"
+              onClick={() => { setShowTestData(!showTestData); setPage(1); }}
+              className="text-[11px] text-blue-700 hover:text-blue-900 font-medium cursor-pointer"
+            >
+              {showTestData ? 'Hide test endpoints' : 'Show test endpoints'}
+            </button>
+          )}
           {filterLevel && onClearFilterLevel && (
             <button
               onClick={onClearFilterLevel}
@@ -311,20 +323,20 @@ export const UserRiskTable: React.FC<UserRiskTableProps> = ({
               paginated.map((row) => {
                 const isSelected = selectedHostname ? selectedHostname === row.hostname : (selectedUser === row.user);
                 const scoreColor =
-                  row.score >= 85
+                  row.score >= 90
                     ? 'text-rose-700'
-                    : row.score >= 60
+                    : row.score >= 70
                     ? 'text-orange-700'
-                    : row.score >= 35
+                    : row.score >= 40
                     ? 'text-amber-800'
                     : 'text-emerald-700';
 
                 const progressBg =
-                  row.score >= 85
+                  row.score >= 90
                     ? 'bg-rose-500'
-                    : row.score >= 60
+                    : row.score >= 70
                     ? 'bg-orange-500'
-                    : row.score >= 35
+                    : row.score >= 40
                     ? 'bg-amber-500'
                     : 'bg-emerald-500';
 
@@ -350,6 +362,7 @@ export const UserRiskTable: React.FC<UserRiskTableProps> = ({
                     <td className="py-3 px-4 font-mono font-semibold text-slate-900 flex items-center gap-1.5">
                       <Monitor className="w-3.5 h-3.5 text-blue-600" />
                       {row.hostname}
+                      {row.isTest && <span className="rounded border border-violet-200 bg-violet-50 px-1.5 py-0.5 text-[9px] text-violet-700">TEST</span>}
                     </td>
 
                     {/* User */}
@@ -394,7 +407,7 @@ export const UserRiskTable: React.FC<UserRiskTableProps> = ({
                           ))
                         ) : (
                           <span className="text-[10px] text-slate-400">
-                            {row.isDecayed ? 'Decayed (Nominal)' : 'Nominal'}
+                            {row.isDecayed ? `Historical${row.historicalScore ? ` (${formatScore(row.historicalScore)})` : ''}` : 'Nominal'}
                           </span>
                         )}
                         {row.scenarios.length > 3 && (

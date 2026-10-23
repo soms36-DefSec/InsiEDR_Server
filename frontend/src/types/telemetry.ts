@@ -21,10 +21,10 @@
 
 /**
  * Categorical severity tiers assigned to endpoint risk scores.
- * - CRITICAL: Risk Score >= 85.0 (Immediate SOC escalation required)
- * - HIGH:     Risk Score >= 60.0 (Elevated anomalous pattern detected)
- * - MEDIUM:   Risk Score >= 35.0 (Moderate deviation from baseline)
- * - LOW:      Risk Score < 35.0  (Operating within normal behavioral bounds)
+ * - CRITICAL: Risk Score >= 90.0 (Immediate SOC escalation required)
+ * - HIGH:     Risk Score >= 70.0 (Elevated anomalous pattern detected)
+ * - MEDIUM:   Risk Score >= 40.0 (Moderate deviation from baseline)
+ * - LOW:      Risk Score < 40.0  (Operating within normal behavioral bounds)
  */
 export type RiskLevel = 'LOW' | 'MEDIUM' | 'HIGH' | 'CRITICAL';
 
@@ -35,6 +35,7 @@ export type RiskLevel = 'LOW' | 'MEDIUM' | 'HIGH' | 'CRITICAL';
 export interface CertScenario {
   id: string;
   description: string;
+  severity?: RiskLevel;
 }
 
 /**
@@ -102,6 +103,13 @@ export interface CorrelatedSignals {
   file_risk?: number;
   device_risk?: number;
   http_risk?: number;
+  process_evidence?: Array<{
+    pid?: number;
+    name?: string;
+    command_line?: string;
+    source?: string;
+    observed_at?: string;
+  }>;
   [key: string]: unknown;
 }
 
@@ -115,6 +123,10 @@ export interface RiskEvent {
   hostname?: string;
   risk_score: number | string;
   risk_level?: string;
+  is_active?: boolean;
+  active_risk_score?: number | string;
+  active_risk_level?: string;
+  is_test?: boolean;
   _computed_level?: string;
   summary?: string;
   correlated_signals_json?: string | CorrelatedSignals;
@@ -133,6 +145,7 @@ export interface AgentEndpoint {
   ip_address?: string;
   os_version?: string;
   client_version?: string;
+  is_test?: boolean;
 }
 
 /**
@@ -336,6 +349,8 @@ export interface EndpointRow {
   score: number;
   level: RiskLevel;
   isDecayed: boolean;
+  historicalScore?: number;
+  isTest: boolean;
   scenarios: Array<{ id: string; desc: string }>;
   lastSeen: string;
   isOnline: boolean;

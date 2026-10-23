@@ -26,7 +26,7 @@ import {
 import { triggerServerExport, exportFleetRiskCSV } from '../../services/api';
 import { CollectorDatasetExportModal } from '../telemetry/CollectorDatasetExportModal';
 import type { EndpointRow, RiskEvent } from '../../types/telemetry';
-import { getRiskLevel } from '../../utils/formatters';
+import { getRiskLevel, THREAT_DECAY_WINDOW_MS } from '../../utils/formatters';
 
 export interface TopNavbarProps {
   plugins: EDRPlugin[];
@@ -70,21 +70,20 @@ export const TopNavbar: React.FC<TopNavbarProps> = ({
     const now = Date.now();
     const hostRiskMap: Record<string, RiskEvent> = {};
     const agentRiskMap: Record<string, RiskEvent> = {};
-    const userRiskMap: Record<string, RiskEvent> = {};
     (summary.risk_events || []).forEach((ev) => {
       if (ev.hostname && !hostRiskMap[ev.hostname]) hostRiskMap[ev.hostname] = ev;
       if (ev.agent_id && !agentRiskMap[ev.agent_id]) agentRiskMap[ev.agent_id] = ev;
-      if (ev.username && !userRiskMap[ev.username]) userRiskMap[ev.username] = ev;
     });
 
-    const rows: EndpointRow[] = summary.agents.map((agent) => {
+    const rows: EndpointRow[] = summary.agents.filter((agent) => !agent.is_test).map((agent) => {
       const hostname = agent.hostname || '—';
       const user = agent.username_last_seen || '—';
       const agentId = agent.agent_id || `${hostname}_${user}`;
-      const risk = (hostname !== '—' && hostRiskMap[hostname]) ||
-                   (agent.agent_id && agentRiskMap[agent.agent_id]) ||
-                   (user !== '—' && userRiskMap[user]);
-      const score = risk ? parseFloat(String(risk.risk_score || 0)) : 0;
+      const risk = agent.agent_id ? agentRiskMap[agent.agent_id] : hostRiskMap[hostname];
+      const historicalScore = risk ? parseFloat(String(risk.risk_score || 0)) : undefined;
+      const eventAge = risk ? now - new Date(risk.created_at).getTime() : Infinity;
+      const isActive = risk?.is_active ?? (eventAge >= -120000 && eventAge <= THREAT_DECAY_WINDOW_MS);
+      const score = isActive ? historicalScore || 0 : 0;
       const isOnline =
         agent.status === 'active' ||
         (agent.last_seen_at && now - new Date(agent.last_seen_at).getTime() < 300000);
@@ -95,7 +94,9 @@ export const TopNavbar: React.FC<TopNavbarProps> = ({
         user,
         score,
         level: getRiskLevel(score),
-        isDecayed: false,
+        isDecayed: Boolean(risk && !isActive),
+        historicalScore,
+        isTest: false,
         scenarios: [],
         lastSeen: agent.last_seen_at,
         isOnline: Boolean(isOnline),

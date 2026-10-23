@@ -380,11 +380,13 @@ function escapeCsvCell(val: unknown): string {
  * Generates and downloads a CSV export of active fleet endpoints and their risk postures.
  */
 export function exportFleetRiskCSV(endpoints: EndpointRow[]): void {
-  let csv = 'Hostname,Username,Risk_Score,Risk_Level,Status,Last_Seen\n';
+  let csv = 'Hostname,Username,Risk_Score,Risk_Level,Status,Last_Seen,Agent_ID,Data_Type,Historical_Risk_Score\n';
   endpoints.forEach((ep) => {
     csv += `${escapeCsvCell(ep.hostname)},${escapeCsvCell(ep.user)},${ep.score.toFixed(2)},${escapeCsvCell(ep.level)},${
       escapeCsvCell(ep.isOnline ? 'ONLINE' : 'OFFLINE')
-    },${escapeCsvCell(ep.lastSeen || '')}\n`;
+    },${escapeCsvCell(ep.lastSeen || '')},${escapeCsvCell(ep.agentId)},${escapeCsvCell(ep.isTest ? 'TEST' : 'PRODUCTION')},${
+      ep.historicalScore == null ? '' : ep.historicalScore.toFixed(2)
+    }\n`;
   });
   downloadFile(csv, `insiedr_fleet_risk_${Date.now()}.csv`);
 }

@@ -192,12 +192,12 @@ When `npm run build` finishes, the FastAPI server (`server/asgi.py`) automatical
 
 ## 6. Key Domain Rules & Invariants
 
-- **30-Minute Threat Decay (`THREAT_DECAY_WINDOW_MS`)**:
-  Endpoints with historical alerts decay to Nominal status if no high-risk events occur within 30 minutes, preventing false alarm fatigue.
+- **30-Minute Active Risk Window (`THREAT_DECAY_WINDOW_MS`)**:
+  Assessments older than 30 minutes remain in history while active fleet posture returns to nominal until another elevated assessment arrives.
 - **Risk Score Thresholds**:
-  - `CRITICAL`: Score $\ge$ 85.0
-  - `HIGH`: Score $\ge$ 60.0 and $<$ 85.0
-  - `MEDIUM`: Score $\ge$ 35.0 and $<$ 60.0
-  - `LOW`: Score $<$ 35.0
+  - `CRITICAL`: Score $\ge$ 90.0
+  - `HIGH`: Score $\ge$ 70.0 and $<$ 90.0
+  - `MEDIUM`: Score $\ge$ 40.0 and $<$ 70.0
+  - `LOW`: Score $<$ 40.0
 - **Log Virtualization**:
   The `VirtualizedLogTable` calculates exact row offsets and only renders visible DOM nodes + 6 overscan rows, ensuring high-speed rendering regardless of log dataset size.

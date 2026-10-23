@@ -7,6 +7,7 @@ from server.api.deps import get_storage, require_operator, OperatorPrincipal
 from psycopg2.pool import PoolError
 from psycopg2.errors import QueryCanceled, LockNotAvailable
 from server.config import config
+from server.risk.presentation import annotate_risk_event, is_test_risk_event
 
 logger = logging.getLogger("insiedr.api.stats")
 
@@ -80,9 +81,17 @@ def dashboard_summary(include_stats: bool = True, storage=Depends(get_storage),
 
         agents_failed = False
         try:
-            agents = storage.list_agents(limit=500, offset=0) if hasattr(storage, "list_agents") else []
-            if not isinstance(agents, list):
-                agents = []
+            agents = []
+            if hasattr(storage, "list_agents"):
+                offset = 0
+                while True:
+                    page = storage.list_agents(limit=500, offset=offset)
+                    if not isinstance(page, list):
+                        break
+                    agents.extend(page)
+                    if len(page) < 500:
+                        break
+                    offset += len(page)
         except (PoolError, QueryCanceled, LockNotAvailable):
             raise
         except Exception as agents_err:
@@ -92,17 +101,26 @@ def dashboard_summary(include_stats: bool = True, storage=Depends(get_storage),
 
         risk_events = []
         try:
-            if hasattr(storage, "list_risk_events"):
-                res = storage.list_risk_events(limit=50, offset=0)
-                if isinstance(res, (list, tuple)):
-                    risk_events = res
-                else:
-                    risk_events = []
+            agent_ids = [str(agent["agent_id"]) for agent in agents if agent.get("agent_id")]
+            if hasattr(storage, "get_latest_risk_events_for_agents"):
+                risk_events = storage.get_latest_risk_events_for_agents(agent_ids)
+            elif hasattr(storage, "list_risk_events"):
+                # Legacy storage adapters should implement the fleet lookup above.
+                recent_rows = storage.list_risk_events(limit=10000, offset=0)
+                seen_agent_ids = set()
+                for event in recent_rows:
+                    agent_id = event.get("agent_id")
+                    if agent_id and agent_id in agent_ids and agent_id not in seen_agent_ids:
+                        risk_events.append(event)
+                        seen_agent_ids.add(agent_id)
+            if not isinstance(risk_events, (list, tuple)):
+                risk_events = []
         except (PoolError, QueryCanceled, LockNotAvailable):
             raise
         except Exception as risk_err:
-            logger.warning("Non-fatal: list_risk_events error: %s", risk_err)
-            risk_events = []
+            logger.warning("Fleet risk lookup failed: %s", risk_err)
+            from server.api.errors import AnalyticsUnavailableError
+            raise AnalyticsUnavailableError("Fleet risk assessment is temporarily unavailable") from risk_err
 
         critical_count = 0
         high_count = 0
@@ -113,18 +131,29 @@ def dashboard_summary(include_stats: bool = True, storage=Depends(get_storage),
         host_latest_risk: dict[str, dict] = {}
         agent_latest_risk: dict[str, dict] = {}
 
+        test_agent_ids = config.test_agent_ids
+        test_hostnames = {
+            str(agent.get("hostname") or "").casefold()
+            for agent in agents if str(agent.get("agent_id") or "") in test_agent_ids
+        }
+        normal_hostnames = {
+            str(agent.get("hostname") or "").casefold()
+            for agent in agents if str(agent.get("agent_id") or "") not in test_agent_ids
+        }
+        test_only_hosts = test_hostnames - normal_hostnames
+        if test_only_hosts and isinstance(pc_status.get("endpoints"), list):
+            pc_status["endpoints"] = [
+                endpoint for endpoint in pc_status["endpoints"]
+                if str(endpoint.get("hostname") or "").casefold() not in test_only_hosts
+            ]
+            pc_status["total_pcs"] = len(pc_status["endpoints"])
+            pc_status["online_pcs"] = sum(
+                endpoint.get("status") == "online" for endpoint in pc_status["endpoints"]
+            )
+            pc_status["offline_pcs"] = pc_status["total_pcs"] - pc_status["online_pcs"]
         for event in risk_events:
-            score = float(event.get("risk_score") or 0.0)
-            if score >= 85.0:
-                level = "CRITICAL"
-            elif score >= 60.0:
-                level = "HIGH"
-            elif score >= 35.0:
-                level = "MEDIUM"
-            else:
-                level = "LOW"
-            event["risk_level"] = level
-            event["_computed_level"] = level
+            annotate_risk_event(event)
+            event["is_test"] = is_test_risk_event(event, test_agent_ids)
 
             h = event.get("hostname")
             aid = event.get("agent_id")
@@ -137,15 +166,19 @@ def dashboard_summary(include_stats: bool = True, storage=Depends(get_storage),
         # Monitored endpoints are distinct physical/virtual endpoints identified by HOSTNAME
         seen_hosts = set()
         for a in agents:
+            a["is_test"] = str(a.get("agent_id") or "") in test_agent_ids
+            if a["is_test"]:
+                continue
             hostname = a.get("hostname") or a.get("agent_id") or a.get("username_last_seen")
             if not hostname or hostname in seen_hosts:
                 continue
             seen_hosts.add(hostname)
 
-            ev = agent_latest_risk.get(a.get("agent_id")) or host_latest_risk.get(hostname)
+            ev = (agent_latest_risk.get(a.get("agent_id")) if a.get("agent_id")
+                  else host_latest_risk.get(hostname))
 
             if ev:
-                lvl = (ev.get("_computed_level") or ev.get("risk_level") or "LOW").upper()
+                lvl = ev.get("active_risk_level") or "LOW"
                 if lvl == "CRITICAL":
                     critical_count += 1
                 elif lvl == "HIGH":
@@ -156,13 +189,6 @@ def dashboard_summary(include_stats: bool = True, storage=Depends(get_storage),
                     low_count += 1
             else:
                 low_count += 1
-
-        if not seen_hosts:
-            fallback_map = agent_latest_risk or host_latest_risk
-            critical_count = sum(1 for e in fallback_map.values() if e.get("_computed_level") == "CRITICAL")
-            high_count = sum(1 for e in fallback_map.values() if e.get("_computed_level") == "HIGH")
-            medium_count = sum(1 for e in fallback_map.values() if e.get("_computed_level") == "MEDIUM")
-            low_count = sum(1 for e in fallback_map.values() if e.get("_computed_level") == "LOW")
 
         res = {
             "ok": True,
@@ -178,6 +204,9 @@ def dashboard_summary(include_stats: bool = True, storage=Depends(get_storage),
         if pc_failed:
             from server.api.errors import AnalyticsUnavailableError
             raise AnalyticsUnavailableError("Fleet inventory is temporarily unavailable")
+        if agents_failed:
+            from server.api.errors import AnalyticsUnavailableError
+            raise AnalyticsUnavailableError("Fleet agent inventory is temporarily unavailable")
         from fastapi.encoders import jsonable_encoder
         return jsonable_encoder(res)
 

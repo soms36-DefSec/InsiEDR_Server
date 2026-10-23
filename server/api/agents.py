@@ -658,11 +658,11 @@ async def get_tamper_alerts(
                     level = (ev.get("risk_level") or "").upper()
                     if not level or level in ["NONE", "INFO"]:
                         score = float(ev.get("risk_score") or 0.0)
-                        if score >= 85.0:
+                        if score >= 90.0:
                             level = "CRITICAL"
-                        elif score >= 60.0:
+                        elif score >= 70.0:
                             level = "HIGH"
-                        elif score >= 35.0:
+                        elif score >= 40.0:
                             level = "MEDIUM"
                         else:
                             level = "LOW"

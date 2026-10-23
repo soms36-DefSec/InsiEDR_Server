@@ -11,6 +11,7 @@ from fastapi import APIRouter, Depends, Query, Request
 from fastapi.responses import JSONResponse, Response, StreamingResponse
 from server.api.deps import get_storage, require_operator, OperatorPrincipal
 from server.config import config
+from server.risk.presentation import is_test_risk_event
 
 router = APIRouter(prefix="/api", tags=["Streaming Export"])
 bp = router  # Backward compatibility alias
@@ -153,6 +154,7 @@ def _stream_csv_threats(storage, limit: int) -> Generator[str, None, None]:
         "risk_score",
         "summary",
         "correlated_signals_json",
+        "data_type",
     ])
     yield buffer.getvalue()
     buffer.seek(0)
@@ -185,6 +187,7 @@ def _stream_csv_threats(storage, limit: int) -> Generator[str, None, None]:
                 row.get("risk_score", 0.0),
                 row.get("summary", ""),
                 signals_str,
+                "TEST" if is_test_risk_event(row, config.test_agent_ids) else "PRODUCTION",
             ])
 
         yield buffer.getvalue()
@@ -210,7 +213,9 @@ def _stream_json_threats(storage, limit: int) -> Generator[str, None, None]:
             break
 
         for row in rows:
-            yield json.dumps(row, default=str) + "\n"
+            tagged = dict(row)
+            tagged["is_test"] = is_test_risk_event(row, config.test_agent_ids)
+            yield json.dumps(tagged, default=str) + "\n"
 
         count = len(rows)
         exported += count
