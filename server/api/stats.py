@@ -3,6 +3,7 @@ from __future__ import annotations
 import logging
 from fastapi import APIRouter, Depends, Request
 from server.api.responses import api_error
+from server.api.contracts import DashboardSummaryResponse, StatsResponse
 from server.api.deps import get_storage, require_operator, OperatorPrincipal
 from psycopg2.pool import PoolError
 from psycopg2.errors import QueryCanceled, LockNotAvailable
@@ -22,8 +23,8 @@ def _fleet_stats(storage, actor="anon"):
                     fresh_seconds=90, group='analytics')
 
 
-@router.get("/stats")
-@router.get("/v1/stats")
+@router.get("/stats", response_model=StatsResponse)
+@router.get("/v1/stats", response_model=StatsResponse)
 def get_stats(request: Request, storage=Depends(get_storage),
               operator: OperatorPrincipal = Depends(require_operator("operator:read"))):
     """Returns aggregated fleet overview stats, served from coordinated 90-second snapshots."""
@@ -38,8 +39,8 @@ def get_stats(request: Request, storage=Depends(get_storage),
     return _fleet_stats(storage, getattr(operator, "actor", "anon"))
 
 
-@router.get("/dashboard-summary")
-@router.get("/v1/dashboard-summary")
+@router.get("/dashboard-summary", response_model=DashboardSummaryResponse)
+@router.get("/v1/dashboard-summary", response_model=DashboardSummaryResponse)
 def dashboard_summary(include_stats: bool = True, storage=Depends(get_storage),
                       operator: OperatorPrincipal = Depends(require_operator("operator:read"))):
     """Fleet overview with a complete hostname snapshot in pc_status.endpoints.

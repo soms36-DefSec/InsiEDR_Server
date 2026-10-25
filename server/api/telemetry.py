@@ -9,6 +9,7 @@ from fastapi.responses import JSONResponse
 
 from server.api.errors import AnalyticsUnavailableError
 from server.api.deps import get_storage, require_operator, OperatorPrincipal
+from server.api.contracts import TelemetryExplorerResponse
 
 logger = logging.getLogger(__name__)
 
@@ -16,8 +17,8 @@ router = APIRouter(prefix="/api", tags=["Telemetry Explorer & Analytics"])
 bp = router  # Backward compatibility alias
 
 
-@router.get("/telemetry/explorer")
-@router.get("/v1/telemetry/explorer")
+@router.get("/telemetry/explorer", response_model=TelemetryExplorerResponse)
+@router.get("/v1/telemetry/explorer", response_model=TelemetryExplorerResponse)
 async def get_telemetry_explorer(
     limit: int = Query(50, ge=1, le=1000),
     cursor: str | None = Query(None, max_length=1024),

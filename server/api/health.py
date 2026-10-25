@@ -1,12 +1,13 @@
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, Request
+from fastapi import APIRouter, Depends, Request, Response
 from fastapi.responses import JSONResponse
 
 from server.config import config
 from server.plugin_registry import registry
 from server.api.events import broadcaster
 from server.api.deps import get_storage, get_task_queue, require_operator, OperatorPrincipal
+from server.api.contracts import HealthResponse
 
 router = APIRouter(prefix="/api", tags=["System & Observability"])
 bp = router  # Backward compatibility alias
@@ -76,10 +77,11 @@ def readiness(
     return {"status": "ready", "ok": True, "database": "ok"}
 
 
-@router.get("/health")
-@router.get("/v1/health")
+@router.get("/health", response_model=HealthResponse)
+@router.get("/v1/health", response_model=HealthResponse)
 def health(
     request: Request,
+    response: Response,
     storage=Depends(get_storage),
     task_queue=Depends(get_task_queue),
 ):
@@ -144,8 +146,8 @@ def health(
         "sse_subscribers": sse_subscribers,
         "auth": "configured" if getattr(request.app.state, "auth_enforced", False) else "not_enforced",
     }
-    status_code = 200 if status_ok else 503
-    return JSONResponse(content=resp_body, status_code=status_code)
+    response.status_code = 200 if status_ok else 503
+    return resp_body
 
 
 @router.post("/operations/pause-ingestion")

@@ -25,6 +25,7 @@ import {
 } from 'lucide-react';
 import { triggerServerExport, exportFleetRiskCSV } from '../../services/api';
 import { CollectorDatasetExportModal } from '../telemetry/CollectorDatasetExportModal';
+import { useOperatorSignOut } from '../auth/operatorAuthContext';
 import type { EndpointRow, RiskEvent } from '../../types/telemetry';
 import { getRiskLevel, THREAT_DECAY_WINDOW_MS } from '../../utils/formatters';
 
@@ -53,6 +54,7 @@ export const TopNavbar: React.FC<TopNavbarProps> = ({
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [showExportMenu, setShowExportMenu] = useState(false);
   const [showCollectorModal, setShowCollectorModal] = useState(false);
+  const signOut = useOperatorSignOut();
 
   const summary = context.summary;
 
@@ -169,6 +171,7 @@ export const TopNavbar: React.FC<TopNavbarProps> = ({
 
         {/* Right Controls: Real-time Toggle & Export Menu */}
         <div className="flex items-center gap-2.5 shrink-0">
+          {signOut && <button onClick={signOut} className="rounded border border-slate-200 bg-white px-2.5 py-1.5 text-xs text-slate-600 hover:bg-slate-50">Sign out</button>}
           {/* Real-time Ingestion Pipeline Toggle */}
           <div
             className={`flex items-center gap-2 px-2.5 py-1 rounded-md border text-xs transition-colors shadow-2xs ${

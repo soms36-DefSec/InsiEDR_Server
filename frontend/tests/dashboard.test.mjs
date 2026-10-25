@@ -22,6 +22,31 @@ before(async () => {
 });
 after(async () => { await browser?.close(); await server?.close(); });
 
+test('operator session gates the dashboard and clears on sign out', async () => {
+  const page = await browser.newPage();
+  let authenticated = false;
+  await page.route('**/api/**', async route => {
+    const url = new URL(route.request().url());
+    if (url.pathname.endsWith('/auth/session')) {
+      if (route.request().method() === 'POST') authenticated = true;
+      if (route.request().method() === 'DELETE') authenticated = false;
+      await route.fulfill({ json: { authenticated } });
+    } else {
+      await route.fulfill({ json: { ok: true, pc_status: { total_pcs: 0, online_pcs: 0, offline_pcs: 0, endpoints: [] }, agents: [], agents_available: true, risk_counts: { critical: 0, high: 0, medium: 0, low: 0 }, risk_events: [], stats: {}, anomalies: [] } });
+    }
+  });
+  try {
+    await page.goto(base);
+    await page.getByRole('heading', { name: 'Operator sign in' }).waitFor();
+    await page.getByLabel('Operator key').fill('temporary-test-key');
+    await page.getByRole('button', { name: 'Sign in' }).click();
+    await page.getByRole('tab', { name: /SOC Matrix/i }).waitFor();
+    assert.equal(await page.evaluate(() => localStorage.length), 0);
+    await page.getByRole('button', { name: 'Sign out' }).click();
+    await page.getByRole('heading', { name: 'Operator sign in' }).waitFor();
+  } finally { await page.close(); }
+});
+
 test('50,000 rows: empty-to-loaded scroll, bounded DOM, shrink, keyboard and error boundary', async () => {
   const page = await browser.newPage({ viewport: { width: 1440, height: 900 } });
   try {
@@ -89,7 +114,9 @@ test('dashboard: one SSE stream, coalesced updates, filters, stale responses, pa
   await page.route('**/api/**', async route => {
     const url = new URL(route.request().url());
     let body;
-    if (url.pathname.endsWith('/telemetry') || url.pathname.endsWith('/telemetry/explorer')) {
+    if (url.pathname.endsWith('/auth/session')) {
+      body = { authenticated: true, auth_required: true };
+    } else if (url.pathname.endsWith('/telemetry') || url.pathname.endsWith('/telemetry/explorer')) {
       requests.push(url.searchParams);
       if (url.searchParams.get('search') === 'OLD') await new Promise(resolve => setTimeout(resolve, 650));
       if (fail) { await route.fulfill({ status: 503, json: { error: { message: 'Database busy' } } }); return; }
@@ -104,7 +131,7 @@ test('dashboard: one SSE stream, coalesced updates, filters, stale responses, pa
         { hostname: 'TEST-VM', status: 'offline', last_seen_at: '2026-10-01T00:00:00Z' },
         { hostname: 'UNSEEN', status: 'offline', last_seen_at: null },
       ] }, agents: [], risk_counts: {}, risk_events: [], stats: {} };
-    } else body = { ok: true, status: 'ok', database: 'ok' };
+    } else body = { ok: true, status: 'ok', database: 'ok', analytics: 'ok', log_ingestion_enabled: true, telemetry_collection: 'ok', queue_status: 'ok' };
     await route.fulfill({ json: body });
   });
   try {
@@ -200,7 +227,9 @@ test('fleet status cards: valid counts, empty fleet zero, unavailable fallback, 
 
   await page.route('**/api/**', async route => {
     const url = new URL(route.request().url());
-    if (url.pathname.endsWith('/dashboard-summary')) {
+    if (url.pathname.endsWith('/auth/session')) {
+      await route.fulfill({ json: { authenticated: true, auth_required: true } });
+    } else if (url.pathname.endsWith('/dashboard-summary')) {
       if (summaryStatus !== 200) {
         await route.fulfill({ status: summaryStatus, json: { error: 'Backend error' } });
       } else {
@@ -209,7 +238,7 @@ test('fleet status cards: valid counts, empty fleet zero, unavailable fallback, 
     } else if (url.pathname.endsWith('/telemetry/explorer') || url.pathname.endsWith('/telemetry')) {
       await route.fulfill({ json: { ok: true, total: null, has_more: false, next_cursor: null, events: [], logs: [] } });
     } else {
-      await route.fulfill({ json: { ok: true, status: 'ok', database: 'ok' } });
+      await route.fulfill({ json: { ok: true, status: 'ok', database: 'ok', analytics: 'ok', log_ingestion_enabled: true, telemetry_collection: 'ok', queue_status: 'ok' } });
     }
   });
 
@@ -272,7 +301,9 @@ test('collector dataset export modal: preview schema, clears stale data on filte
 
   await page.route('**/api/**', async route => {
     const url = new URL(route.request().url());
-    if (url.pathname.includes('/collector-preview')) {
+    if (url.pathname.endsWith('/auth/session')) {
+      await route.fulfill({ json: { authenticated: true, auth_required: true } });
+    } else if (url.pathname.includes('/collector-preview')) {
       if (previewStatus !== 200) {
         await route.fulfill({ status: previewStatus, json: { error: 'Preview timed out or database error' } });
       } else {
@@ -285,7 +316,7 @@ test('collector dataset export modal: preview schema, clears stale data on filte
     } else if (url.pathname.endsWith('/telemetry/explorer') || url.pathname.endsWith('/telemetry')) {
       await route.fulfill({ json: { ok: true, total: null, has_more: false, next_cursor: null, events: [], logs: [] } });
     } else {
-      await route.fulfill({ json: { ok: true } });
+      await route.fulfill({ json: { ok: true, status: 'ok', database: 'ok', analytics: 'ok', log_ingestion_enabled: true, telemetry_collection: 'ok', queue_status: 'ok' } });
     }
   });
 

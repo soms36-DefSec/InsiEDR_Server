@@ -38,9 +38,40 @@ export const TIMEOUT_CONFIG = {
   HEALTH_MS: 15000,          // 15s for liveness and health probes
 };
 
+type ApiOptions = RequestInit & { timeoutMs?: number; validate?: (value: unknown) => unknown };
+
+const isRecord = (value: unknown): value is Record<string, unknown> =>
+  typeof value === 'object' && value !== null && !Array.isArray(value);
+
+function validateDashboardSummary(value: unknown): DashboardSummary {
+  if (!isRecord(value) || typeof value.ok !== 'boolean' || !isRecord(value.pc_status) ||
+      !Array.isArray(value.agents) || !isRecord(value.risk_counts) ||
+      !Array.isArray(value.risk_events) || !isRecord(value.stats)) {
+    throw new Error('Dashboard summary response does not match the API contract');
+  }
+  return value as unknown as DashboardSummary;
+}
+
+function validateHealth(value: unknown): SystemHealth {
+  if (!isRecord(value) || typeof value.ok !== 'boolean' || typeof value.database !== 'string' ||
+      typeof value.analytics !== 'string' || typeof value.log_ingestion_enabled !== 'boolean') {
+    throw new Error('Health response does not match the API contract');
+  }
+  return value as unknown as SystemHealth;
+}
+
+function validateTelemetryExplorer(value: unknown): TelemetryExplorerResponse {
+  if (!isRecord(value) || typeof value.ok !== 'boolean' || !Array.isArray(value.events) ||
+      value.events.some((event) => !isRecord(event) || typeof event.event_id !== 'string' ||
+        typeof event.timestamp !== 'string' || typeof event.collector_name !== 'string' || typeof event.status !== 'string')) {
+    throw new Error('Telemetry Explorer response does not match the API contract');
+  }
+  return value as unknown as TelemetryExplorerResponse;
+}
+
 const DEFAULT_TIMEOUT_MS = TIMEOUT_CONFIG.DEFAULT_READ_MS;
 
-export async function fetchApi<T>(url: string, options?: RequestInit & { timeoutMs?: number }): Promise<T> {
+export async function fetchApi<T>(url: string, options?: ApiOptions): Promise<T> {
   const timeoutMs = options?.timeoutMs ?? DEFAULT_TIMEOUT_MS;
 
   const controller = new AbortController();
@@ -62,12 +93,17 @@ export async function fetchApi<T>(url: string, options?: RequestInit & { timeout
   }
 
   try {
+    const { validate, ...requestOptions } = options ?? {};
     const res = await fetch(url, {
-      ...options,
+      ...requestOptions,
       cache: 'no-store',
+      credentials: 'same-origin',
       signal: controller.signal,
     });
     if (!res.ok) {
+      if (res.status === 401 && typeof window !== 'undefined') {
+        window.dispatchEvent(new Event('insiedr:auth-expired'));
+      }
       let errorDetail = res.statusText;
       try {
         const errJson = await res.json();
@@ -81,14 +117,14 @@ export async function fetchApi<T>(url: string, options?: RequestInit & { timeout
       }
       throw new Error(`API request failed [${res.status}]: ${errorDetail}`);
     }
-    const data = (await res.json()) as T;
-    return data;
+    const data: unknown = await res.json();
+    return (validate ? validate(data) : data) as T;
   } catch (err: unknown) {
     if (callerSignal?.aborted) {
       throw err;
     }
     if (timedOut) {
-      throw new Error(`API request timed out after ${timeoutMs}ms: ${url}`);
+      throw new Error(`API request timed out after ${timeoutMs}ms: ${url}`, { cause: err });
     }
     throw err;
   } finally {
@@ -105,6 +141,7 @@ export async function fetchApi<T>(url: string, options?: RequestInit & { timeout
  */
 export async function fetchDashboardSummary(signal?: AbortSignal): Promise<DashboardSummary> {
   return fetchApi<DashboardSummary>('/api/dashboard-summary?include_stats=false', {
+    validate: validateDashboardSummary,
     signal,
     timeoutMs: TIMEOUT_CONFIG.DEFAULT_READ_MS,
   });
@@ -116,7 +153,7 @@ export async function fetchDashboardSummary(signal?: AbortSignal): Promise<Dashb
  * Maps to `GET /api/health`.
  */
 export async function fetchHealth(signal?: AbortSignal): Promise<SystemHealth> {
-  return fetchApi<SystemHealth>('/api/health', { signal, timeoutMs: TIMEOUT_CONFIG.HEALTH_MS });
+  return fetchApi<SystemHealth>('/api/health', { signal, timeoutMs: TIMEOUT_CONFIG.HEALTH_MS, validate: validateHealth });
 }
 
 /**
@@ -255,6 +292,7 @@ export async function fetchTelemetryExplorer(
   return fetchApi<TelemetryExplorerResponse>(`/api/v1/telemetry/explorer?${params.toString()}`, {
     signal: filters.signal,
     timeoutMs: TIMEOUT_CONFIG.DEFAULT_READ_MS,
+    validate: validateTelemetryExplorer,
   });
 }
 

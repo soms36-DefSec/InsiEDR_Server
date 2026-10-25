@@ -37,7 +37,6 @@ const evidenceLabel = (item: Candidate['evidence_dates'][number]) => typeof item
 const percentScore = (value: number | null | undefined) => value == null ? '—' : `${(value * 100).toFixed(1)}/100`;
 
 export function ReviewQueuePlugin(_props: PluginProps) {
-  const [operatorKey, setOperatorKey] = useState('');
   const [queue, setQueue] = useState<Candidate[]>([]);
   const [asOf, setAsOf] = useState<string | null>(null);
   const [selectedAgent, setSelectedAgent] = useState('');
@@ -50,54 +49,53 @@ export function ReviewQueuePlugin(_props: PluginProps) {
   const [scenarioHosts, setScenarioHosts] = useState<ScenarioHost[] | null>(null);
   const [hostLogs, setHostLogs] = useState<TelemetryExplorerEvent[]>([]);
   const [provenance, setProvenance] = useState<{ event_id: string; payload_id: string; provenance: Record<string, unknown> } | null>(null);
-  const headers: Record<string, string> = operatorKey ? { 'X-Operator-Key': operatorKey } : {};
-  const apiBase = scenarioHosts === null ? base : `${base}/scenario`;
+  const hasScenarioHosts = scenarioHosts !== null;
+  const apiBase = hasScenarioHosts ? `${base}/scenario` : base;
 
   useEffect(() => {
     let active = true;
-    const refresh = () => fetchApi<{ ok: boolean; hosts: ScenarioHost[] }>(`${base}/scenario/hosts`, { headers })
+    const refresh = () => fetchApi<{ ok: boolean; hosts: ScenarioHost[] }>(`${base}/scenario/hosts`)
       .then((response) => { if (active) setScenarioHosts(response.hosts); })
       .catch(() => {});
     void refresh();
     const timer = window.setInterval(() => void refresh(), 3000);
     return () => { active = false; window.clearInterval(timer); };
-  }, [operatorKey]);
+  }, []);
 
   useEffect(() => {
-    if (scenarioHosts === null || !selectedAgent) { setHostLogs([]); return; }
+    if (!hasScenarioHosts || !selectedAgent) { setHostLogs([]); return; }
     let active = true;
     const refresh = () => fetchApi<{ events: TelemetryExplorerEvent[] }>(
       `/api/v1/telemetry/explorer?limit=12&agent_id=${encodeURIComponent(selectedAgent)}`,
-      { headers },
     ).then((response) => { if (active) setHostLogs(response.events); }).catch(() => {});
     void refresh();
     const unsubscribe = subscribeTelemetry(() => void refresh());
     const timer = window.setInterval(() => void refresh(), 4000);
     return () => { active = false; unsubscribe(); window.clearInterval(timer); };
-  }, [operatorKey, selectedAgent, scenarioHosts === null]);
+  }, [selectedAgent, hasScenarioHosts]);
 
   const loadQueue = useCallback(async () => {
-    const response = await fetchApi<QueueResponse>(`${apiBase}/review-queue`, { headers });
+    const response = await fetchApi<QueueResponse>(`${apiBase}/review-queue`);
     setQueue(response.queue);
     setAsOf(response.as_of);
-  }, [operatorKey, apiBase]);
+  }, [apiBase]);
 
   useEffect(() => {
     let active = true;
-    fetchApi<QueueResponse>(`${apiBase}/review-queue`, { headers })
+    fetchApi<QueueResponse>(`${apiBase}/review-queue`)
       .then((response) => { if (active) { setQueue(response.queue); setAsOf(response.as_of); setError(''); } })
       .catch((reason) => { if (active) setError(String(reason)); });
     return () => { active = false; };
-  }, [operatorKey, apiBase]);
+  }, [apiBase]);
 
   useEffect(() => {
     if (!selectedAgent) { setTrajectory(null); return; }
     let active = true;
-    fetchApi<Trajectory>(`${apiBase}/endpoints/${encodeURIComponent(selectedAgent)}/trajectory`, { headers })
+    fetchApi<Trajectory>(`${apiBase}/endpoints/${encodeURIComponent(selectedAgent)}/trajectory`)
       .then((response) => { if (active) { setTrajectory(response); setError(''); } })
       .catch((reason) => { if (active) setError(String(reason)); });
     return () => { active = false; };
-  }, [operatorKey, selectedAgent, apiBase]);
+  }, [selectedAgent, apiBase]);
 
   const selectCandidate = (candidate: Candidate) => {
     setSelectedAgent(candidate.agent_id);
@@ -110,7 +108,7 @@ export function ReviewQueuePlugin(_props: PluginProps) {
   const showProvenance = async (eventId: string) => {
     try {
       const details = await fetchApi<{ event_id: string; payload_id: string; provenance: Record<string, unknown> }>(
-        `${base}/scenario/events/${encodeURIComponent(eventId)}/provenance`, { headers });
+        `${base}/scenario/events/${encodeURIComponent(eventId)}/provenance`);
       setProvenance(details);
     } catch (reason) { setError(String(reason)); }
   };
@@ -123,7 +121,7 @@ export function ReviewQueuePlugin(_props: PluginProps) {
     try {
       await fetchApi(`${base}/review-queue/${encodeURIComponent(candidate.as_of_date)}/${encodeURIComponent(candidate.agent_id)}`, {
         method: 'PATCH',
-        headers: { ...headers, 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ analyst_status: status, analyst_note: note.trim() || null }),
       });
       await loadQueue();
@@ -138,10 +136,6 @@ export function ReviewQueuePlugin(_props: PluginProps) {
           <p className="text-sm text-slate-600">Read-only shadow scoring. Candidates describe host behavior and require forensic review.</p></div>
         <button className="rounded border px-3 py-2 text-sm" onClick={() => void loadQueue().catch((reason) => setError(String(reason)))}>Refresh</button>
       </div>
-      <label className="mt-4 block text-xs font-medium text-slate-700">Operator key (held in this tab only)
-        <input type="password" autoComplete="off" value={operatorKey} onChange={(event) => setOperatorKey(event.target.value)}
-          className="mt-1 block w-full max-w-sm rounded border border-slate-300 px-3 py-2 text-sm" placeholder="Enter operator key if required" />
-      </label>
       {error && <p role="alert" className="mt-3 text-sm text-red-700">{error}</p>}
     </div>
 

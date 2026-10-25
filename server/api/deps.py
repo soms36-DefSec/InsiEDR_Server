@@ -8,6 +8,7 @@ from fastapi import Header, Request
 
 from server.config import config
 from server.api.errors import AuthenticationError, ForbiddenError
+from server.api.operator_sessions import COOKIE_NAME, resolve_session
 
 
 @dataclass(frozen=True)
@@ -88,6 +89,10 @@ def require_operator(required_permission: str | None = None) -> Callable[[Reques
     """
     def _dependency(request: Request) -> OperatorPrincipal:
         token = _extract_token(request, specific_header="X-Operator-Key")
+        if not token:
+            session = resolve_session(request.cookies.get(COOKIE_NAME))
+            if session:
+                token = session[0]
 
         if config.auth_enforced:
             if not token:

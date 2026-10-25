@@ -28,6 +28,12 @@ export const KpiGrid: React.FC<KpiGridProps> = ({
   const rc = summary?.risk_counts || { critical: 0, high: 0, medium: 0, low: 0 };
   const totalEvents = summary?.total_risk_events ?? summary?.stats?.risk_events ?? 0;
   const modelStatus = health?.model_pipeline || 'unknown';
+  const agentSync = health === null ? 'Unknown' :
+    health.database === 'error' ? 'Degraded' :
+      health.log_ingestion_enabled === false ? 'Paused' :
+        health.log_ingestion_enabled === true ? 'Enabled' : 'Unknown';
+  const agentSyncClass = agentSync === 'Enabled' ? 'text-emerald-700' :
+    agentSync === 'Paused' ? 'text-amber-700' : 'text-rose-700';
 
   const totalEvaluated = (rc.critical + rc.high + rc.medium + rc.low) || (pc.total_pcs || 1);
   const critPct = Math.round((rc.critical / totalEvaluated) * 100);
@@ -111,8 +117,8 @@ export const KpiGrid: React.FC<KpiGridProps> = ({
           </div>
           <span className="text-slate-300">|</span>
           <div className="flex items-center gap-1.5 text-slate-500">
-            <span>Agent Sync:</span>
-            <span className="font-semibold text-emerald-700">Healthy</span>
+            <span>Ingestion:</span>
+            <span className={`font-semibold ${agentSyncClass}`}>{agentSync}</span>
           </div>
         </div>
       </div>
