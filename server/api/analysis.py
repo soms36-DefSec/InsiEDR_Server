@@ -1,13 +1,24 @@
 from __future__ import annotations
 
+import logging
+
+import anyio
 from fastapi import APIRouter, Depends, Query
 from fastapi.responses import JSONResponse
 
 from server.api.cache import api_cache
-from server.api.deps import get_storage
+from server.api.deps import get_storage, require_operator
 from server.risk.presentation import annotate_risk_event
 
-router = APIRouter(prefix="/api", tags=["Threat Intelligence & Analysis"])
+logger = logging.getLogger("insiedr.api.analysis")
+
+# Every route in this module returns fleet or user telemetry. Keep authorization
+# at the router boundary so new analysis endpoints inherit the same requirement.
+router = APIRouter(
+    prefix="/api",
+    tags=["Threat Intelligence & Analysis"],
+    dependencies=[Depends(require_operator("operator:read"))],
+)
 bp = router  # Backward compatibility alias
 
 
@@ -27,12 +38,15 @@ async def get_pc_status(
         return JSONResponse({"ok": False, "error": "storage is not configured"}, status_code=503)
 
     try:
-        status = storage.get_pc_status(seconds_since_online=seconds)
+        status = await anyio.to_thread.run_sync(
+            lambda: storage.get_pc_status(seconds_since_online=seconds)
+        )
         resp_data = {"ok": True, **status}
         api_cache.set(cache_key, resp_data, ttl=3.0)
         return resp_data
-    except Exception as e:
-        return JSONResponse({"ok": False, "error": str(e)}, status_code=500)
+    except Exception:
+        logger.exception("Failed to read PC status")
+        return JSONResponse({"ok": False, "error": "internal server error"}, status_code=500)
 
 
 @router.get("/user-collectors/{username}")
@@ -43,17 +57,20 @@ async def get_user_collectors(username: str, storage=Depends(get_storage)):
         return JSONResponse({"ok": False, "error": "storage is not configured"}, status_code=503)
 
     try:
-        collectors = storage.get_user_collectors(username)
+        collectors = await anyio.to_thread.run_sync(
+            lambda: storage.get_user_collectors(username)
+        )
         return {"ok": True, "username": username, "collectors": collectors}
-    except Exception as e:
-        return JSONResponse({"ok": False, "error": str(e)}, status_code=500)
+    except Exception:
+        logger.exception("Failed to read user collector data")
+        return JSONResponse({"ok": False, "error": "internal server error"}, status_code=500)
 
 
 @router.get("/user-risk-scores/{username}")
 @router.get("/v1/user-risk-scores/{username}")
 async def get_user_risk_scores(
     username: str,
-    limit: int = Query(50, ge=1),
+    limit: int = Query(50, ge=1, le=500),
     storage=Depends(get_storage),
 ):
     """Returns historical risk scores for a user"""
@@ -61,12 +78,15 @@ async def get_user_risk_scores(
         return JSONResponse({"ok": False, "error": "storage is not configured"}, status_code=503)
 
     try:
-        risk_scores = storage.get_user_risk_scores(username, limit=limit)
+        risk_scores = await anyio.to_thread.run_sync(
+            lambda: storage.get_user_risk_scores(username, limit=limit)
+        )
         for rs in risk_scores:
             _patch_risk_level(rs)
         return {"ok": True, "username": username, "risk_scores": risk_scores}
-    except Exception as e:
-        return JSONResponse({"ok": False, "error": str(e)}, status_code=500)
+    except Exception:
+        logger.exception("Failed to read user risk scores")
+        return JSONResponse({"ok": False, "error": "internal server error"}, status_code=500)
 
 
 @router.get("/user-predictions/{username}")
@@ -77,7 +97,9 @@ async def get_user_predictions(username: str, storage=Depends(get_storage)):
         return JSONResponse({"ok": False, "error": "storage is not configured"}, status_code=503)
 
     try:
-        raw_predictions = storage.get_user_predictions(username)
+        raw_predictions = await anyio.to_thread.run_sync(
+            lambda: storage.get_user_predictions(username)
+        )
         if raw_predictions is None:
             return {"ok": True, "username": username, "predictions": None, "message": "No predictions available"}
 
@@ -119,8 +141,9 @@ async def get_user_predictions(username: str, storage=Depends(get_storage)):
             "long_term": raw_predictions.get("long_term"),
         }
         return {"ok": True, "username": username, "predictions": predictions}
-    except Exception as e:
-        return JSONResponse({"ok": False, "error": str(e)}, status_code=500)
+    except Exception:
+        logger.exception("Failed to read user predictions")
+        return JSONResponse({"ok": False, "error": "internal server error"}, status_code=500)
 
 
 @router.get("/user-analysis/{username}")
@@ -131,11 +154,16 @@ async def get_user_analysis(username: str, storage=Depends(get_storage)):
         return JSONResponse({"ok": False, "error": "storage is not configured"}, status_code=503)
 
     try:
-        collectors = storage.get_user_collectors(username)
-        risk_scores = storage.get_user_risk_scores(username, limit=50)
+        def load_user_analysis():
+            return (
+                storage.get_user_collectors(username),
+                storage.get_user_risk_scores(username, limit=50),
+                storage.get_user_predictions(username),
+            )
+
+        collectors, risk_scores, predictions = await anyio.to_thread.run_sync(load_user_analysis)
         for rs in risk_scores:
             _patch_risk_level(rs)
-        predictions = storage.get_user_predictions(username)
 
         return {
             "ok": True,
@@ -144,8 +172,9 @@ async def get_user_analysis(username: str, storage=Depends(get_storage)):
             "risk_scores": risk_scores,
             "predictions": predictions,
         }
-    except Exception as e:
-        return JSONResponse({"ok": False, "error": str(e)}, status_code=500)
+    except Exception:
+        logger.exception("Failed to build user analysis")
+        return JSONResponse({"ok": False, "error": "internal server error"}, status_code=500)
 
 
 def _patch_risk_level(event: dict):
@@ -155,7 +184,7 @@ def _patch_risk_level(event: dict):
 @router.get("/risk-events")
 @router.get("/v1/risk-events")
 async def get_risk_events(
-    limit: int = Query(500, ge=1),
+    limit: int = Query(500, ge=1, le=500),
     offset: int = Query(0, ge=0),
     storage=Depends(get_storage),
 ):
@@ -164,12 +193,15 @@ async def get_risk_events(
         return JSONResponse({"ok": False, "error": "storage is not configured"}, status_code=503)
 
     try:
-        risk_events = storage.list_risk_events(limit=limit, offset=offset)
+        risk_events = await anyio.to_thread.run_sync(
+            lambda: storage.list_risk_events(limit=limit, offset=offset)
+        )
         for event in risk_events:
             _patch_risk_level(event)
         return {"ok": True, "risk_events": risk_events}
-    except Exception as e:
-        return JSONResponse({"ok": False, "error": str(e)}, status_code=500)
+    except Exception:
+        logger.exception("Failed to read risk events")
+        return JSONResponse({"ok": False, "error": "internal server error"}, status_code=500)
 
 
 

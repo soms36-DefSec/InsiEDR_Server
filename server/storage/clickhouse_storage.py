@@ -867,7 +867,8 @@ class ClickHouseStorage:
             return rows
         except Exception as exc:
             logger.error("ClickHouse list_logs query failed: %s", exc)
-            return []
+            from server.api.errors import AnalyticsUnavailableError
+            raise AnalyticsUnavailableError("ClickHouse telemetry query is unavailable") from exc
 
     def get_latest_collector_states(self, agent_id: str) -> List[Dict[str, Any]]:
         """Select one whole observation, so nullable fields cannot mix snapshots."""
@@ -966,7 +967,8 @@ class ClickHouseStorage:
             return results
         except Exception as exc:
             logger.error("ClickHouse list_collector_results failed: %s", exc)
-            return []
+            from server.api.errors import AnalyticsUnavailableError
+            raise AnalyticsUnavailableError("ClickHouse telemetry query is unavailable") from exc
 
     def get_distinct_collectors(self) -> List[str]:
         default_collectors = [
@@ -1176,6 +1178,38 @@ class ClickHouseStorage:
         except Exception as exc:
             logger.error("ClickHouse get_feature_vector failed: %s", exc)
             return {}
+
+    def get_feature_vectors(self, payload_ids: list[str]) -> Dict[str, Dict[str, Any]]:
+        """Load feature vectors for one export page with a single ClickHouse query."""
+        ids = list(dict.fromkeys(str(value) for value in payload_ids if value))
+        if not ids or not self.is_connected():
+            return {}
+        try:
+            res = self._query(
+                "SELECT payload_id, feature_name, feature_value_numeric, "
+                "feature_value_text, feature_value_json FROM normalized_features "
+                "WHERE payload_id IN %(payload_ids)s",
+                parameters={"payload_ids": tuple(ids)},
+            )
+            result: Dict[str, Dict[str, Any]] = {payload_id: {} for payload_id in ids}
+            for payload_id, name, numeric, text_value, json_value in res.result_rows:
+                if numeric is not None:
+                    value = numeric
+                elif text_value is not None:
+                    value = text_value
+                elif isinstance(json_value, str):
+                    try:
+                        value = json.loads(json_value)
+                    except ValueError:
+                        value = json_value
+                else:
+                    value = json_value
+                result.setdefault(str(payload_id), {})[name] = value
+            return result
+        except Exception as exc:
+            logger.error("ClickHouse get_feature_vectors failed: %s", exc)
+            from server.api.errors import AnalyticsUnavailableError
+            raise AnalyticsUnavailableError("ClickHouse feature export is unavailable") from exc
 
     def get_user_risk_scores(self, username: str, limit: int = 30) -> List[Dict[str, Any]]:
         """Fetch historical risk events for a specific user."""

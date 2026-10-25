@@ -129,7 +129,7 @@ def test_hybrid_storage_with_clickhouse():
         "source_quality": {"high": 15000},
     }
 
-    hybrid = HybridStorage(postgres_storage=pg, clickhouse_storage=ch)
+    hybrid = HybridStorage(postgres_storage=pg, clickhouse_storage=ch, telemetry_read_backend='clickhouse')
 
     # 1. Telemetry query routed to ClickHouse
     logs = hybrid.list_logs(limit=10)
@@ -171,18 +171,19 @@ def test_hybrid_storage_fallback_without_clickhouse():
     assert stats["logs"] == 10
 
 
-def test_hybrid_storage_fallback_when_clickhouse_empty():
+def test_hybrid_storage_does_not_switch_sources_when_clickhouse_is_empty():
     pg = DummyPGStorage()
     ch = MagicMock()
     ch.is_connected.return_value = True
     ch.list_logs.return_value = []  # ClickHouse has no rows
     ch.list_collector_results.return_value = []
 
-    hybrid = HybridStorage(postgres_storage=pg, clickhouse_storage=ch)
+    hybrid = HybridStorage(postgres_storage=pg, clickhouse_storage=ch, telemetry_read_backend='clickhouse')
 
-    # When ClickHouse returns empty, it falls back to PG logs
+    # An empty page from the selected replica stays empty; mixing PostgreSQL
+    # rows would break pagination and the read-source contract.
     logs = hybrid.list_logs(limit=10)
-    assert logs == [{"payload_id": "pg-log-1"}]
+    assert logs == []
 
 
 def test_hybrid_storage_telemetry_explorer_routing():

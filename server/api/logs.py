@@ -65,7 +65,9 @@ async def post_logs(request: Request):
 @router.get("/v1/logs")
 async def get_logs(
     request: Request,
-    limit: int = Query(100, ge=1),
+    # Keep the legacy response bounded; clients needing larger datasets should
+    # use the explicitly capped streaming export endpoints.
+    limit: int = Query(100, ge=1, le=1000),
     offset: int = Query(0, ge=0),
     agent_id: str | None = None,
     hostname: str | None = None,

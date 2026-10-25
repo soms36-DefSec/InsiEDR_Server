@@ -2,8 +2,8 @@
 server/storage/repositories/telemetry_repo.py
 ---------------------------------------------
 Telemetry & Logs Repository.
-Coordinates high-throughput telemetry ingestion and analytical queries,
-routing to ClickHouse when available, with resilient fallback to PostgreSQL.
+Coordinates durable PostgreSQL ingestion and telemetry reads from the
+explicitly selected PostgreSQL or ClickHouse backend.
 """
 from __future__ import annotations
 
@@ -16,14 +16,20 @@ logger = logging.getLogger("insiedr.storage.telemetry_repo")
 class TelemetryRepository:
     """Encapsulates raw payload logs, collector execution data, and normalized features."""
 
-    def __init__(self, postgres_storage: Any, clickhouse_storage: Optional[Any] = None) -> None:
+    def __init__(
+        self,
+        postgres_storage: Any,
+        clickhouse_storage: Optional[Any] = None,
+        telemetry_read_backend: str = "postgres",
+    ) -> None:
         self.pg = postgres_storage
         self.ch = clickhouse_storage
+        self.telemetry_read_backend = telemetry_read_backend
 
     def _has_ch(self) -> bool:
         return self.ch is not None and getattr(self.ch, "is_connected", lambda: False)()
 
-    def store_payload(self, envelope: Dict[str, Any], decrypted_payload: Dict[str, Any]) -> None:
+    def store_payload(self, envelope: Dict[str, Any], decrypted_payload: Dict[str, Any]) -> bool:
         """Require a durable PG commit before the caller can acknowledge telemetry.
 
         ClickHouse's in-memory batch queue is an asynchronous analytics replica,
@@ -33,11 +39,12 @@ class TelemetryRepository:
             raise RuntimeError("durable PostgreSQL telemetry storage is unavailable")
         inserted = self.pg.store_raw_payload(envelope, decrypted_payload)
         if inserted is False:
-            return  # A concurrent retry must not duplicate ClickHouse event rows.
+            return False  # A concurrent retry must not duplicate ClickHouse event rows.
 
         # The transactional outbox is the sole telemetry replication path.
         # A second enqueue here duplicates observations and bypasses the
         # plaintext policy applied when the outbox entry is created.
+        return True
 
     def get_latest_collector_states(self, agent_id: str) -> List[Dict[str, Any]]:
         # PostgreSQL contains every acknowledged observation. ClickHouse may be
@@ -45,25 +52,21 @@ class TelemetryRepository:
         return self.pg.get_latest_collector_states(agent_id)
 
     def list_logs(self, limit: int = 100, offset: int = 0, **filters) -> List[Dict[str, Any]]:
-        """Query raw payload logs. Tries ClickHouse first, falling back to PostgreSQL if empty or on error."""
-        if self._has_ch():
-            try:
-                rows = self.ch.list_logs(limit=limit, offset=offset, **filters)
-                if rows:
-                    return rows
-            except Exception as exc:
-                logger.warning("ClickHouse list_logs query failed, falling back to PostgreSQL: %s", exc)
+        """Keep one configured source for a complete pagination sequence."""
+        if self.telemetry_read_backend == "clickhouse":
+            if not self._has_ch():
+                from server.api.errors import AnalyticsUnavailableError
+                raise AnalyticsUnavailableError("ClickHouse analytics is unavailable")
+            return self.ch.list_logs(limit=limit, offset=offset, **filters)
         return self.pg.list_logs(limit=limit, offset=offset, **filters)
 
     def list_collector_results(self, limit: int = 100, offset: int = 0, **filters) -> List[Dict[str, Any]]:
-        """Query collector observation history. Tries ClickHouse first, falling back to PostgreSQL if empty or on error."""
-        if self._has_ch():
-            try:
-                rows = self.ch.list_collector_results(limit=limit, offset=offset, **filters)
-                if rows:
-                    return rows
-            except Exception as exc:
-                logger.warning("ClickHouse list_collector_results query failed, falling back to PostgreSQL: %s", exc)
+        """Keep collector history reads on the configured source."""
+        if self.telemetry_read_backend == "clickhouse":
+            if not self._has_ch():
+                from server.api.errors import AnalyticsUnavailableError
+                raise AnalyticsUnavailableError("ClickHouse analytics is unavailable")
+            return self.ch.list_collector_results(limit=limit, offset=offset, **filters)
         return self.pg.list_collector_results(limit=limit, offset=offset, **filters)
 
     def get_feature_vector(self, payload_id: str) -> Dict[str, Any]:
@@ -76,6 +79,20 @@ class TelemetryRepository:
             except Exception as exc:
                 logger.warning("ClickHouse get_feature_vector query failed, falling back to PostgreSQL: %s", exc)
         return self.pg.get_feature_vector(payload_id)
+
+    def get_feature_vectors(self, payload_ids: list[str]) -> Dict[str, Dict[str, Any]]:
+        """Read a page of feature vectors from the configured telemetry source."""
+        if self.telemetry_read_backend == "clickhouse":
+            if not self._has_ch():
+                from server.api.errors import AnalyticsUnavailableError
+                raise AnalyticsUnavailableError("ClickHouse analytics is unavailable")
+            return self.ch.get_feature_vectors(payload_ids)
+        if hasattr(self.pg, "get_feature_vectors"):
+            return self.pg.get_feature_vectors(payload_ids)
+        return {
+            payload_id: self.pg.get_feature_vector(payload_id)
+            for payload_id in payload_ids
+        }
 
     def list_daily_feature_vectors(self, username: str | None, hostname: str | None, limit: int = 16) -> List[Dict[str, Any]]:
         """Retrieve day-bucketed feature vectors for time-series anomaly models."""

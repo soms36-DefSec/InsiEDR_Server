@@ -153,6 +153,16 @@ def test_latest_failed_observation_does_not_reuse_older_success(pg, monkeypatch)
     assert state["error_type"] == "Unavailable"
 
 
+def test_postgres_bulk_feature_lookup_returns_page_vectors(pg, monkeypatch):
+    monkeypatch.setenv("INSIEDR_STORE_PLAINTEXT_PAYLOADS", "false")
+    at = datetime.now(timezone.utc).isoformat()
+    pg.store_raw_payload({}, payload("feature-a", [observation("process", {"count": 0}, at)]))
+    pg.store_raw_payload({}, payload("feature-b", [observation("process", {"active": False}, at)]))
+
+    vectors = pg.get_feature_vectors(["feature-a", "feature-b", "feature-a"])
+    assert vectors == {"feature-a": {"count": 0.0}, "feature-b": {"active": 0.0}}
+
+
 def test_latest_state_endpoint_reports_freshness_and_keeps_dashboard_access(client_for):
     storage = MagicMock()
     storage.get_latest_collector_states.return_value = [

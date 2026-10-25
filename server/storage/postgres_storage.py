@@ -1484,6 +1484,36 @@ class PostgresStorage(BaseStorage):
                     conn.rollback()
                     return {}
 
+    def get_feature_vectors(self, payload_ids: list[str]) -> dict[str, dict[str, Any]]:
+        """Load feature vectors for a bounded page with one database query."""
+        ids = list(dict.fromkeys(str(value) for value in payload_ids if value))
+        if not ids:
+            return {}
+        placeholders = ",".join("%s" for _ in ids)
+        with self.connection() as conn:
+            with closing(conn.cursor()) as cursor:
+                cursor.execute(
+                    "SELECT payload_id, feature_name, feature_value_numeric, "
+                    "feature_value_text, feature_value_json "
+                    f"FROM normalized_features WHERE payload_id IN ({placeholders})",
+                    tuple(ids),
+                )
+                result: dict[str, dict[str, Any]] = {payload_id: {} for payload_id in ids}
+                for payload_id, name, numeric, text_value, json_value in cursor.fetchall():
+                    if numeric is not None:
+                        value = numeric
+                    elif text_value is not None:
+                        value = text_value
+                    elif isinstance(json_value, str):
+                        try:
+                            value = json.loads(json_value)
+                        except ValueError:
+                            value = json_value
+                    else:
+                        value = json_value
+                    result.setdefault(str(payload_id), {})[name] = value
+                return result
+
     def list_normalized_features(
         self,
         limit: int = 1000,

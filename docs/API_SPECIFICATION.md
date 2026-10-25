@@ -6,12 +6,29 @@ The InsiEDR Central Server provides a RESTful and Server-Sent Events (SSE) inter
 
 ## 1. Authentication & Security Headers
 
-* **Agent Ingestion Authentication**:
-  * `X-InsiEDR-Agent-Id`: Unique agent hostname or hardware UUID.
-  * `X-InsiEDR-Payload-Id`: Unique UUIDv4 assigned to the telemetry payload.
-  * `X-InsiEDR-Crypto-Scheme`: Cryptographic cipher used (`aes-gcm`, `hpke`, `fernet`, `plaintext`).
-  * `Authorization`: Optional Bearer token or pre-shared agent authorization token.
-* **Error Format**: Conforms to the RFC 7807 Problem Details JSON format:
+Agent telemetry is sent as `application/json` to `POST /api/logs` (the
+`/api/v1/logs` alias is also available). The agent supplies these headers:
+
+* `X-AGENT-ID`: endpoint identity bound to its credential when agent
+  authentication is enforced.
+* `X-PAYLOAD-ID`: payload UUID used for idempotent retry and acknowledgement.
+* `X-CRYPTO-SCHEME`: `aes-256-gcm`, `hpke`, or a configured legacy scheme.
+* `X-PROTOCOL-VERSION`: currently `2.0`.
+* `X-KEY-ID`: required for AES-GCM and HPKE envelopes.
+* `X-Agent-Token` or `Authorization: Bearer ...`: agent credential. Production
+  deployments require credentials and bind them to an agent ID through
+  `INSIEDR_AGENT_TOKENS` or the configured bearer-token mode.
+
+The encrypted envelope repeats the protocol version, scheme, payload ID and
+key ID; the server rejects header/envelope mismatches. Payload identity is
+also checked after decryption. Encryption by itself is not sender
+authentication.
+
+Operator APIs use `X-Operator-Key`, `Authorization: Bearer ...`, or `X-API-Key`
+with configured operator credentials and roles. Sensitive reads require
+`operator:read`; containment and remediation use their respective roles.
+
+**Error format:** API exceptions use the RFC 7807-style JSON envelope:
   ```json
   {
     "type": "https://insiedr.local/errors/invalid-payload",
@@ -24,103 +41,105 @@ The InsiEDR Central Server provides a RESTful and Server-Sent Events (SSE) inter
 
 ---
 
-## 2. Ingestion Endpoints
+## 2. Ingestion Endpoint
 
 ### `POST /api/logs`
 Primary telemetry ingestion endpoint for remote agents.
 
-* **Request Format**: Encrypted JSON envelope:
+* **Request format:** encrypted JSON envelope. The exact fields depend on the
+  selected crypto scheme:
   ```json
   {
+    "protocol_version": "2.0",
+    "scheme": "aes-256-gcm",
+    "key_id": "agent-key-2026-01",
     "payload_id": "a548e6c7-31ef-42d8-9189-72c0ecdbb912",
-    "ciphertext": "base64_encoded_ciphertext...",
-    "nonce": "base64_encoded_12_byte_nonce...",
-    "tag": "base64_encoded_16_byte_auth_tag...",
-    "timestamp": "2026-09-21T13:00:00Z"
+    "created_at": "2026-10-25T10:00:00Z",
+    "nonce": "base64_encoded_nonce...",
+    "ciphertext": "base64_encoded_ciphertext_and_auth_tag..."
   }
   ```
-* **Response (200 OK)**:
+* **Durable acknowledgement:** the server responds only after PostgreSQL commits
+  the payload and its ClickHouse outbox entry. The Rust agent accepts only HTTP
+  `202` with a matching payload ID and `status: "accepted"`; it keeps the
+  envelope in its local durable spool on other responses or transport failures.
   ```json
   {
-    "status": "success",
+    "ok": true,
     "payload_id": "a548e6c7-31ef-42d8-9189-72c0ecdbb912",
-    "queued": false,
-    "composite_risk_score": 78.5,
-    "severity": "HIGH",
-    "scenarios_detected": ["Multi-PC Lateral Movement", "Abnormal USB Staging"]
+    "status": "accepted"
   }
   ```
 
----
-
-## 3. Threat Intelligence & Forensic Endpoints
-
-### `GET /api/threats`
-Retrieves a paginated list of classified threats and anomalies.
-* **Query Parameters**:
-  * `limit` *(int, default 50)*: Number of items to return.
-  * `offset` *(int, default 0)*: Pagination offset.
-  * `severity` *(string, optional)*: Filter by severity (`LOW`, `MEDIUM`, `HIGH`, `CRITICAL`).
-  * `scenario` *(string, optional)*: Filter by threat scenario tag.
-  * `agent_id` *(string, optional)*: Filter by specific agent identifier.
-
-### `GET /api/anomalies`
-Returns detected statistical anomalies produced by the Isolation Forest engine.
-
-### `GET /api/baseline`
-Returns the behavioral baseline profile for a specific user or fleet average.
-* **Query Parameters**:
-  * `username` *(string, required)*: Target user.
-  * `domain` *(string, optional)*: `file`, `logon`, `device`, or `http`.
-
-### `GET /api/agents`
-Lists all registered endpoints, their current operational state, last heartbeat, and risk score.
+Validation, authentication, decryption and storage failures are not accepted;
+the agent retains and retries the same payload ID. Duplicate payload IDs with
+the same content are acknowledged idempotently, while conflicting identities
+or content are rejected.
 
 ---
 
-## 4. Real-Time Streaming Endpoints (SSE)
+## 3. Telemetry and Fleet APIs
 
-### `GET /api/v1/stream/sse`
-Unified Server-Sent Events stream for the analyst dashboard.
-* **Content-Type**: `text/event-stream`
-* **Event Types**:
-  * `threat`: New threat detection event emitted.
-  * `agent_heartbeat`: Agent status change (online/offline).
-  * `kpi_update`: Aggregated fleet risk statistics.
+Sensitive analyst routes require operator authentication and the `operator:read`
+role. The principal collection endpoints are:
 
-### `GET /api/stream/threats`
-Dedicated stream emitting only security threat alerts in real time.
+| Endpoint | Purpose | Bounds / pagination |
+|---|---|---|
+| `GET /api/logs` | Legacy raw-payload listing | `limit` 1–1000; offset pagination |
+| `GET /api/telemetry` | Collector observations with optional risk/feature enrichment | `limit` 1–1000; offset or cursor, not both; optional total count |
+| `GET /api/telemetry/explorer` | Lightweight event rows for the explorer | `limit` 1–1000; seek cursor |
+| `GET /api/telemetry/events/{event_id}` | On-demand event detail | One event |
+| `GET /api/telemetry/histogram` | Server-side event counts by time bucket | Predefined range/interval or explicit custom dates |
+| `GET /api/collector-states/{agent_id}` | Latest collector observations with freshness | Per-agent state set |
+| `GET /api/agents` | Fleet listing | `limit` 1–500; offset |
+| `GET /api/agents/{agent_id}` | One agent record | Single record |
+| `GET /api/stats`, `GET /api/dashboard-summary` | Dashboard aggregates and snapshot data | Snapshot-cached responses |
+| `GET /api/risk-events` | Risk event history | `limit` 1–500; offset |
+| `GET /api/user-analysis/{username}` | Collector, risk-score and prediction view | One user; risk history is bounded |
 
----
+Most routes also have `/api/v1/...` aliases. The active router source is the
+reference for query filters and response fields. Pagination pages continue on
+the configured telemetry read source; ClickHouse lag is not silently filled
+with PostgreSQL rows.
 
-## 5. Export Endpoints
+## 4. Agent Fleet Control
 
-### `GET /api/export/logs`
-Streams raw or normalized telemetry logs.
-* **Query Parameters**:
-  * `format` *(string)*: `csv` or `ndjson`.
-  * `start_time` *(ISO8601 string)*.
-  * `end_time` *(ISO8601 string)*.
+Agent-to-server endpoints include `POST /api/agent/heartbeat`,
+`POST /api/agent/task-result`, and `POST /api/agent/task-ack`. They authenticate
+the agent and bind requests to its configured identity. Operator task and
+containment routes include:
 
-### `GET /api/export/threats`
-Streams classified threat events in CSV or NDJSON format for SIEM ingestion (e.g. Splunk, Elastic, Sentinel).
+* `GET /api/agents/{agent_id}/tasks`
+* `POST /api/agents/{agent_id}/isolate` and `/unisolate`
+* `POST /api/agents/{agent_id}/terminate`, `/lock`, and `/rollback`
+* `GET /api/agents/tamper-alerts`
 
----
+These require the appropriate operator read, containment, or remediation role.
 
-## 6. Health & System Status
+## 5. Streaming and Exports
 
-### `GET /api/health`
-Returns health check status for backend components:
-```json
-{
-  "status": "healthy",
-  "database": "connected",
-  "clickhouse": "connected",
-  "redis": "connected",
-  "model_bridge": "ready",
-  "version": "1.0.0"
-}
-```
+Authenticated SSE endpoints are `/api/v1/stream/telemetry`,
+`/api/v1/stream/dashboard`, `/api/v1/stream/threats`, and
+`/api/v1/stream/agents`. They emit notifications; REST queries are the recovery
+path for missed updates.
 
-### `GET /api/model/readiness`
-Reports the status of loaded ML models, artifact files, and feature schema matrices.
+CSV, NDJSON and XLSX export routes are under `/api/v1/export/`: logs, threats,
+training datasets, normalized features, keystrokes, and collector datasets.
+Log and threat stream exports cap each request at 200,000 rows; collector
+dataset exports cap at the configured `INSIEDR_MAX_EXPORT_RECORDS`. Training
+XLSX is built as a workbook and has higher memory cost than streaming CSV/JSONL.
+
+## 6. Health, Operations, and Discovery
+
+* `GET /api/health/live` is a lightweight liveness check.
+* `GET /api/health/ready` checks whether required storage is ready.
+* `GET /api/health` and `GET /api/operations/health` report operational state.
+* `POST /api/operations/pause-ingestion` and `/resume-ingestion` control the
+  operator ingestion switch.
+* `GET /api/queue/metrics` reports queue metrics.
+* `GET /api/crypto/public-keys` publishes configured encryption key metadata.
+* OpenAPI and rendered docs are served at `/openapi.json`, `/docs`, and `/redoc`.
+
+Model review routes are under `/api/v1/detection/ml/` and require analyst or
+operator roles. Staging scenario-replay routes are conditional on deployment
+configuration and are not part of the normal production API surface.

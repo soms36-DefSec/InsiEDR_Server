@@ -346,6 +346,9 @@ def _resolve_decrypted_payload(row: dict[str, Any]) -> dict[str, Any] | None:
     Tries stored plaintext payload first, then decrypts encrypted_envelope_json on the fly
     using server crypto plugins so raw_logs and parameters are never null in exported datasets.
     """
+    if "_export_decrypted_payload" in row:
+        return row["_export_decrypted_payload"]
+
     raw_payload_data = row.get("payload")
     if not raw_payload_data and row.get("payload_json"):
         try:
@@ -354,6 +357,7 @@ def _resolve_decrypted_payload(row: dict[str, Any]) -> dict[str, Any] | None:
             raw_payload_data = None
 
     if isinstance(raw_payload_data, dict):
+        row["_export_decrypted_payload"] = raw_payload_data
         return raw_payload_data
 
     # Attempt decrypting encrypted_envelope_json on the fly
@@ -374,11 +378,42 @@ def _resolve_decrypted_payload(row: dict[str, Any]) -> dict[str, Any] | None:
                 if plugin and hasattr(plugin, "decrypt"):
                     plaintext_bytes = plugin.decrypt(envelope)
                     from shared.protocol import parse_json_bytes
-                    return parse_json_bytes(plaintext_bytes)
+                    resolved = parse_json_bytes(plaintext_bytes)
+                    row["_export_decrypted_payload"] = resolved
+                    return resolved
             except Exception:
                 pass
 
+    row["_export_decrypted_payload"] = None
     return None
+
+
+def _prepare_training_export_page(storage, rows: list[dict[str, Any]]) -> None:
+    """Resolve payloads once and bulk-load fallback features for this page."""
+    fallback_ids = []
+    for row in rows:
+        payload = _resolve_decrypted_payload(row)
+        if not isinstance(payload, dict) or not payload.get("collectors"):
+            payload_id = row.get("id") or row.get("payload_id")
+            if payload_id:
+                fallback_ids.append(str(payload_id))
+
+    if not fallback_ids:
+        return
+    get_vectors = getattr(storage, "get_feature_vectors", None)
+    if callable(get_vectors):
+        vectors = get_vectors(fallback_ids)
+    else:
+        # Compatibility for third-party storage adapters without the page API.
+        vectors = {
+            payload_id: storage.get_feature_vector(payload_id)
+            for payload_id in dict.fromkeys(fallback_ids)
+        }
+    for row in rows:
+        payload_id = str(row.get("id") or row.get("payload_id") or "")
+        if payload_id in vectors:
+            row["features"] = vectors[payload_id]
+            row["_features_loaded"] = True
 
 
 def _extract_parameters(storage, row: dict[str, Any]) -> dict[str, Any]:
@@ -410,6 +445,9 @@ def _extract_parameters(storage, row: dict[str, Any]) -> dict[str, Any]:
     # 2. Check if row already has pre-attached features
     if isinstance(row.get("features"), dict) and row["features"]:
         return row["features"]
+
+    if row.get("_features_loaded"):
+        return row.get("features", {})
 
     # 3. Last resort fallback to storage.get_feature_vector
     payload_id = row.get("id") or row.get("payload_id")
@@ -483,6 +521,7 @@ def _build_excel_training_dataset(
         rows = storage.list_logs(limit=batch_limit, offset=offset, **filters)
         if not rows:
             break
+        _prepare_training_export_page(storage, rows)
 
         for row in rows:
             user = row.get("username") or "unknown"
@@ -644,6 +683,7 @@ def _stream_csv_training_dataset(
         rows = storage.list_logs(limit=batch_limit, offset=offset, **filters)
         if not rows:
             break
+        _prepare_training_export_page(storage, rows)
 
         for row in rows:
             user = row.get("username") or "unknown"
@@ -698,6 +738,7 @@ def _stream_json_training_dataset(
         rows = storage.list_logs(limit=batch_limit, offset=offset, **filters)
         if not rows:
             break
+        _prepare_training_export_page(storage, rows)
 
         for row in rows:
             user = row.get("username") or "unknown"

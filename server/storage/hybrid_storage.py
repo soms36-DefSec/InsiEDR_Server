@@ -19,9 +19,8 @@ Developer & Team Extensibility:
   - Pluggable Telemetry Interceptor Pipeline executes on every incoming payload.
   - Domain Repositories (`fleet`, `telemetry`, `threat`) are accessible directly
     for modular service development.
-  - Resilient Graceful Degradation: If ClickHouse is disabled or unreachable
-    (e.g., lightweight testing environments), falls back automatically to
-    PostgreSQL or SQLite with zero errors.
+  - Telemetry reads use the explicitly configured backend so pagination does
+    not mix PostgreSQL and a lagging ClickHouse replica.
 """
 from __future__ import annotations
 
@@ -54,11 +53,16 @@ class HybridStorage(BaseStorage):
 
         # Domain Repositories
         self.fleet = FleetRepository(self.pg, self.ch)
-        self.telemetry = TelemetryRepository(self.pg, self.ch)
+        self.telemetry = TelemetryRepository(self.pg, self.ch, telemetry_read_backend)
         self.threat = ThreatRepository(self.pg, self.ch)
 
         logger.info("HybridStorage initialized (Postgres: %s, ClickHouse: %s)",
                     "Active", "Active" if (self.ch and getattr(self.ch, "is_connected", lambda: False)()) else "Disabled/Fallback")
+
+    @property
+    def atomic_payload_deduplication(self) -> bool:
+        """True when PostgreSQL migrations provide the payload identity registry."""
+        return not bool(getattr(self.pg, "_is_sqlite", False))
 
     # Expose underlying connection context for legacy dependencies
     def connection(self):
@@ -120,7 +124,7 @@ class HybridStorage(BaseStorage):
     # Telemetry Ingestion (with Interceptors & Dual-Routing)
     # --------------------------------------------------------------------------
 
-    def store_raw_payload(self, envelope: Dict[str, Any], decrypted_payload: Dict[str, Any]) -> None:
+    def store_raw_payload(self, envelope: Dict[str, Any], decrypted_payload: Dict[str, Any]) -> bool:
         """
         Process telemetry payload:
           1. Runs pre-storage interceptors (PII scrubber, enrichers).
@@ -137,15 +141,10 @@ class HybridStorage(BaseStorage):
         clean_envelope = ctx.envelope
         clean_payload = ctx.decrypted_payload
 
-        # 2. Update Fleet State in PostgreSQL 16
+        # The PostgreSQL payload transaction updates fleet identity and telemetry
+        # together, then records the ClickHouse outbox entry before commit.
         try:
-            self.fleet.upsert_agent(clean_payload)
-        except Exception as exc:
-            logger.error("Failed upserting agent to PostgreSQL: %s", exc)
-
-        # 3. Store High-Frequency Telemetry in ClickHouse (or PG fallback)
-        try:
-            self.telemetry.store_payload(clean_envelope, clean_payload)
+            return self.telemetry.store_payload(clean_envelope, clean_payload)
         except Exception as exc:
             logger.error("Failed storing telemetry payload: %s", exc)
             raise
@@ -312,6 +311,9 @@ class HybridStorage(BaseStorage):
 
     def get_feature_vector(self, payload_id: str) -> Dict[str, Any]:
         return self.telemetry.get_feature_vector(payload_id)
+
+    def get_feature_vectors(self, payload_ids: list[str]) -> Dict[str, Dict[str, Any]]:
+        return self.telemetry.get_feature_vectors(payload_ids)
 
     def get_latest_collector_states(self, agent_id: str) -> List[Dict[str, Any]]:
         return self.telemetry.get_latest_collector_states(agent_id)

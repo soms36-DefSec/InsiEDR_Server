@@ -384,10 +384,16 @@ async def _process_encrypted_request(req) -> tuple[int, dict[str, Any]]:
         import anyio
 
         def _persist():
-            if _check_duplicate_policy(storage, envelope, payload):
-                if getattr(type(storage),'ensure_live',None) is not None:
-                    storage.ensure_live(str(payload_id))
-                return False
+            # The durable storage transaction owns idempotency. The RAM replay
+            # adapter has an additional live-event projection to repair on retry,
+            # so it retains the pre-read needed by ensure_live().
+            ensure_live = getattr(storage, "ensure_live", None)
+            atomic_dedup = getattr(storage, "atomic_payload_deduplication", False)
+            if callable(ensure_live) or not atomic_dedup:
+                if _check_duplicate_policy(storage, envelope, payload):
+                    if callable(ensure_live):
+                        ensure_live(str(payload_id))
+                    return False
             inserted = storage.store_raw_payload(envelope, payload)
             # Read caches expire on short TTLs. Scanning/deleting Redis keys for
             # every envelope destroys caching and adds synchronous disk work.

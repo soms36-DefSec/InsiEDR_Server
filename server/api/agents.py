@@ -91,7 +91,7 @@ async def _queue_task_with_audit(
 @router.get("/agents")
 @router.get("/v1/agents")
 async def get_agents(
-    limit: int = Query(100, ge=1),
+    limit: int = Query(100, ge=1, le=500),
     offset: int = Query(0, ge=0),
     storage=Depends(get_storage),
     operator: OperatorPrincipal = Depends(require_operator("operator:read")),
@@ -603,7 +603,7 @@ async def rollback_agent_files(
 @router.get("/v1/agents/{agent_id}/tasks")
 async def get_agent_tasks(
     agent_id: str,
-    limit: int = Query(50, ge=1),
+    limit: int = Query(50, ge=1, le=500),
     offset: int = Query(0, ge=0),
     storage=Depends(get_storage),
     operator: OperatorPrincipal = Depends(require_operator("operator:read")),
@@ -632,7 +632,7 @@ async def get_agent_tasks(
 @router.get("/agents/tamper-alerts")
 @router.get("/v1/agents/tamper-alerts")
 async def get_tamper_alerts(
-    limit: int = Query(50, ge=1),
+    limit: int = Query(50, ge=1, le=500),
     storage=Depends(get_storage),
     operator: OperatorPrincipal = Depends(require_operator("operator:read")),
 ):
