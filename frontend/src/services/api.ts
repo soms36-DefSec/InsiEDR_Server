@@ -101,9 +101,6 @@ export async function fetchApi<T>(url: string, options?: ApiOptions): Promise<T>
       signal: controller.signal,
     });
     if (!res.ok) {
-      if (res.status === 401 && typeof window !== 'undefined') {
-        window.dispatchEvent(new Event('insiedr:auth-expired'));
-      }
       let errorDetail = res.statusText;
       try {
         const errJson = await res.json();

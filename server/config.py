@@ -217,8 +217,6 @@ class ServerConfig:
             return
 
         errors = []
-        if not (self.operator_api_key or self.operator_roles):
-            errors.append("INSIEDR_OPERATOR_API_KEY or INSIEDR_OPERATOR_ROLES must be set in production")
         if not (self.agent_bearer_token or self.agent_tokens):
             errors.append("INSIEDR_AGENT_BEARER_TOKEN or INSIEDR_AGENT_TOKENS must be set in production")
         if not self.secret_key:
@@ -254,20 +252,11 @@ class ServerConfig:
         if self.secret_key and is_placeholder(self.secret_key):
             errors.append("INSIEDR_SECRET_KEY is set to an insecure placeholder value")
 
-        if self.operator_api_key and is_placeholder(self.operator_api_key):
-            errors.append("INSIEDR_OPERATOR_API_KEY is set to an insecure placeholder value")
-
         if self.agent_bearer_token and is_placeholder(self.agent_bearer_token):
             errors.append("INSIEDR_AGENT_BEARER_TOKEN is set to an insecure placeholder value")
 
         if self.aes_key_env and is_placeholder(self.aes_key_env):
             errors.append("INSIEDR_AES_KEY is set to an insecure placeholder value")
-
-        if self.operator_roles:
-            for tok in self.operator_roles:
-                if is_placeholder(tok):
-                    errors.append("INSIEDR_OPERATOR_ROLES contains an insecure placeholder token")
-                    break
 
         if self.agent_tokens:
             for tok, ag_id in self.agent_tokens.items():
