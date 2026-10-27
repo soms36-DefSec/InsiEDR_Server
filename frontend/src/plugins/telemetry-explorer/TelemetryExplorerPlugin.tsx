@@ -97,12 +97,9 @@ export const TelemetryExplorerPlugin: React.FC<TelemetryExplorerPluginProps> = (
   const [searchScope, setSearchScope] = useState<'metadata' | 'payload'>('metadata');
   const [loadError, setLoadError] = useState<string | null>(null);
   const [liveUpdatesEnabled, setLiveUpdatesEnabled] = useState(true);
-  const [pendingTelemetryUpdates, setPendingTelemetryUpdates] = useState(0);
   const request = useRef<AbortController | null>(null);
   const queuedRefresh = useRef(false);
   const scheduleRefresh = useRef<() => void>(() => {});
-  const telemetryUpdateSequence = useRef(0);
-  const loadedTelemetrySequence = useRef(0);
   const pageCursors = useRef<(string | undefined)[]>([undefined]);
   const queryStart = useRef<string | undefined>(undefined);
   const displayedQuery = useRef('');
@@ -134,7 +131,6 @@ export const TelemetryExplorerPlugin: React.FC<TelemetryExplorerPluginProps> = (
   const loadLogs = useCallback(
     async (pageToLoad = 1, currentSize = pageSize, background = false) => {
       if (background && request.current) { queuedRefresh.current = true; return; }
-      const updateSequenceAtRequestStart = telemetryUpdateSequence.current;
       const key = JSON.stringify([activeCollector, debouncedSearch, statusFilter, timeRange, currentSize, searchScope]);
       if (displayedQuery.current !== key) {
         setLogs([]);
@@ -205,10 +201,6 @@ export const TelemetryExplorerPlugin: React.FC<TelemetryExplorerPluginProps> = (
         setSource(sourceVal);
         setLoadError(null);
         setLastUpdated(new Date());
-        if (pageToLoad === 1) {
-          loadedTelemetrySequence.current = updateSequenceAtRequestStart;
-          setPendingTelemetryUpdates(Math.max(0, telemetryUpdateSequence.current - updateSequenceAtRequestStart));
-        }
       } catch (error) {
         if (!abort.signal.aborted) {
           const errMsg = error instanceof Error ? error.message : 'Could not load telemetry';
@@ -224,15 +216,6 @@ export const TelemetryExplorerPlugin: React.FC<TelemetryExplorerPluginProps> = (
       }
     }, [activeCollector, debouncedSearch, statusFilter, timeRange, pageSize, searchScope, useExplorerApi]
   );
-
-  // SSE notifications only update this counter. Fetching the new page stays user initiated.
-  useEffect(() => subscribeTelemetry(() => {
-    telemetryUpdateSequence.current += 1;
-    setPendingTelemetryUpdates(Math.max(
-      0,
-      telemetryUpdateSequence.current - loadedTelemetrySequence.current,
-    ));
-  }), []);
 
   useEffect(() => {
     void loadLogs(1, pageSize);
@@ -603,19 +586,6 @@ export const TelemetryExplorerPlugin: React.FC<TelemetryExplorerPluginProps> = (
 
       {/* Virtualized Table */}
       <div className="relative">
-        {pendingTelemetryUpdates > 0 && (
-          <div className="absolute z-20 left-1/2 top-0 -translate-x-1/2 -translate-y-1/2">
-            <button
-              type="button"
-              onClick={handleRefresh}
-              aria-label={`${pendingTelemetryUpdates} new telemetry updates. Refresh logs.`}
-              title="Count reflects incoming telemetry notifications; one update may contain multiple log rows."
-              className="rounded-full border border-blue-300 bg-blue-600 px-4 py-2 text-xs font-semibold text-white shadow-lg hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2"
-            >
-              ↑ {pendingTelemetryUpdates} new {pendingTelemetryUpdates === 1 ? 'update' : 'updates'} — click to load
-            </button>
-          </div>
-        )}
         <VirtualizedLogTable
           logs={filteredLogs}
           resetKey={`${activeCollector}:${debouncedSearch}:${statusFilter}:${timeRange}:${currentPage}:${pageSize}`}
