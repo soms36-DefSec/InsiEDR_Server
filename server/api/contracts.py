@@ -41,9 +41,9 @@ class HealthResponse(OpenResponse):
 
 class TelemetryExplorerEventResponse(OpenResponse):
     event_id: str
-    timestamp: str
-    collector_name: str
-    status: str
+    timestamp: str = ""
+    collector_name: str = ""
+    status: str = "success"
     summary_preview: str | None = None
     id: str | None = None
     collected_at: str | None = None

@@ -66,26 +66,20 @@ def telemetry_page(storage, limit=100, offset=0, collector=None, username=None,
         if search_scope == 'payload':
             search_columns.append('CAST(cr.payload_json AS TEXT)')
         clauses.append("(" + " OR ".join(contains(column, search) for column in search_columns) + ")")
-    join_rp = bool(username or search or start_time or end_time)
-    if join_rp:
-        for bound, operator in ((start_time, ">="), (end_time, "<=")):
-            if bound:
-                clauses.append(f"(cr.collector_collected_at {operator} %s OR (cr.collector_collected_at IS NULL AND rp.received_at {operator} %s))")
-                params.extend([bound, bound])
-    else:
-        for bound, operator in ((start_time, ">="), (end_time, "<=")):
-            if bound:
-                clauses.append(f"cr.collector_collected_at {operator} %s")
-                params.append(bound)
+    join_rp = bool(username or search)
+    for bound, operator in ((start_time, ">="), (end_time, "<=")):
+        if bound:
+            clauses.append(f"cr.collector_collected_at {operator} %s")
+            params.append(bound)
     where = " WHERE " + " AND ".join(clauses) if clauses else ""
     count_where, count_params = where, list(params)
     if cursor:
         timestamp, row_id = decode_cursor(cursor, 'postgres', key)
         if timestamp is None:
-            clauses.append('(cr.collector_collected_at IS NULL AND cr.id < %s)')
+            clauses.append('cr.id < %s')
             params.append(row_id)
         else:
-            clauses.append('((cr.collector_collected_at, cr.id) < (%s, %s) OR cr.collector_collected_at IS NULL)')
+            clauses.append('(cr.collector_collected_at, cr.id) < (%s, %s)')
             params.extend([timestamp, row_id])
         where = ' WHERE ' + ' AND '.join(clauses)
     source = "FROM collector_results cr LEFT JOIN raw_payloads rp ON cr.payload_id = rp.payload_id" if join_rp else "FROM collector_results cr"
@@ -208,25 +202,19 @@ def telemetry_explorer(storage, limit=50, cursor=None, collector=None, username=
         search_cols = ['cr.hostname', 'rp.username', 'cr.collector']
         clauses.append("(" + " OR ".join(contains(col, search) for col in search_cols) + ")")
 
-    join_rp = bool(username or search or start_time or end_time)
-    if join_rp:
-        for bound, operator in ((start_time, ">="), (end_time, "<=")):
-            if bound:
-                clauses.append(f"(cr.collector_collected_at {operator} %s OR (cr.collector_collected_at IS NULL AND rp.received_at {operator} %s))")
-                params.extend([bound, bound])
-    else:
-        for bound, operator in ((start_time, ">="), (end_time, "<=")):
-            if bound:
-                clauses.append(f"cr.collector_collected_at {operator} %s")
-                params.append(bound)
+    join_rp = bool(username or search)
+    for bound, operator in ((start_time, ">="), (end_time, "<=")):
+        if bound:
+            clauses.append(f"cr.collector_collected_at {operator} %s")
+            params.append(bound)
 
     if cursor:
         timestamp, row_id = decode_cursor(cursor, 'postgres', key)
         if timestamp is None:
-            clauses.append('(cr.collector_collected_at IS NULL AND cr.id < %s)')
+            clauses.append('cr.id < %s')
             params.append(row_id)
         else:
-            clauses.append('((cr.collector_collected_at, cr.id) < (%s, %s) OR cr.collector_collected_at IS NULL)')
+            clauses.append('(cr.collector_collected_at, cr.id) < (%s, %s)')
             params.extend([timestamp, row_id])
 
     where = " WHERE " + " AND ".join(clauses) if clauses else ""

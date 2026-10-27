@@ -233,7 +233,7 @@ export const TelemetryExplorerPlugin: React.FC<TelemetryExplorerPluginProps> = (
       timer = window.setTimeout(() => {
         timer = undefined;
         if (document.visibilityState === 'visible') void loadLogs(1, pageSize, true);
-      }, 250);
+      }, 1000);
     };
     scheduleRefresh.current = schedule;
     const unsubscribe = subscribeTelemetry(schedule);
@@ -308,10 +308,10 @@ export const TelemetryExplorerPlugin: React.FC<TelemetryExplorerPluginProps> = (
     setTimeRange('all');
   };
 
-  const handleStreamAllExport = async () => {
+  const handleStreamAllExport = async (format: 'csv' | 'json' = 'csv') => {
     try {
       setIsExportingStream(true);
-      await triggerServerExport('logs', 'csv', {
+      await triggerServerExport('logs', format, {
         collector: activeCollector === 'all' ? undefined : activeCollector,
         status: statusFilter === 'all' ? undefined : statusFilter,
         search: debouncedSearch || undefined,
@@ -432,7 +432,7 @@ export const TelemetryExplorerPlugin: React.FC<TelemetryExplorerPluginProps> = (
               size="sm"
               onClick={() => exportTelemetryCSV(filteredLogs)}
               icon={<Download className="w-3.5 h-3.5" />}
-              title="Export filtered logs currently loaded to CSV"
+              title="Export visible page logs to CSV"
             >
               CSV
             </Button>
@@ -441,19 +441,29 @@ export const TelemetryExplorerPlugin: React.FC<TelemetryExplorerPluginProps> = (
               size="sm"
               onClick={() => exportTelemetryJSON(filteredLogs)}
               icon={<Download className="w-3.5 h-3.5" />}
-              title="Export filtered logs currently loaded to JSON"
+              title="Export visible page logs to JSON"
             >
               JSON
             </Button>
             <Button
               variant="primary"
               size="sm"
-              onClick={handleStreamAllExport}
+              onClick={() => handleStreamAllExport('csv')}
               disabled={isExportingStream}
               icon={<Download className={`w-3.5 h-3.5 ${isExportingStream ? 'animate-bounce' : ''}`} />}
               title="Stream full server telemetry dataset matching active filters (CSV)"
             >
-              {isExportingStream ? 'Streaming...' : 'Stream All'}
+              {isExportingStream ? 'Streaming...' : 'Stream CSV'}
+            </Button>
+            <Button
+              variant="secondary"
+              size="sm"
+              onClick={() => handleStreamAllExport('json')}
+              disabled={isExportingStream}
+              icon={<Download className="w-3.5 h-3.5" />}
+              title="Stream full server telemetry dataset matching active filters (JSON)"
+            >
+              Stream JSON
             </Button>
             <Button
               variant="secondary"

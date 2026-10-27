@@ -276,6 +276,16 @@ export const TopNavbar: React.FC<TopNavbarProps> = ({
                     <ShieldAlert className="w-3.5 h-3.5 text-rose-600 shrink-0" />
                     <span>Export Threat Events (CSV)</span>
                   </button>
+                  <button
+                    onClick={() => {
+                      triggerServerExport('threats', 'json');
+                      setShowExportMenu(false);
+                    }}
+                    className="w-full text-left px-3 py-1.5 text-slate-700 hover:bg-slate-50 hover:text-slate-900 flex items-center gap-2 transition-colors cursor-pointer"
+                  >
+                    <FileCode className="w-3.5 h-3.5 text-rose-600 shrink-0" />
+                    <span>Export Threat Events (JSON)</span>
+                  </button>
 
                   <button
                     onClick={handleExportFleetRisk}

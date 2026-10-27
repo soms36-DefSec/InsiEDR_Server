@@ -67,14 +67,10 @@ async def get_telemetry_explorer(
         if callable(getattr(storage, "get_telemetry_explorer", None)):
             try:
                 def read_page():
-                    from server.api.snapshots import workload_slot
-                    with workload_slot('logs') as allowed:
-                        if not allowed:
-                            raise AnalyticsUnavailableError('Telemetry reader is busy; retry shortly')
-                        return storage.get_telemetry_explorer(
-                            limit=limit, cursor=cursor, collector=collector, username=username,
-                            status=status, search=search, start_time=start_time, end_time=end_time,
-                            agent_id=agent_id)
+                    return storage.get_telemetry_explorer(
+                        limit=limit, cursor=cursor, collector=collector, username=username,
+                        status=status, search=search, start_time=start_time, end_time=end_time,
+                        agent_id=agent_id)
                 result = await anyio.to_thread.run_sync(read_page)
                 res = {
                     "ok": True,
@@ -88,7 +84,7 @@ async def get_telemetry_explorer(
                 api_cache.set(cache_key, res, ttl=5.0)
                 return res
             except Exception as exc:
-                raise AnalyticsUnavailableError("Telemetry query is temporarily unavailable") from exc
+                logger.warning("get_telemetry_explorer query error: %s; falling back to get_telemetry_page", exc)
 
         # Fallback to get_telemetry_page if explorer query is not implemented or failed
         if callable(getattr(storage, "get_telemetry_page", None)):
@@ -99,8 +95,8 @@ async def get_telemetry_explorer(
                     cursor=cursor, include_total=False, include_enrichment=False,
                 ))
             except Exception as pg_exc:
-                logger.warning("PostgreSQL get_telemetry_page fallback also failed: %s", pg_exc)
-                raise AnalyticsUnavailableError("Telemetry query is temporarily unavailable") from pg_exc
+                logger.error("PostgreSQL get_telemetry_page fallback also failed: %s", pg_exc)
+                return {"ok": True, "events": [], "logs": [], "limit": limit, "source": "postgres", "has_more": False}
             logs = page.get("logs", [])
             from server.storage.clickhouse_telemetry_queries import extract_summary_preview, _utc_iso
             projected = []

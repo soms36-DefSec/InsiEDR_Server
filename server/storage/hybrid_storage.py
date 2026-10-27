@@ -186,7 +186,11 @@ class HybridStorage(BaseStorage):
             from server.api.errors import AnalyticsUnavailableError
             if not self.ch or not self.ch.is_connected():
                 raise AnalyticsUnavailableError('ClickHouse analytics is unavailable')
-            return self.ch.get_telemetry_explorer(**filters)
+            try:
+                return self.ch.get_telemetry_explorer(**filters)
+            except Exception as exc:
+                logger.warning('ClickHouse telemetry explorer failed: %s', exc)
+                raise AnalyticsUnavailableError('ClickHouse analytics is unavailable') from exc
         return self.pg.get_telemetry_explorer(**filters)
 
     def get_telemetry_event_detail(self, event_id: str) -> Optional[Dict[str, Any]]:
