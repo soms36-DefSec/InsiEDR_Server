@@ -141,6 +141,8 @@ def health(
         "migrations": "ok" if storage is not None else "not_configured",
         "telemetry_collection": "ok" if config.enable_log_ingestion else "paused",
         "log_ingestion_enabled": config.enable_log_ingestion,
+        "detection_pipeline": "active" if config.enable_detection_pipeline else "disabled",
+        "detection_pipeline_enabled": config.enable_detection_pipeline,
         "queue_backend": queue_backend,
         "queue_status": queue_status,
         "sse_subscribers": sse_subscribers,

@@ -135,6 +135,19 @@ def process_telemetry_risk(storage, payload: Dict[str, Any], *, emit: bool = Tru
     username_value = str(payload.get("username") or "").strip()
     username = username_value or "unknown"
 
+    if not config.enable_detection_pipeline:
+        logger.debug("Detection pipeline is disabled; skipping evaluation for payload %s", payload_id)
+        return {
+            "payload_id": payload_id,
+            "agent_id": agent_id,
+            "username": username,
+            "risk_score": 0.0,
+            "risk_level": "low",
+            "summary": "Detection pipeline is disabled.",
+            "correlated_signals_json": {},
+            "collected_at": payload.get("collected_at"),
+        }
+
     try:
         raw_features = extract_features_from_payload(payload)
 

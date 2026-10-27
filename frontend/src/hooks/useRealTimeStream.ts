@@ -22,6 +22,7 @@ export function useRealTimeStream() {
 
   const refreshAll = useCallback((): Promise<void> => {
     if (inFlight.current) return inFlight.current;
+    setIsLoading(true);
     const abort = new AbortController();
     controller.current = abort;
     const seq = ++requestSeq.current;
@@ -74,7 +75,8 @@ export function useRealTimeStream() {
       finally { running = false; }
     };
     void refreshStats();
-    const timer = autoRefresh ? window.setInterval(() => { void refreshStats(); }, 30000) : undefined;
+    // Refresh stats every 10 seconds for dynamic live updates
+    const timer = autoRefresh ? window.setInterval(() => { void refreshStats(); }, 10000) : undefined;
     return () => { abort.abort(); window.clearInterval(timer); };
   }, [autoRefresh]);
 
@@ -96,10 +98,11 @@ export function useRealTimeStream() {
     let pendingAlerts: RiskEvent[] = [];
     const scheduleSummary = () => {
       if (summaryTimer !== undefined) return;
+      // Fast 80ms debounce so dynamic events trigger near-instantly without flooding the network
       summaryTimer = window.setTimeout(() => {
         summaryTimer = undefined;
         void refreshAll();
-      }, 500);
+      }, 80);
     };
     try {
       source = new EventSource('/api/v1/stream/dashboard');
@@ -109,7 +112,10 @@ export function useRealTimeStream() {
         notifyTelemetry(); // Reconnect also recovers events missed while offline.
       };
       source.onerror = () => setConnectionMode('polling');
-      source.addEventListener('telemetry_changed', () => { notifyTelemetry(); });
+      source.addEventListener('telemetry_changed', () => {
+        notifyTelemetry();
+        scheduleSummary(); // Dynamically update dashboard summary when new telemetry logs arrive!
+      });
       source.addEventListener('agent_status', scheduleSummary);
       source.addEventListener('resync', () => { notifyTelemetry(); scheduleSummary(); });
       source.addEventListener('threat_alert', (event) => {
@@ -122,7 +128,7 @@ export function useRealTimeStream() {
             pendingAlerts = [];
             alertTimer = undefined;
             setLiveThreats((previous) => [...batch, ...previous].slice(0, 50));
-          }, 50);
+          }, 30);
           scheduleSummary();
         } catch { /* A malformed event must not stop reconnect/recovery. */ }
       });
@@ -138,8 +144,8 @@ export function useRealTimeStream() {
 
   useEffect(() => {
     if (!autoRefresh) return;
-    // Poll at a bounded rate in both modes; SSE is a notification, not freshness.
-    const timer = window.setInterval(() => { void refreshAll(); }, 15000);
+    // Bounded fast polling in both modes (5s for quick responsiveness)
+    const timer = window.setInterval(() => { void refreshAll(); }, 5000);
     return () => window.clearInterval(timer);
   }, [autoRefresh, connectionMode, refreshAll]);
 

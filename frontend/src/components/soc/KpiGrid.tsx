@@ -28,6 +28,7 @@ export const KpiGrid: React.FC<KpiGridProps> = ({
   const rc = summary?.risk_counts || { critical: 0, high: 0, medium: 0, low: 0 };
   const totalEvents = summary?.total_risk_events ?? summary?.stats?.risk_events ?? 0;
   const modelStatus = health?.model_pipeline || 'unknown';
+  const detectionDisabled = health?.detection_pipeline_enabled === false || health?.detection_pipeline === 'disabled';
   const agentSync = health === null ? 'Unknown' :
     health.database === 'error' ? 'Degraded' :
       health.log_ingestion_enabled === false ? 'Paused' :
@@ -119,6 +120,13 @@ export const KpiGrid: React.FC<KpiGridProps> = ({
           <div className="flex items-center gap-1.5 text-slate-500">
             <span>Ingestion:</span>
             <span className={`font-semibold ${agentSyncClass}`}>{agentSync}</span>
+          </div>
+          <span className="text-slate-300">|</span>
+          <div className="flex items-center gap-1.5 text-slate-500">
+            <span>Detection:</span>
+            <span className={`font-semibold ${detectionDisabled ? 'text-indigo-600' : 'text-emerald-700'}`}>
+              {detectionDisabled ? 'OFF' : 'ON'}
+            </span>
           </div>
         </div>
       </div>
@@ -258,10 +266,14 @@ export const KpiGrid: React.FC<KpiGridProps> = ({
         <div>
           <div className="flex items-center justify-between">
             <span className="text-[11px] font-semibold text-slate-500 uppercase tracking-wider">
-              Detection Engine
+              Telemetry & Engine
             </span>
-            <span className="inline-flex items-center gap-1 text-[11px] font-semibold text-emerald-700 bg-emerald-50 border border-emerald-200/80 px-1.5 py-0.2 rounded capitalize">
-              {modelStatus === 'ready' ? 'Active' : modelStatus}
+            <span className={`inline-flex items-center gap-1 text-[11px] font-semibold px-2 py-0.5 rounded-full border ${
+              detectionDisabled
+                ? 'bg-indigo-50 text-indigo-700 border-indigo-200/80'
+                : 'bg-emerald-50 text-emerald-700 border-emerald-200/80'
+            }`}>
+              {detectionDisabled ? 'Log Harvester Mode' : (modelStatus === 'ready' ? 'Active' : modelStatus)}
             </span>
           </div>
 
@@ -272,18 +284,20 @@ export const KpiGrid: React.FC<KpiGridProps> = ({
               </span>
               <Activity className="w-4 h-4 text-blue-600" />
             </div>
-            <div className="text-[11px] text-slate-500 mt-0.5">Retained Risk Event Rows</div>
+            <div className="text-[11px] text-slate-500 mt-0.5">Retained Event Rows</div>
           </div>
         </div>
 
         <div className="mt-4 pt-3 border-t border-slate-100 space-y-1.5 text-[11px]">
           <div className="flex items-center justify-between text-slate-600">
-            <span className="text-slate-400">Heuristics Rules:</span>
-            <span className="font-medium text-slate-800">Logon, File, USB, Web</span>
+            <span className="text-slate-400">Detection Status:</span>
+            <span className={`font-semibold ${detectionDisabled ? 'text-indigo-600' : 'text-emerald-700'}`}>
+              {detectionDisabled ? 'OFF (Scenario Mode)' : 'Active Heuristics'}
+            </span>
           </div>
           <div className="flex items-center justify-between text-slate-600">
-            <span className="text-slate-400">CERT Scenarios:</span>
-            <span className="font-medium text-slate-800">S1–S4 rules configured</span>
+            <span className="text-slate-400">Log Export:</span>
+            <span className="font-medium text-emerald-700">Ready for Scenario Mapping</span>
           </div>
         </div>
       </div>

@@ -50,6 +50,29 @@ from shared.crypto_utils import (
 # ==============================================================================
 ENABLE_LOG_INGESTION: bool = True
 
+# ==============================================================================
+# Master Threat Detection & Risk Pipeline Switch
+# ==============================================================================
+# Change ENABLE_DETECTION_PIPELINE to False to turn OFF the entire detection pipeline:
+#   - Deterministic Heuristics Engine (Logon, File, HTTP, USB, Memory, Decoys)
+#   - User UEBA Baseline Engine & Deviations
+#   - Host Machine Baseline Engine & Anti-Poisoning Updates
+#   - Auth Burst Detector & Z-Score Scoring
+#   - Model V3 ML Pipeline & Inference Cache Lookups
+#   - Central Risk Aggregator & Threat SSE Event Dispatching
+#
+# When False: Telemetry log collection, decryption, persistence, and export remain
+# fully ACTIVE, but risk scoring, baseline updates, and alerts are completely bypassed.
+#
+# Alternatively, set in .env or environment:
+#   INSIEDR_ENABLE_DETECTION_PIPELINE=false
+#   or INSIEDR_ENABLE_DETECTION=false
+#
+# Or create a pause flag file without restarting the server:
+#   touch .pause_detection
+# ==============================================================================
+ENABLE_DETECTION_PIPELINE: bool = False
+
 
 class ServerConfig:
     @staticmethod
@@ -86,6 +109,48 @@ class ServerConfig:
         global ENABLE_LOG_INGESTION
         ENABLE_LOG_INGESTION = enabled
         for flag_name in (".pause_logs", "server/.pause_logs", "/app/.pause_logs"):
+            try:
+                p = Path(flag_name)
+                if not enabled:
+                    p.touch()
+                    break
+                else:
+                    if p.exists():
+                        p.unlink()
+            except Exception:
+                pass
+
+    @property
+    def enable_detection_pipeline(self) -> bool:
+        """Master toggle for threat detection and risk scoring pipeline.
+        
+        Controls whether the server runs heuristics, baselines, z-scores,
+        ML evaluations, and threat alerts on ingested telemetry.
+        - To turn off detection: edit ENABLE_DETECTION_PIPELINE = False
+          OR set INSIEDR_ENABLE_DETECTION_PIPELINE=false in your .env file
+          OR create a file named '.pause_detection' in the project root.
+        - To resume detection: set ENABLE_DETECTION_PIPELINE = True (and remove .pause_detection).
+        """
+        global ENABLE_DETECTION_PIPELINE
+        if not ENABLE_DETECTION_PIPELINE:
+            return False
+        if not self._env_bool("INSIEDR_ENABLE_DETECTION_PIPELINE", default=True):
+            return False
+        if not self._env_bool("INSIEDR_ENABLE_DETECTION", default=True):
+            return False
+        for flag in (".pause_detection", "server/.pause_detection", "/app/.pause_detection"):
+            try:
+                if Path(flag).exists():
+                    return False
+            except Exception:
+                pass
+        return True
+
+    def set_detection_pipeline_enabled(self, enabled: bool) -> None:
+        """Runtime toggle for threat detection and risk scoring pipeline."""
+        global ENABLE_DETECTION_PIPELINE
+        ENABLE_DETECTION_PIPELINE = enabled
+        for flag_name in (".pause_detection", "server/.pause_detection", "/app/.pause_detection"):
             try:
                 p = Path(flag_name)
                 if not enabled:
@@ -699,6 +764,8 @@ class ServerConfig:
             "replay_window_hours": str(self.replay_window_hours),
             "enable_fernet": str(self.enable_fernet),
             "enable_plaintext_crypto": str(self.enable_plaintext_crypto),
+            "enable_detection_pipeline": str(self.enable_detection_pipeline),
+            "enable_log_ingestion": str(self.enable_log_ingestion),
             "enable_model_pipeline": str(self.enable_model_pipeline),
             "model_inference_dir": self.model_inference_dir,
             "clickhouse_host": self.clickhouse_host,

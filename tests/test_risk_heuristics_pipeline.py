@@ -27,6 +27,13 @@ from server.baseline.engine import (
 )
 
 
+@pytest.fixture(autouse=True)
+def enable_pipeline_for_heuristics_tests(monkeypatch):
+    import server.config as config_module
+    monkeypatch.setattr(config_module, "ENABLE_DETECTION_PIPELINE", True)
+    monkeypatch.setenv("INSIEDR_ENABLE_DETECTION_PIPELINE", "true")
+
+
 class InMemoryRiskStorage:
     """Mock storage adapter for baseline and risk event persistence."""
 

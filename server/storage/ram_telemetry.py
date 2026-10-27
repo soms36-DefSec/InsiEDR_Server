@@ -660,9 +660,11 @@ class RAMTelemetryStorage:
             else:
                 for p in latest.values():
                     self.legacy.fleet.upsert_agent(p)
-            for record in records:
-                from server.risk.pipeline import process_telemetry_risk
-                process_telemetry_risk(self.legacy, record['payload'])
+            from server.config import config
+            if config.enable_detection_pipeline:
+                for record in records:
+                    from server.risk.pipeline import process_telemetry_risk
+                    process_telemetry_risk(self.legacy, record['payload'])
             self.journal.complete([r['seq'] for r in records])
             self._searchable_revision+=1
             self._drained_bytes += sum(len(canonical([r['envelope'],r['payload']])) for r in records)

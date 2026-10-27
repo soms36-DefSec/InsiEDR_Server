@@ -34,6 +34,8 @@ class HealthResponse(OpenResponse):
     analytics: str
     telemetry_collection: str
     log_ingestion_enabled: bool
+    detection_pipeline: str | None = None
+    detection_pipeline_enabled: bool | None = None
     queue_status: str
 
 

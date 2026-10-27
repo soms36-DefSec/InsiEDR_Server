@@ -325,6 +325,8 @@ export interface SystemHealth {
   database?: 'ok' | 'error' | 'not_configured' | string;
   log_ingestion_enabled?: boolean;
   telemetry_collection?: 'ok' | 'paused' | string;
+  detection_pipeline?: 'active' | 'disabled' | string;
+  detection_pipeline_enabled?: boolean;
   analytics?: 'ok' | 'unavailable' | 'disabled' | string;
   telemetry_backend?: 'postgres' | 'clickhouse' | string;
   crypto?: string;

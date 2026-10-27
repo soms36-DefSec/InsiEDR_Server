@@ -420,13 +420,14 @@ async def _process_encrypted_request(req) -> tuple[int, dict[str, Any]]:
         except Exception:
             pass
 
-        # Evaluate heuristics and risk scoring asynchronously
-        try:
-            from server.risk.pipeline import process_telemetry_risk
-            if not getattr(type(storage), 'risk_in_replay', False):
-                await anyio.to_thread.run_sync(process_telemetry_risk, storage, payload)
-        except Exception as risk_err:
-            logging.getLogger("insiedr.api.ingest").warning("Risk evaluation non-fatal notice: %s", risk_err)
+        # Evaluate heuristics and risk scoring asynchronously (only if detection pipeline is enabled)
+        if config.enable_detection_pipeline:
+            try:
+                from server.risk.pipeline import process_telemetry_risk
+                if not getattr(type(storage), 'risk_in_replay', False):
+                    await anyio.to_thread.run_sync(process_telemetry_risk, storage, payload)
+            except Exception as risk_err:
+                logging.getLogger("insiedr.api.ingest").warning("Risk evaluation non-fatal notice: %s", risk_err)
 
 
 

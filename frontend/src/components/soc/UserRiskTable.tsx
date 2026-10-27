@@ -236,7 +236,7 @@ export const UserRiskTable: React.FC<UserRiskTableProps> = ({
       }
       subtitle="Live risk calibration and anomalous scenario posture across connected devices"
       action={
-        <div className="flex items-center gap-2">
+        <div className="flex flex-wrap items-center gap-2 w-full sm:w-auto mt-2 sm:mt-0">
           {endpointRows.some((row) => row.isTest) && (
             <button
               type="button"
@@ -254,7 +254,7 @@ export const UserRiskTable: React.FC<UserRiskTableProps> = ({
               Reset filter
             </button>
           )}
-          <div className="relative">
+          <div className="relative w-full sm:w-auto">
             <Search className="w-3.5 h-3.5 text-slate-400 absolute left-2.5 top-1/2 -translate-y-1/2" />
             <input
               type="text"
@@ -264,7 +264,7 @@ export const UserRiskTable: React.FC<UserRiskTableProps> = ({
                 setSearchTerm(e.target.value);
                 setPage(1);
               }}
-              className="w-56 pl-8 pr-3 py-1.5 text-xs bg-slate-50 border border-slate-200 rounded-md outline-none focus:border-blue-500 focus:bg-white text-slate-900 transition-colors"
+              className="w-full sm:w-56 pl-8 pr-3 py-1.5 text-xs bg-slate-50 border border-slate-200 rounded-md outline-none focus:border-blue-500 focus:bg-white text-slate-900 transition-colors shadow-2xs"
             />
           </div>
         </div>

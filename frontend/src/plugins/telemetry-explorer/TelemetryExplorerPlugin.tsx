@@ -96,7 +96,7 @@ export const TelemetryExplorerPlugin: React.FC<TelemetryExplorerPluginProps> = (
   const [debouncedSearch, setDebouncedSearch] = useState('');
   const [searchScope, setSearchScope] = useState<'metadata' | 'payload'>('metadata');
   const [loadError, setLoadError] = useState<string | null>(null);
-  const [liveUpdatesEnabled, setLiveUpdatesEnabled] = useState(false);
+  const [liveUpdatesEnabled, setLiveUpdatesEnabled] = useState(true);
   const [pendingTelemetryUpdates, setPendingTelemetryUpdates] = useState(0);
   const request = useRef<AbortController | null>(null);
   const queuedRefresh = useRef(false);
@@ -120,7 +120,7 @@ export const TelemetryExplorerPlugin: React.FC<TelemetryExplorerPluginProps> = (
   }, []);
 
   useEffect(() => {
-    const timer = window.setTimeout(() => setDebouncedSearch(searchTerm.trim()), 250);
+    const timer = window.setTimeout(() => setDebouncedSearch(searchTerm.trim()), 150);
     return () => window.clearTimeout(timer);
   }, [searchTerm]);
 
@@ -250,12 +250,12 @@ export const TelemetryExplorerPlugin: React.FC<TelemetryExplorerPluginProps> = (
       timer = window.setTimeout(() => {
         timer = undefined;
         if (document.visibilityState === 'visible') void loadLogs(1, pageSize, true);
-      }, 3000);
+      }, 250);
     };
     scheduleRefresh.current = schedule;
     const unsubscribe = subscribeTelemetry(schedule);
     // Keep a slow recovery poll alongside SSE so a missed invalidation is repaired.
-    const pollInterval = context.isConnected ? 60000 : 30000;
+    const pollInterval = context.isConnected ? 25000 : 7000;
     const poll = window.setInterval(schedule, pollInterval);
     const onVisible = () => { if (document.visibilityState === 'visible') schedule(); };
     document.addEventListener('visibilitychange', onVisible);

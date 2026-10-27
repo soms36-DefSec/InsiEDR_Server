@@ -109,7 +109,7 @@ export const TopNavbar: React.FC<TopNavbarProps> = ({
 
   return (
     <nav className="bg-white text-slate-800 border-b border-slate-200/90 sticky top-0 z-40 select-none shadow-[0_1px_2px_rgba(0,0,0,0.03)]">
-      <div className="max-w-[1700px] mx-auto px-4 sm:px-6 lg:px-8 h-14 flex items-center justify-between gap-4">
+      <div className="max-w-[1700px] mx-auto px-4 sm:px-6 lg:px-8 min-h-14 py-2 sm:py-0 flex flex-wrap sm:flex-nowrap items-center justify-between gap-3">
         {/* Brand & Identity */}
         <div className="flex items-center gap-3 shrink-0">
           <div className="w-7 h-7 rounded-md bg-slate-900 flex items-center justify-center text-white font-bold text-xs tracking-tight shadow-xs border border-slate-800">
@@ -129,7 +129,7 @@ export const TopNavbar: React.FC<TopNavbarProps> = ({
         </div>
 
         {/* Operational Navigation Tabs */}
-        <div role="tablist" aria-label="Security Modules" className="flex items-center gap-1 overflow-x-auto py-1">
+        <div role="tablist" aria-label="Security Modules" className="flex items-center gap-1 overflow-x-auto py-1 scrollbar-none order-last sm:order-none w-full sm:w-auto">
           {plugins.map((plugin) => {
             const isActive = plugin.id === activePluginId;
             const Icon = plugin.icon;
