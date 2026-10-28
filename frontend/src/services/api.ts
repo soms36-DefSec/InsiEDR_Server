@@ -46,7 +46,7 @@ const isRecord = (value: unknown): value is Record<string, unknown> =>
 function validateDashboardSummary(value: unknown): DashboardSummary {
   if (!isRecord(value) || typeof value.ok !== 'boolean' || !isRecord(value.pc_status) ||
       !Array.isArray(value.agents) || !isRecord(value.risk_counts) ||
-      !Array.isArray(value.risk_events) || !isRecord(value.stats)) {
+      !Array.isArray(value.risk_events)) {
     throw new Error('Dashboard summary response does not match the API contract');
   }
   return value as unknown as DashboardSummary;
