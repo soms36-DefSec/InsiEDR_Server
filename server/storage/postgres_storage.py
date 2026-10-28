@@ -833,20 +833,7 @@ class PostgresStorage(BaseStorage):
         return states
 
     def list_agents(self, limit: int = 100, offset: int = 0) -> list[dict[str, Any]]:
-        with self.connection() as conn:
-            with closing(conn.cursor()) as cursor:
-                cursor.execute(
-                    """
-                    SELECT agent_id, hostname, username_last_seen, os_system, os_release, os_version, os_machine,
-                           first_seen_at, last_seen_at, last_payload_id, 
-                           CASE WHEN last_seen_at > CURRENT_TIMESTAMP - INTERVAL '5 minutes' THEN 'active' ELSE 'offline' END as status
-                    FROM agents
-                    ORDER BY last_seen_at DESC
-                    LIMIT %s OFFSET %s
-                    """,
-                    (limit, offset),
-                )
-                return self._rows_to_dicts(cursor)
+        return self.fleet.list_agents(limit=limit, offset=offset)
 
     @property
     def fleet(self):

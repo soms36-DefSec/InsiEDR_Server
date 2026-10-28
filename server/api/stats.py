@@ -84,15 +84,9 @@ def dashboard_summary(include_stats: bool = True, storage=Depends(get_storage),
         try:
             agents = []
             if hasattr(storage, "list_agents"):
-                offset = 0
-                while True:
-                    page = storage.list_agents(limit=500, offset=offset)
-                    if not isinstance(page, list):
-                        break
-                    agents.extend(page)
-                    if len(page) < 500:
-                        break
-                    offset += len(page)
+                page = storage.list_agents(limit=500, offset=0)
+                if isinstance(page, list):
+                    agents = page
         except (PoolError, QueryCanceled, LockNotAvailable):
             raise
         except Exception as agents_err:

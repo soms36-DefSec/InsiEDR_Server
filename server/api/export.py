@@ -401,14 +401,17 @@ def _prepare_training_export_page(storage, rows: list[dict[str, Any]]) -> None:
     if not fallback_ids:
         return
     get_vectors = getattr(storage, "get_feature_vectors", None)
+    get_vector = getattr(storage, "get_feature_vector", None)
     if callable(get_vectors):
         vectors = get_vectors(fallback_ids)
-    else:
+    elif callable(get_vector):
         # Compatibility for third-party storage adapters without the page API.
         vectors = {
-            payload_id: storage.get_feature_vector(payload_id)
+            payload_id: get_vector(payload_id)
             for payload_id in dict.fromkeys(fallback_ids)
         }
+    else:
+        vectors = {}
     for row in rows:
         payload_id = str(row.get("id") or row.get("payload_id") or "")
         if payload_id in vectors:
@@ -423,6 +426,10 @@ def _extract_parameters(storage, row: dict[str, Any]) -> dict[str, Any]:
 
     if isinstance(payload_obj, dict):
         features: dict[str, Any] = {}
+        if not payload_obj.get("collectors"):
+            for key, value in payload_obj.items():
+                if key not in ("collectors", "payload_id", "agent_id", "hostname", "username", "collected_at"):
+                    features[key] = value
         for collector in payload_obj.get("collectors", []):
             if not isinstance(collector, dict) or collector.get("status") != "success":
                 continue

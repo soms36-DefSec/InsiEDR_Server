@@ -49,14 +49,14 @@ export function ReviewQueuePlugin(_props: PluginProps) {
   const [scenarioHosts, setScenarioHosts] = useState<ScenarioHost[] | null>(null);
   const [hostLogs, setHostLogs] = useState<TelemetryExplorerEvent[]>([]);
   const [provenance, setProvenance] = useState<{ event_id: string; payload_id: string; provenance: Record<string, unknown> } | null>(null);
-  const hasScenarioHosts = scenarioHosts !== null;
+  const hasScenarioHosts = Boolean(scenarioHosts && scenarioHosts.length > 0);
   const apiBase = hasScenarioHosts ? `${base}/scenario` : base;
 
   useEffect(() => {
     let active = true;
     const refresh = () => fetchApi<{ ok: boolean; hosts: ScenarioHost[] }>(`${base}/scenario/hosts`)
-      .then((response) => { if (active) setScenarioHosts(response.hosts); })
-      .catch(() => {});
+      .then((response) => { if (active) setScenarioHosts(response.hosts || []); })
+      .catch(() => { if (active) setScenarioHosts([]); });
     void refresh();
     const timer = window.setInterval(() => void refresh(), 3000);
     return () => { active = false; window.clearInterval(timer); };
@@ -114,7 +114,7 @@ export function ReviewQueuePlugin(_props: PluginProps) {
   };
 
   const saveTriage = async () => {
-    if (scenarioHosts !== null) return;
+    if (hasScenarioHosts) return;
     const candidate = queue.find((row) => row.agent_id === selectedAgent);
     if (!candidate) return;
     setBusy(true); setError('');
@@ -139,7 +139,7 @@ export function ReviewQueuePlugin(_props: PluginProps) {
       {error && <p role="alert" className="mt-3 text-sm text-red-700">{error}</p>}
     </div>
 
-    {scenarioHosts !== null && <div className="rounded-lg border border-slate-200 bg-white p-5">
+    {hasScenarioHosts && scenarioHosts && <div className="rounded-lg border border-slate-200 bg-white p-5">
       <h3 className="font-semibold">Scenario hosts</h3>
       <div className="mt-3 grid gap-2 sm:grid-cols-2 xl:grid-cols-4">
         {scenarioHosts.map((host) => <button key={host.agent_id} onClick={() => {
@@ -215,7 +215,7 @@ export function ReviewQueuePlugin(_props: PluginProps) {
           </table>
         </div>
       </div>}
-      {scenarioHosts === null && queue.some((row) => row.agent_id === selectedAgent) && <div className="mt-5 grid gap-3 border-t pt-4">
+      {!hasScenarioHosts && queue.some((row) => row.agent_id === selectedAgent) && <div className="mt-5 grid gap-3 border-t pt-4">
         <label className="text-sm">Analyst status
           <select value={status} onChange={(event) => setStatus(event.target.value as Status)} className="mt-1 block w-full rounded border px-3 py-2">
             {Object.entries(labels).map(([value, label]) => <option key={value} value={value}>{label}</option>)}

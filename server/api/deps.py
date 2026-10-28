@@ -8,6 +8,7 @@ from fastapi import Header, Request
 
 from server.config import config
 from server.api.errors import AuthenticationError, ForbiddenError
+from server.api.operator_sessions import COOKIE_NAME, resolve_session
 
 
 @dataclass(frozen=True)
@@ -83,13 +84,53 @@ def _extract_token(request: Request, specific_header: str | None = None) -> str 
 
 def require_operator(required_permission: str | None = None) -> Callable[[Request], OperatorPrincipal]:
     """
-    FastAPI dependency for dashboard routes.
-
-    The dashboard operator sign-in feature has been removed. Operator routes are
-    therefore available without an operator key; endpoint-agent authentication
-    remains independently enforced by ``require_agent``.
+    FastAPI dependency enforcing operator authentication and RBAC permissions.
+    Fails closed when auth is enforced and credentials are absent or insufficient.
+    Falls back to permissive operator principal when auth is disabled.
     """
     def _dependency(request: Request) -> OperatorPrincipal:
+        token = _extract_token(request, specific_header="X-Operator-Key")
+        if not token:
+            session = resolve_session(request.cookies.get(COOKIE_NAME))
+            if session:
+                token = session[0]
+
+        if config.operator_auth_enforced:
+            if not token:
+                raise AuthenticationError("Missing operator authentication credentials", status_code=401)
+
+            roles_map = config.operator_roles
+            roles: Set[str] = set()
+
+            if token in roles_map:
+                roles = set(roles_map[token])
+            elif config.operator_api_key and hmac.compare_digest(token.encode("utf-8"), config.operator_api_key.encode("utf-8")):
+                roles = {"admin"}
+            else:
+                raise AuthenticationError("Invalid operator credentials", status_code=401)
+
+            principal = OperatorPrincipal(
+                actor=f"operator:{hashlib.sha256(token.encode()).hexdigest()[:12]}",
+                roles=roles,
+            )
+            if required_permission and not principal.has_permission(required_permission):
+                raise ForbiddenError(f"Insufficient permissions: required '{required_permission}'", status_code=403)
+            return principal
+
+        # Unenforced / dev fallback when operator auth is disabled:
+        if token:
+            roles_map = config.operator_roles
+            if token in roles_map:
+                roles = set(roles_map[token])
+            elif config.operator_api_key and hmac.compare_digest(token.encode("utf-8"), config.operator_api_key.encode("utf-8")):
+                roles = {"admin"}
+            else:
+                roles = {"admin"}
+            principal = OperatorPrincipal(actor=f"operator:{hashlib.sha256(token.encode()).hexdigest()[:12]}", roles=roles)
+            if required_permission and not principal.has_permission(required_permission):
+                raise ForbiddenError(f"Insufficient permissions: required '{required_permission}'", status_code=403)
+            return principal
+
         return OperatorPrincipal(
             actor="operator:dashboard",
             roles={"admin", "operator:containment", "operator:remediation", "operator:read", "analyst"},

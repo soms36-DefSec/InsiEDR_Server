@@ -317,6 +317,15 @@ class ServerConfig:
         if self.secret_key and is_placeholder(self.secret_key):
             errors.append("INSIEDR_SECRET_KEY is set to an insecure placeholder value")
 
+        if self.operator_api_key and is_placeholder(self.operator_api_key):
+            errors.append("INSIEDR_OPERATOR_API_KEY is set to an insecure placeholder value")
+
+        if self.operator_roles:
+            for tok in self.operator_roles:
+                if is_placeholder(tok):
+                    errors.append("INSIEDR_OPERATOR_ROLES contains an insecure placeholder token")
+                    break
+
         if self.agent_bearer_token and is_placeholder(self.agent_bearer_token):
             errors.append("INSIEDR_AGENT_BEARER_TOKEN is set to an insecure placeholder value")
 

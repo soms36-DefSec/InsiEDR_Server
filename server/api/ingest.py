@@ -189,7 +189,9 @@ def _check_duplicate_policy(storage, envelope: dict[str, Any], payload: dict[str
     return True
 
 
-_ingest_slots = threading.BoundedSemaphore(max(1, int(os.environ.get('INSIEDR_INGEST_CONCURRENCY', '2'))))
+_ingest_concurrency = max(1, int(os.environ.get('INSIEDR_INGEST_CONCURRENCY', '32')))
+_ingest_slots = threading.BoundedSemaphore(_ingest_concurrency)
+_ingest_wait_seconds = float(os.environ.get('INSIEDR_INGEST_WAIT_SECONDS', '2.0'))
 
 
 async def process_encrypted_request(req) -> tuple[int, dict[str, Any]]:
@@ -204,7 +206,7 @@ async def process_encrypted_request(req) -> tuple[int, dict[str, Any]]:
             request_bytes=declared if declared>0 else None
         except (ValueError,TypeError):
             pass
-    entered = storage.enter_ingest(request_bytes) if use_dynamic else _ingest_slots.acquire(blocking=False)
+    entered = storage.enter_ingest(request_bytes) if use_dynamic else _ingest_slots.acquire(timeout=_ingest_wait_seconds)
     if not entered:
         raise StorageUnavailableError('Ingestion is busy; retain payload and retry')
     try:
