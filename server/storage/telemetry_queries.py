@@ -66,26 +66,20 @@ def telemetry_page(storage, limit=100, offset=0, collector=None, username=None,
         if search_scope == 'payload':
             search_columns.append('CAST(cr.payload_json AS TEXT)')
         clauses.append("(" + " OR ".join(contains(column, search) for column in search_columns) + ")")
-    join_rp = bool(username or search or start_time or end_time)
-    if join_rp:
-        for bound, operator in ((start_time, ">="), (end_time, "<=")):
-            if bound:
-                clauses.append(f"(cr.collector_collected_at {operator} %s OR (cr.collector_collected_at IS NULL AND rp.received_at {operator} %s))")
-                params.extend([bound, bound])
-    else:
-        for bound, operator in ((start_time, ">="), (end_time, "<=")):
-            if bound:
-                clauses.append(f"cr.collector_collected_at {operator} %s")
-                params.append(bound)
+    join_rp = bool(username or search)
+    for bound, operator in ((start_time, ">="), (end_time, "<=")):
+        if bound:
+            clauses.append(f"cr.collector_collected_at {operator} %s")
+            params.append(bound)
     where = " WHERE " + " AND ".join(clauses) if clauses else ""
     count_where, count_params = where, list(params)
     if cursor:
         timestamp, row_id = decode_cursor(cursor, 'postgres', key)
         if timestamp is None:
-            clauses.append('(cr.collector_collected_at IS NULL AND cr.id < %s)')
+            clauses.append('cr.id < %s')
             params.append(row_id)
         else:
-            clauses.append('((cr.collector_collected_at, cr.id) < (%s, %s) OR cr.collector_collected_at IS NULL)')
+            clauses.append('(cr.collector_collected_at, cr.id) < (%s, %s)')
             params.extend([timestamp, row_id])
         where = ' WHERE ' + ' AND '.join(clauses)
     source = "FROM collector_results cr LEFT JOIN raw_payloads rp ON cr.payload_id = rp.payload_id" if join_rp else "FROM collector_results cr"
@@ -208,25 +202,19 @@ def telemetry_explorer(storage, limit=50, cursor=None, collector=None, username=
         search_cols = ['cr.hostname', 'rp.username', 'cr.collector']
         clauses.append("(" + " OR ".join(contains(col, search) for col in search_cols) + ")")
 
-    join_rp = bool(username or search or start_time or end_time)
-    if join_rp:
-        for bound, operator in ((start_time, ">="), (end_time, "<=")):
-            if bound:
-                clauses.append(f"(cr.collector_collected_at {operator} %s OR (cr.collector_collected_at IS NULL AND rp.received_at {operator} %s))")
-                params.extend([bound, bound])
-    else:
-        for bound, operator in ((start_time, ">="), (end_time, "<=")):
-            if bound:
-                clauses.append(f"cr.collector_collected_at {operator} %s")
-                params.append(bound)
+    join_rp = bool(username or search)
+    for bound, operator in ((start_time, ">="), (end_time, "<=")):
+        if bound:
+            clauses.append(f"cr.collector_collected_at {operator} %s")
+            params.append(bound)
 
     if cursor:
         timestamp, row_id = decode_cursor(cursor, 'postgres', key)
         if timestamp is None:
-            clauses.append('(cr.collector_collected_at IS NULL AND cr.id < %s)')
+            clauses.append('cr.id < %s')
             params.append(row_id)
         else:
-            clauses.append('((cr.collector_collected_at, cr.id) < (%s, %s) OR cr.collector_collected_at IS NULL)')
+            clauses.append('(cr.collector_collected_at, cr.id) < (%s, %s)')
             params.extend([timestamp, row_id])
 
     where = " WHERE " + " AND ".join(clauses) if clauses else ""
@@ -292,13 +280,21 @@ def telemetry_event_detail(storage, event_id: str) -> dict[str, Any] | None:
         return None
 
     with storage.connection() as conn, closing(conn.cursor()) as cur:
+        event_id_str = str(event_id).strip()
+        if event_id_str.isdigit():
+            where_sql = "WHERE cr.id = %s LIMIT 1"
+            param = int(event_id_str)
+        else:
+            where_sql = "WHERE cr.payload_id = %s LIMIT 1"
+            param = event_id_str
+
         cur.execute(
             "SELECT cr.id AS event_id, cr.payload_id, cr.agent_id, cr.collector AS collector_name, "
             "COALESCE(cr.collector_collected_at, rp.received_at) AS timestamp, "
             "cr.hostname, rp.username, cr.status, cr.payload_json "
             "FROM collector_results cr LEFT JOIN raw_payloads rp ON cr.payload_id = rp.payload_id "
-            "WHERE CAST(cr.id AS TEXT) = %s LIMIT 1",
-            (str(event_id),),
+            + where_sql,
+            (param,),
         )
         row = cur.fetchone()
         if not row:

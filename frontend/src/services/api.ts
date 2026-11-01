@@ -298,7 +298,10 @@ export async function fetchTelemetryExplorer(
  * Maps to `GET /api/v1/telemetry/events/{eventId}`.
  */
 export async function fetchTelemetryEventDetail(eventId: string | number, signal?: AbortSignal): Promise<TelemetryEventDetailResponse> {
-  return fetchApi<TelemetryEventDetailResponse>(`/api/v1/telemetry/events/${encodeURIComponent(String(eventId))}`, { signal });
+  return fetchApi<TelemetryEventDetailResponse>(`/api/v1/telemetry/events/${encodeURIComponent(String(eventId))}`, {
+    signal,
+    timeoutMs: 30000,
+  });
 }
 
 /**

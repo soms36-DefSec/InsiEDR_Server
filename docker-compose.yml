@@ -230,6 +230,11 @@ services:
         target: /app/server/dashboard/dist
         bind:
           create_host_path: false
+      - type: bind
+        source: ./server/storage/telemetry_queries.py
+        target: /app/server/storage/telemetry_queries.py
+        bind:
+          create_host_path: false
     networks: [data, edge]
 
   nginx:
